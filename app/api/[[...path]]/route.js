@@ -1603,6 +1603,415 @@ async function handleRoute(request, { params }) {
     }
     // ===================================================================== END WO
 
+    // =====================================================================
+    // INVENTORY MODULE
+    // =====================================================================
+    const nextBaNumber = (prefix) => {
+      const ym = new Date();
+      const p = `${prefix}/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const row = db.select({ c: sql`count(*)` }).from(s.inventoryTransaction).where(like(s.inventoryTransaction.baNumber, `${p}%`)).get();
+      return `${p}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+    };
+    const nextOpnameNumber = () => {
+      const ym = new Date();
+      const p = `OPN/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const row = db.select({ c: sql`count(*)` }).from(s.stockOpname).where(like(s.stockOpname.opnameNumber, `${p}%`)).get();
+      return `${p}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+    };
+
+    // GET /inventory/stocks - list with filters + FIFO/FEFO
+    if (route === '/inventory/stocks' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const productId = url.searchParams.get('product_id');
+      const csId = url.searchParams.get('cold_storage_id');
+      const zoneId = url.searchParams.get('zone_id');
+      const status = url.searchParams.get('status') || 'active';
+      const sort = url.searchParams.get('sort') || 'FEFO'; // FIFO | FEFO
+      const q = url.searchParams.get('q');
+      const conds = [];
+      if (status !== 'all') conds.push(eq(s.inventoryStock.status, status));
+      if (productId) conds.push(eq(s.inventoryStock.productId, productId));
+      if (csId) conds.push(eq(s.inventoryStock.coldStorageId, csId));
+      if (zoneId) conds.push(eq(s.inventoryStock.zoneId, zoneId));
+      if (q) conds.push(like(s.inventoryStock.kodeSimpan, `%${q}%`));
+      let query = db.select().from(s.inventoryStock);
+      if (conds.length) query = query.where(and(...conds));
+      // FIFO = order by createdAt asc; FEFO = order by expiredDate asc (nulls last)
+      if (sort === 'FIFO') query = query.orderBy(s.inventoryStock.createdAt);
+      else query = query.orderBy(sql`case when ${s.inventoryStock.expiredDate} is null then 1 else 0 end`, s.inventoryStock.expiredDate);
+      const rows = query.all();
+      const enriched = rows.map(r => {
+        const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).where(eq(s.products.id, r.productId)).get();
+        const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
+        const zone = r.zoneId ? db.select({ code: s.zones.code, name: s.zones.name }).from(s.zones).where(eq(s.zones.id, r.zoneId)).get() : null;
+        const daysToExpire = r.expiredDate ? Math.floor((new Date(r.expiredDate).getTime() - Date.now()) / (24*60*60*1000)) : null;
+        return { ...r, product: p, coldStorage: cs, zone, daysToExpire };
+      });
+      // Summary
+      const summary = {
+        totalRows: enriched.length,
+        totalWeight: enriched.reduce((a, b) => a + Number(b.weight || 0), 0),
+        totalQty: enriched.reduce((a, b) => a + Number(b.quantity || 0), 0),
+        nearExpiry: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire <= 7 && r.daysToExpire >= 0).length,
+        expired: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire < 0).length,
+      };
+      return json({ data: enriched, summary });
+    }
+
+    // GET /inventory/stocks/:id - detail with traceability
+    if (route.startsWith('/inventory/stocks/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const id = path[2];
+      const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get();
+      if (!stk) return err('Not found', 404);
+      const p = db.select().from(s.products).where(eq(s.products.id, stk.productId)).get();
+      const cs = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, stk.coldStorageId)).get();
+      const zone = stk.zoneId ? db.select().from(s.zones).where(eq(s.zones.id, stk.zoneId)).get() : null;
+      // Traceability
+      let source = null;
+      if (stk.sourceType === 'WO') source = db.select({ id: s.workOrder.id, number: s.workOrder.woNumber, mode: s.workOrder.mode, startDate: s.workOrder.startDate }).from(s.workOrder).where(eq(s.workOrder.id, stk.sourceBatch)).get();
+      else if (stk.sourceType === 'PO') source = db.select({ id: s.purchaseOrder.id, number: s.purchaseOrder.poNumber, poType: s.purchaseOrder.poType, orderDate: s.purchaseOrder.orderDate }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, stk.sourceBatch)).get();
+      // Movement history for this stock (via transactions that touched it)
+      const inTx = stk.transactionId ? db.select().from(s.inventoryTransaction).where(eq(s.inventoryTransaction.id, stk.transactionId)).get() : null;
+      // Children (packs from opened karung)
+      const children = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.parentStockId, id)).all();
+      const parent = stk.parentStockId ? db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, stk.parentStockId)).get() : null;
+      return json({ data: { ...stk, product: p, coldStorage: cs, zone, source, inboundTransaction: inTx, children, parent } });
+    }
+
+    // POST /inventory/inbound - manual inbound (from PO GRN)
+    if (route === '/inventory/inbound' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      // body: { referenceId(PO/WO id), referenceType, coldStorageId, zoneId?, items: [{productId, weight, quantity, expiredDate, packagingType}] }
+      if (!Array.isArray(body.items) || body.items.length === 0) return err('items required');
+      if (!body.coldStorageId) return err('coldStorageId required');
+      const txId = uuidv4();
+      const totalW = body.items.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const totalQ = body.items.reduce((a, b) => a + Number(b.quantity || 0), 0);
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(), transactionType: 'IN',
+        referenceId: body.referenceId || null, referenceType: body.referenceType || 'MANUAL',
+        toColdStorageId: body.coldStorageId, toZoneId: body.zoneId || null,
+        totalWeight: totalW, totalQuantity: totalQ,
+        notes: body.notes || null, status: 'confirmed',
+        createdBy: session.user.email, createdAt: new Date(),
+      }).run();
+      const createdStocks = [];
+      for (const it of body.items) {
+        const stkId = uuidv4();
+        db.insert(s.inventoryStock).values({
+          id: stkId, productId: it.productId,
+          coldStorageId: body.coldStorageId, zoneId: body.zoneId || null,
+          kodeSimpan: nextKodeSimpan(),
+          packagingType: it.packagingType || 'karung',
+          quantity: Number(it.quantity || 0),
+          weight: Number(it.weight || 0),
+          expiredDate: it.expiredDate ? new Date(it.expiredDate) : null,
+          status: 'active',
+          sourceBatch: body.referenceId || null, sourceType: body.referenceType || null,
+          transactionId: txId,
+        }).run();
+        createdStocks.push(stkId);
+      }
+      return json({ data: { transactionId: txId, stockIds: createdStocks } }, { status: 201 });
+    }
+
+    // POST /inventory/outbound - non-sales (sample) or damage
+    if (route === '/inventory/outbound' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const body = await request.json();
+      // body: { stockIds: [], subtype: 'non_sales' | 'damage', reason, notes }
+      if (!Array.isArray(body.stockIds) || body.stockIds.length === 0) return err('stockIds required');
+      const subtype = body.subtype || 'non_sales';
+      const stocks = body.stockIds.map(id => db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get()).filter(Boolean);
+      if (stocks.length === 0) return err('No valid stocks found');
+      const totalW = stocks.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const totalQ = stocks.reduce((a, b) => a + Number(b.quantity || 0), 0);
+      const txId = uuidv4();
+      // For damage: requires approval (status=pending). For non_sales: confirmed.
+      const requiresApproval = subtype === 'damage';
+      const isAdmin = session.user.role === 'admin';
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(),
+        transactionType: subtype === 'damage' ? 'DAMAGE' : 'NON_SALES',
+        baNumber: nextBaNumber('BA'),
+        baType: subtype === 'damage' ? 'damage' : 'non_sales',
+        fromColdStorageId: stocks[0].coldStorageId,
+        totalWeight: totalW, totalQuantity: totalQ,
+        reason: body.reason || null, notes: body.notes || null,
+        status: requiresApproval && !isAdmin ? 'pending' : 'confirmed',
+        approvedBy: isAdmin ? session.user.email : null,
+        approvedAt: isAdmin ? new Date() : null,
+        createdBy: session.user.email, createdAt: new Date(),
+      }).run();
+      // Only mark stocks as used/damaged if confirmed
+      if (!requiresApproval || isAdmin) {
+        for (const st of stocks) {
+          db.update(s.inventoryStock).set({ status: subtype === 'damage' ? 'damaged' : 'used', updatedAt: new Date() }).where(eq(s.inventoryStock.id, st.id)).run();
+        }
+      }
+      return json({ data: { transactionId: txId, status: requiresApproval && !isAdmin ? 'pending' : 'confirmed', notification: subtype === 'damage' ? { to: ['supervisor', 'direktur'], subject: `Kerusakan/Susut Stock: ${totalW}kg` } : null } }, { status: 201 });
+    }
+
+    // POST /inventory/transfer-cs - transfer between cold storages (BA required)
+    if (route === '/inventory/transfer-cs' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!Array.isArray(body.stockIds) || !body.toColdStorageId) return err('stockIds and toColdStorageId required');
+      const stocks = body.stockIds.map(id => db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get()).filter(Boolean);
+      if (stocks.length === 0) return err('No valid stocks');
+      const fromCsId = stocks[0].coldStorageId;
+      if (fromCsId === body.toColdStorageId) return err('CS asal & tujuan sama');
+      const totalW = stocks.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const totalQ = stocks.reduce((a, b) => a + Number(b.quantity || 0), 0);
+      const txId = uuidv4();
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(),
+        transactionType: 'TRANSFER_CS',
+        baNumber: nextBaNumber('BA'), baType: 'transfer_cs',
+        fromColdStorageId: fromCsId, toColdStorageId: body.toColdStorageId,
+        toZoneId: body.toZoneId || null,
+        totalWeight: totalW, totalQuantity: totalQ,
+        notes: body.notes || null, status: 'confirmed',
+        createdBy: session.user.email, createdAt: new Date(),
+      }).run();
+      // Update stock location
+      for (const st of stocks) {
+        db.update(s.inventoryStock).set({
+          coldStorageId: body.toColdStorageId,
+          zoneId: body.toZoneId || null,
+          updatedAt: new Date(),
+        }).where(eq(s.inventoryStock.id, st.id)).run();
+      }
+      return json({ data: { transactionId: txId, moved: stocks.length } }, { status: 201 });
+    }
+
+    // POST /inventory/transfer-zone - transfer between zones (no BA)
+    if (route === '/inventory/transfer-zone' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!Array.isArray(body.stockIds) || !body.toZoneId) return err('stockIds and toZoneId required');
+      const stocks = body.stockIds.map(id => db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get()).filter(Boolean);
+      const totalW = stocks.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const totalQ = stocks.reduce((a, b) => a + Number(b.quantity || 0), 0);
+      const txId = uuidv4();
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(), transactionType: 'TRANSFER_ZONE',
+        fromColdStorageId: stocks[0]?.coldStorageId, toColdStorageId: stocks[0]?.coldStorageId,
+        fromZoneId: stocks[0]?.zoneId, toZoneId: body.toZoneId,
+        totalWeight: totalW, totalQuantity: totalQ, notes: body.notes || null, status: 'confirmed',
+        createdBy: session.user.email, createdAt: new Date(),
+      }).run();
+      for (const st of stocks) {
+        db.update(s.inventoryStock).set({ zoneId: body.toZoneId, updatedAt: new Date() }).where(eq(s.inventoryStock.id, st.id)).run();
+      }
+      return json({ data: { transactionId: txId, moved: stocks.length } }, { status: 201 });
+    }
+
+    // POST /inventory/split-karung - open karung, create child packs
+    if (route === '/inventory/split-karung' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      // body: { stockId, packs: [{ weight, quantity }] }
+      const parent = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, body.stockId)).get();
+      if (!parent) return err('Stock not found', 404);
+      if (parent.packagingType !== 'karung') return err('Hanya karung yang bisa displit');
+      if (parent.status !== 'active') return err('Karung tidak aktif');
+      const packs = body.packs || [];
+      if (packs.length === 0) return err('packs required');
+      const createdIds = [];
+      for (const p of packs) {
+        const stkId = uuidv4();
+        db.insert(s.inventoryStock).values({
+          id: stkId,
+          productId: parent.productId,
+          coldStorageId: parent.coldStorageId,
+          zoneId: parent.zoneId,
+          kodeSimpan: nextKodeSimpan(),
+          packagingType: 'pack',
+          parentStockId: parent.id,
+          quantity: Number(p.quantity || 1),
+          weight: Number(p.weight || 0),
+          expiredDate: parent.expiredDate,
+          status: 'active',
+          sourceBatch: parent.sourceBatch, sourceType: parent.sourceType,
+          transactionId: parent.transactionId,
+        }).run();
+        createdIds.push(stkId);
+      }
+      // Mark parent as opened (no longer counted in stock)
+      db.update(s.inventoryStock).set({ status: 'opened', openedAt: new Date(), updatedAt: new Date() }).where(eq(s.inventoryStock.id, parent.id)).run();
+      return json({ data: { parentStockId: parent.id, childStockIds: createdIds } }, { status: 201 });
+    }
+
+    // GET /inventory/transactions - list movements
+    if (route === '/inventory/transactions' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const type = url.searchParams.get('type');
+      const conds = [];
+      if (type && type !== 'all') conds.push(eq(s.inventoryTransaction.transactionType, type));
+      let query = db.select().from(s.inventoryTransaction);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(desc(s.inventoryTransaction.transactionDate)).all();
+      const enriched = rows.map(r => {
+        const from = r.fromColdStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.fromColdStorageId)).get() : null;
+        const to = r.toColdStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.toColdStorageId)).get() : null;
+        return { ...r, fromCs: from, toCs: to };
+      });
+      return json({ data: enriched });
+    }
+
+    // ===== STOCK OPNAME =====
+    // POST /opnames - create opname
+    if (route === '/opnames' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.coldStorageId) return err('coldStorageId required');
+      const id = uuidv4();
+      db.insert(s.stockOpname).values({
+        id, opnameNumber: nextOpnameNumber(),
+        opnameDate: body.opnameDate ? new Date(body.opnameDate) : new Date(),
+        coldStorageId: body.coldStorageId,
+        status: 'draft',
+        notes: body.notes || null,
+        createdBy: session.user.email,
+        createdAt: new Date(),
+      }).run();
+      // Auto-populate items from active stocks in that CS
+      const stocks = db.select().from(s.inventoryStock).where(and(eq(s.inventoryStock.coldStorageId, body.coldStorageId), eq(s.inventoryStock.status, 'active'))).all();
+      for (const st of stocks) {
+        db.insert(s.stockOpnameItems).values({
+          id: uuidv4(), opnameId: id, stockId: st.id,
+          systemQty: Number(st.quantity), systemWeight: Number(st.weight),
+          physicalQty: Number(st.quantity), physicalWeight: Number(st.weight),
+          deltaQty: 0, deltaWeight: 0,
+        }).run();
+      }
+      return json({ data: db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get() }, { status: 201 });
+    }
+    // GET /opnames - list
+    if (route === '/opnames' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const rows = db.select().from(s.stockOpname).orderBy(desc(s.stockOpname.createdAt)).all();
+      const enriched = rows.map(r => {
+        const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
+        const itemCount = db.select({ c: sql`count(*)` }).from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, r.id)).get();
+        return { ...r, coldStorage: cs, itemCount: Number(itemCount?.c || 0) };
+      });
+      return json({ data: enriched });
+    }
+    // GET /opnames/:id
+    if (route.startsWith('/opnames/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+      if (!op) return err('Not found', 404);
+      const items = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all();
+      const enrichedItems = items.map(it => {
+        const st = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+        const p = st ? db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, st.productId)).get() : null;
+        return { ...it, stock: st, product: p };
+      });
+      const cs = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, op.coldStorageId)).get();
+      return json({ data: { ...op, coldStorage: cs, items: enrichedItems } });
+    }
+    // PATCH /opnames/:id/items - update physical count in bulk
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'items' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const opId = path[1];
+      const body = await request.json();
+      if (!Array.isArray(body.items)) return err('items array required');
+      for (const it of body.items) {
+        const cur = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.id, it.id)).get();
+        if (!cur) continue;
+        const physicalQty = Number(it.physicalQty ?? cur.physicalQty);
+        const physicalWeight = Number(it.physicalWeight ?? cur.physicalWeight);
+        db.update(s.stockOpnameItems).set({
+          physicalQty, physicalWeight,
+          deltaQty: physicalQty - Number(cur.systemQty),
+          deltaWeight: physicalWeight - Number(cur.systemWeight),
+          notes: it.notes ?? cur.notes,
+        }).where(eq(s.stockOpnameItems.id, it.id)).run();
+      }
+      // Update aggregate deltas
+      const all = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, opId)).all();
+      const totalDW = all.reduce((a, b) => a + Number(b.deltaWeight || 0), 0);
+      const totalDQ = all.reduce((a, b) => a + Number(b.deltaQty || 0), 0);
+      db.update(s.stockOpname).set({ totalDeltaWeight: totalDW, totalDeltaQty: totalDQ }).where(eq(s.stockOpname.id, opId)).run();
+      return json({ data: { ok: true, totalDeltaWeight: totalDW, totalDeltaQty: totalDQ } });
+    }
+    // POST /opnames/:id/submit - submit for approval
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'submit' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+      if (!op) return err('Not found', 404);
+      if (op.status !== 'draft') return err('Hanya draft yang bisa submit');
+      db.update(s.stockOpname).set({ status: 'submitted', submittedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      return json({ data: { ok: true, notification: { to: ['supervisor', 'direktur'], subject: `Stock Opname ${op.opnameNumber} menunggu approval` } } });
+    }
+    // POST /opnames/:id/approve - supervisor/admin approve -> create adjustment tx + update stocks
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'approve' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+      if (!op) return err('Not found', 404);
+      if (op.status !== 'submitted') return err('Hanya opname submitted yang bisa di-approve');
+      const items = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all();
+      // Create adjustment transaction
+      const txId = uuidv4();
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(), transactionType: 'OPNAME_ADJ',
+        baNumber: nextBaNumber('BA-OPN'), baType: 'opname_adj',
+        referenceId: id, referenceType: 'OPNAME',
+        fromColdStorageId: op.coldStorageId,
+        totalWeight: Number(op.totalDeltaWeight),
+        totalQuantity: Number(op.totalDeltaQty),
+        notes: `Stock Opname adjustment ${op.opnameNumber}`,
+        status: 'confirmed',
+        approvedBy: session.user.email, approvedAt: new Date(),
+        createdBy: op.createdBy, createdAt: new Date(),
+      }).run();
+      // Apply adjustments to stock quantities/weights
+      for (const it of items) {
+        if (it.deltaQty !== 0 || it.deltaWeight !== 0) {
+          db.update(s.inventoryStock).set({
+            quantity: Number(it.physicalQty),
+            weight: Number(it.physicalWeight),
+            updatedAt: new Date(),
+          }).where(eq(s.inventoryStock.id, it.stockId)).run();
+        }
+      }
+      db.update(s.stockOpname).set({ status: 'approved', approvedBy: session.user.email, approvedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      return json({ data: { ok: true, transactionId: txId, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
+    }
+    // POST /opnames/:id/reject
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'reject' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      db.update(s.stockOpname).set({ status: 'rejected', approvedBy: session.user.email, approvedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      return json({ data: { ok: true } });
+    }
+    // ===================================================================== END INVENTORY
+
     return err(`Route ${route} not found`, 404);
   } catch (e) {
     console.error('API Error:', e);
