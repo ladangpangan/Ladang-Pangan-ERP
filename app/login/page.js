@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, ChickenIcon, Egg, Beef, Wheat } from 'lucide-react';
+import { Loader2, Wheat } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function LoginPage() {
