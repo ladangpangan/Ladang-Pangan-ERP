@@ -15,10 +15,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell } from 'lucide-react';
+import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
+import { generatePOPDF } from '@/lib/pdf/invoice';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const PO_FLOW = {
@@ -77,6 +78,21 @@ export default function PODetailPage() {
             ))}
           </div>
         )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            try {
+              const doc = generatePOPDF(po);
+              doc.save(`PO-${po.poNumber}.pdf`);
+              toast.success('PDF berhasil diunduh');
+            } catch (e) {
+              toast.error('Gagal membuat PDF: ' + e.message);
+            }
+          }}
+        >
+          <FileDown className="w-4 h-4 mr-1" /> PDF PO
+        </Button>
       </div>
 
       {/* Pipeline visualization */}

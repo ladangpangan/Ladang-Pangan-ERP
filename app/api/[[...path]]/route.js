@@ -135,13 +135,110 @@ async function handleRoute(request, { params }) {
       return json({ user: session.user });
     }
 
-    // ---------- USERS (admin only, list) ----------
+    // ---------- USERS ----------
+    // GET /users - list users (admin/direktur)
     if (route === '/users' && method === 'GET') {
       const { session, error } = await requireAuth();
       if (error) return error;
       if (!requireRole(session, ['admin', 'direktur'])) return err('Forbidden', 403);
       const rows = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).orderBy(desc(s.user.createdAt)).all();
       return json({ data: rows });
+    }
+
+    // POST /users - create new user (admin only)
+    if (route === '/users' && method === 'POST') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const body = await request.json();
+      const { name, email, password, role, status = 'active' } = body || {};
+      if (!name || !email || !password || !role) return err('name, email, password, role required');
+      if (!['admin', 'supervisor', 'direktur', 'operator'].includes(role)) return err('Invalid role');
+      if (String(password).length < 6) return err('Password minimal 6 karakter');
+      // Check duplicate email
+      const existing = db.select().from(s.user).where(eq(s.user.email, email)).all();
+      if (existing.length > 0) return err('Email sudah terdaftar');
+      try {
+        const auth = getAuth();
+        await auth.api.signUpEmail({ body: { email, password, name } });
+        db.update(s.user).set({ role, status, updatedAt: new Date() }).where(eq(s.user.email, email)).run();
+        const created = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).where(eq(s.user.email, email)).all();
+        return json({ data: created[0] }, { status: 201 });
+      } catch (e) {
+        return err('Gagal membuat user: ' + String(e?.message || e), 400);
+      }
+    }
+
+    // PATCH /users/:id - update user profile (name, role, status) - admin only
+    if (route.startsWith('/users/') && path.length === 2 && method === 'PATCH') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const id = path[1];
+      const body = await request.json();
+      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
+      if (target.length === 0) return err('User tidak ditemukan', 404);
+      // Prevent self-demote/deactivate to avoid lockout
+      if (target[0].id === session.user.id && (body.role && body.role !== target[0].role || body.status && body.status !== 'active')) {
+        return err('Tidak bisa mengubah role/status akun sendiri', 400);
+      }
+      const upd = {};
+      if (body.name !== undefined) upd.name = body.name;
+      if (body.role !== undefined) {
+        if (!['admin', 'supervisor', 'direktur', 'operator'].includes(body.role)) return err('Invalid role');
+        upd.role = body.role;
+      }
+      if (body.status !== undefined) {
+        if (!['active', 'inactive'].includes(body.status)) return err('Invalid status');
+        upd.status = body.status;
+      }
+      if (Object.keys(upd).length === 0) return err('Tidak ada field yang diubah');
+      upd.updatedAt = new Date();
+      db.update(s.user).set(upd).where(eq(s.user.id, id)).run();
+      const updated = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).where(eq(s.user.id, id)).all();
+      return json({ data: updated[0] });
+    }
+
+    // POST /users/:id/reset-password - reset password (admin only)
+    if (route.startsWith('/users/') && path.length === 3 && path[2] === 'reset-password' && method === 'POST') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const id = path[1];
+      const body = await request.json();
+      const { newPassword } = body || {};
+      if (!newPassword || String(newPassword).length < 6) return err('Password minimal 6 karakter');
+      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
+      if (target.length === 0) return err('User tidak ditemukan', 404);
+      try {
+        // better-auth stores password hash in account table with providerId='credential'
+        const bcrypt = await import('better-auth/crypto').catch(() => null);
+        // Better-auth exposes its context; simplest approach: update via drizzle using its hash function
+        const authCtx = getAuth().$context ? await getAuth().$context : null;
+        const hashed = authCtx?.password?.hash ? await authCtx.password.hash(newPassword) : null;
+        if (!hashed) throw new Error('Hash function not available');
+        db.update(s.account)
+          .set({ password: hashed, updatedAt: new Date() })
+          .where(and(eq(s.account.userId, id), eq(s.account.providerId, 'credential')))
+          .run();
+        return json({ ok: true });
+      } catch (e) {
+        return err('Gagal reset password: ' + String(e?.message || e), 500);
+      }
+    }
+
+    // DELETE /users/:id - delete user (admin only, cannot delete self)
+    if (route.startsWith('/users/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const id = path[1];
+      if (id === session.user.id) return err('Tidak bisa menghapus akun sendiri', 400);
+      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
+      if (target.length === 0) return err('User tidak ditemukan', 404);
+      // Cascade will remove session and account rows via FK
+      db.delete(s.user).where(eq(s.user.id, id)).run();
+      return json({ ok: true });
     }
 
     // ---------- CONTACTS ----------
