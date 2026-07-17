@@ -146,21 +146,28 @@ async function handleRoute(request, { params }) {
 
     // ---------- CONTACTS ----------
     if (route === '/contacts' && method === 'GET') {
-      const { error } = await requireAuth(); if (error) return error;
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const type = url.searchParams.get('type');
       const q = url.searchParams.get('q');
       let query = db.select().from(s.contacts);
       const conds = [];
       if (type && type !== 'all') conds.push(eq(s.contacts.contactType, type));
-      if (q) conds.push(or(like(s.contacts.displayName, `%${q}%`), like(s.contacts.code, `%${q}%`), like(s.contacts.companyName, `%${q}%`)));
+      if (q) conds.push(or(
+        like(s.contacts.displayName, `%${q}%`),
+        like(s.contacts.code, `%${q}%`),
+        like(s.contacts.companyName, `%${q}%`),
+        like(s.contacts.phone, `%${q}%`),
+        like(s.contacts.picPhone, `%${q}%`),
+      ));
       if (conds.length) query = query.where(and(...conds));
       const rows = query.orderBy(desc(s.contacts.createdAt)).all();
       return json({ data: rows });
     }
     if (route === '/contacts' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
       const body = await request.json();
       if (!body.contactType || !body.displayName || !body.code) return err('contactType, code, displayName required');
       const now = new Date();
@@ -170,16 +177,54 @@ async function handleRoute(request, { params }) {
         return json({ data: row }, { status: 201 });
       } catch (e) { return err('Failed to create: ' + e.message); }
     }
-    if (route.startsWith('/contacts/') && method === 'GET') {
-      const { error } = await requireAuth(); if (error) return error;
+    // Transaction history for a contact
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'history' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const contact = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!contact) return err('Contact not found', 404);
+      const salesOrders = db.select().from(s.salesOrder).where(eq(s.salesOrder.customerId, id)).orderBy(desc(s.salesOrder.orderDate)).all();
+      const purchaseOrders = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.supplierId, id)).orderBy(desc(s.purchaseOrder.orderDate)).all();
+      // Work orders linked via PO
+      const poIds = purchaseOrders.map(p => p.id);
+      let workOrders = [];
+      if (poIds.length > 0) {
+        for (const poId of poIds) {
+          const wos = db.select().from(s.workOrder).where(eq(s.workOrder.purchaseOrderId, poId)).all();
+          workOrders = workOrders.concat(wos);
+        }
+      }
+      // Summary stats
+      const totalSalesAmount = salesOrders.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      const totalPurchaseAmount = purchaseOrders.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      return json({
+        data: {
+          contact,
+          salesOrders,
+          purchaseOrders,
+          workOrders,
+          summary: {
+            salesCount: salesOrders.length,
+            purchaseCount: purchaseOrders.length,
+            workOrderCount: workOrders.length,
+            totalSalesAmount,
+            totalPurchaseAmount,
+          },
+        },
+      });
+    }
+    if (route.startsWith('/contacts/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
       if (!row) return err('Not found', 404);
       return json({ data: row });
     }
-    if (route.startsWith('/contacts/') && (method === 'PATCH' || method === 'PUT')) {
+    if (route.startsWith('/contacts/') && path.length === 2 && (method === 'PATCH' || method === 'PUT')) {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt;
@@ -187,9 +232,9 @@ async function handleRoute(request, { params }) {
       const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
       return json({ data: row });
     }
-    if (route.startsWith('/contacts/') && method === 'DELETE') {
+    if (route.startsWith('/contacts/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
       const id = path[1];
       db.delete(s.contacts).where(eq(s.contacts.id, id)).run();
       return json({ ok: true });
