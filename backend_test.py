@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Comprehensive Backend API Testing for Inventory Module
-Tests all inventory endpoints with RBAC verification
+Backend API Testing Script for Dashboard Summary + Purchase/Production/Inventory Reports
+Tests all endpoints with RBAC verification for admin, direktur, and operator roles.
 """
 
 import requests
-import json
 import time
-from datetime import datetime, timedelta
+import json
+from datetime import datetime
 
 # Base URL from .env
 BASE_URL = "https://pangan-system.preview.emergentagent.com/api"
@@ -15,1120 +15,712 @@ BASE_URL = "https://pangan-system.preview.emergentagent.com/api"
 # Test credentials
 CREDENTIALS = {
     "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
-    "supervisor": {"email": "supervisor@lpi.co.id", "password": "super123"},
     "direktur": {"email": "direktur@lpi.co.id", "password": "direktur123"},
     "operator": {"email": "operator@lpi.co.id", "password": "operator123"},
 }
 
-# Global session storage
+# Store sessions for each role
 sessions = {}
 
 def login(role):
     """Login and store session cookies"""
-    print(f"\n🔐 Logging in as {role}...")
+    print(f"\n{'='*60}")
+    print(f"Logging in as {role}...")
+    print(f"{'='*60}")
+    
+    session = requests.Session()
     creds = CREDENTIALS[role]
     
-    # Use Better Auth sign-in endpoint
-    resp = requests.post(
-        f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
-        json={"email": creds["email"], "password": creds["password"]},
-        headers={"Content-Type": "application/json"}
-    )
-    
-    if resp.status_code == 200:
-        sessions[role] = resp.cookies
-        print(f"✅ {role} login successful")
-        return True
-    else:
-        print(f"❌ {role} login failed: {resp.status_code} - {resp.text}")
-        return False
-
-def get_session(role):
-    """Get session cookies for a role"""
-    if role not in sessions:
-        login(role)
-    return sessions.get(role)
-
-def test_prep():
-    """Prepare test data - fetch product and cold storage IDs"""
-    print("\n" + "="*80)
-    print("PREP: Fetching test data (products, cold storages)")
-    print("="*80)
-    
-    session = get_session("admin")
-    
-    # Get products
-    resp = requests.get(f"{BASE_URL}/products", cookies=session)
-    if resp.status_code != 200:
-        print(f"❌ Failed to fetch products: {resp.status_code}")
-        return None
-    
-    products_data = resp.json()
-    # Handle both array and object with 'data' key
-    products = products_data if isinstance(products_data, list) else products_data.get("data", [])
-    krk_product = next((p for p in products if p.get("sku") == "KRK-001"), None)
-    bn_product = next((p for p in products if p.get("sku") == "BN-001"), None)
-    
-    if not krk_product or not bn_product:
-        print("❌ Required products (KRK-001, BN-001) not found")
-        return None
-    
-    print(f"✅ Found KRK-001: {krk_product['id']}")
-    print(f"✅ Found BN-001: {bn_product['id']}")
-    
-    # Get cold storages
-    resp = requests.get(f"{BASE_URL}/cold-storages", cookies=session)
-    if resp.status_code != 200:
-        print(f"❌ Failed to fetch cold storages: {resp.status_code}")
-        return None
-    
-    cs_data = resp.json()
-    cold_storages = cs_data if isinstance(cs_data, list) else cs_data.get("data", [])
-    cs_01 = next((cs for cs in cold_storages if cs.get("code") == "CS-01"), None)
-    cs_02 = next((cs for cs in cold_storages if cs.get("code") == "CS-02"), None)
-    
-    if not cs_01 or not cs_02:
-        print("❌ Required cold storages (CS-01, CS-02) not found")
-        return None
-    
-    print(f"✅ Found CS-01: {cs_01['id']}")
-    print(f"✅ Found CS-02: {cs_02['id']}")
-    
-    # Get zones for CS-02
-    resp = requests.get(f"{BASE_URL}/zones?cold_storage_id={cs_02['id']}", cookies=session)
-    zones_data = resp.json() if resp.status_code == 200 else []
-    zones = zones_data if isinstance(zones_data, list) else zones_data.get("data", [])
-    zone_id = zones[0]['id'] if zones else None
-    
-    if zone_id:
-        print(f"✅ Found zone in CS-02: {zone_id}")
-    
-    return {
-        "krk_id": krk_product["id"],
-        "bn_id": bn_product["id"],
-        "cs_01_id": cs_01["id"],
-        "cs_02_id": cs_02["id"],
-        "zone_id": zone_id,
-        "zones": zones
-    }
-
-def test_1_inbound_manual(test_data):
-    """Test 1: Inbound (Manual) as admin"""
-    print("\n" + "="*80)
-    print("TEST 1: Inbound (Manual)")
-    print("="*80)
-    
-    session = get_session("admin")
-    
-    payload = {
-        "referenceType": "MANUAL",
-        "coldStorageId": test_data["cs_01_id"],
-        "items": [
-            {
-                "productId": test_data["krk_id"],
-                "weight": 100,
-                "quantity": 10,
-                "packagingType": "karung",
-                "expiredDate": "2025-12-31"
-            },
-            {
-                "productId": test_data["bn_id"],
-                "weight": 20,
-                "quantity": 2,
-                "packagingType": "karung",
-                "expiredDate": "2025-07-15"
-            }
-        ]
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=session)
-    
-    if resp.status_code == 201:
-        data = resp.json().get("data", {})
-        print(f"✅ Inbound created: transactionId={data.get('transactionId')}")
-        print(f"   Stock IDs: {data.get('stockIds')}")
-        test_data["stock_ids"] = data.get("stockIds", [])
+    try:
+        # Login via Better Auth
+        resp = session.post(
+            f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
+            json={"email": creds["email"], "password": creds["password"]},
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
         
-        # Verify stocks created
-        time.sleep(0.5)
-        resp2 = requests.get(f"{BASE_URL}/inventory/stocks?cold_storage_id={test_data['cs_01_id']}", cookies=session)
-        if resp2.status_code == 200:
-            stocks = resp2.json().get("data", [])
-            new_stocks = [s for s in stocks if s["id"] in test_data["stock_ids"]]
-            if len(new_stocks) == 2:
-                print(f"✅ Verified: 2 stocks created with unique kodeSimpan")
-                for s in new_stocks:
-                    print(f"   - {s['kodeSimpan']} ({s['product']['sku']})")
-                return True
-            else:
-                print(f"❌ Expected 2 stocks, found {len(new_stocks)}")
-                return False
+        if resp.status_code == 200:
+            print(f"✅ Login successful for {role}")
+            sessions[role] = session
+            return session
         else:
-            print(f"❌ Failed to verify stocks: {resp2.status_code}")
-            return False
-    else:
-        print(f"❌ Inbound failed: {resp.status_code} - {resp.text}")
-        return False
+            print(f"❌ Login failed for {role}: {resp.status_code} - {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"❌ Login error for {role}: {str(e)}")
+        return None
 
-def test_2_list_stocks_summary(test_data):
-    """Test 2: List stocks + summary"""
-    print("\n" + "="*80)
-    print("TEST 2: List stocks + summary")
-    print("="*80)
+def test_endpoint(session, role, method, endpoint, expected_status, description):
+    """Test a single endpoint"""
+    url = f"{BASE_URL}{endpoint}"
     
-    session = get_session("admin")
+    try:
+        if method == "GET":
+            resp = session.get(url, timeout=10)
+        elif method == "POST":
+            resp = session.post(url, json={}, timeout=10)
+        else:
+            resp = session.request(method, url, timeout=10)
+        
+        status = resp.status_code
+        success = status == expected_status
+        
+        if success:
+            print(f"  ✅ {description}: {status}")
+            return True, resp
+        else:
+            print(f"  ❌ {description}: Expected {expected_status}, got {status}")
+            if status >= 400:
+                print(f"     Error: {resp.text[:200]}")
+            return False, resp
+    except Exception as e:
+        print(f"  ❌ {description}: Exception - {str(e)}")
+        return False, None
+
+def validate_dashboard_summary(data):
+    """Validate dashboard summary structure and data"""
+    print("\n  Validating dashboard summary structure...")
     
-    # Test basic list
-    resp = requests.get(f"{BASE_URL}/inventory/stocks", cookies=session)
-    if resp.status_code != 200:
-        print(f"❌ Failed to list stocks: {resp.status_code}")
+    required_fields = ['todaySales', 'activeWo', 'todayProduction', 'alerts', 'finance', 'inventoryValue']
+    for field in required_fields:
+        if field not in data:
+            print(f"    ❌ Missing field: {field}")
+            return False
+    
+    # Validate todaySales
+    ts = data['todaySales']
+    if not all(k in ts for k in ['count', 'total', 'paidToday']):
+        print(f"    ❌ todaySales missing required fields")
+        return False
+    if any(ts[k] < 0 for k in ['count', 'total', 'paidToday']):
+        print(f"    ❌ todaySales has negative values")
         return False
     
-    result = resp.json()
-    data = result.get("data", [])
-    summary = result.get("summary", {})
-    
-    print(f"✅ Stocks listed: {len(data)} stocks")
-    print(f"   Summary: totalRows={summary.get('totalRows')}, totalWeight={summary.get('totalWeight')}, totalQty={summary.get('totalQty')}")
-    print(f"   Near expiry: {summary.get('nearExpiry')}, Expired: {summary.get('expired')}")
-    
-    # Test FIFO sort
-    time.sleep(0.5)
-    resp2 = requests.get(f"{BASE_URL}/inventory/stocks?sort=FIFO", cookies=session)
-    if resp2.status_code == 200:
-        print(f"✅ FIFO sort working")
-    else:
-        print(f"❌ FIFO sort failed: {resp2.status_code}")
+    # Validate todayProduction
+    tp = data['todayProduction']
+    if not all(k in tp for k in ['count', 'rendemenWeight', 'baseWeight', 'efficiency']):
+        print(f"    ❌ todayProduction missing required fields")
+        return False
+    if any(tp[k] < 0 for k in ['count', 'rendemenWeight', 'baseWeight', 'efficiency']):
+        print(f"    ❌ todayProduction has negative values")
         return False
     
-    # Test FEFO sort
-    time.sleep(0.5)
-    resp3 = requests.get(f"{BASE_URL}/inventory/stocks?sort=FEFO", cookies=session)
-    if resp3.status_code == 200:
-        print(f"✅ FEFO sort working")
-    else:
-        print(f"❌ FEFO sort failed: {resp3.status_code}")
+    # Validate alerts
+    alerts = data['alerts']
+    if not all(k in alerts for k in ['nearExpired', 'expired', 'damaged']):
+        print(f"    ❌ alerts missing required fields")
         return False
+    if 'count' not in alerts['damaged'] or 'weight' not in alerts['damaged']:
+        print(f"    ❌ alerts.damaged missing count or weight")
+        return False
+    
+    # Validate finance
+    finance = data['finance']
+    if not all(k in finance for k in ['totalAR', 'totalAP', 'netPosition']):
+        print(f"    ❌ finance missing required fields")
+        return False
+    
+    # Validate inventoryValue
+    if data['inventoryValue'] < 0:
+        print(f"    ❌ inventoryValue is negative")
+        return False
+    
+    print(f"    ✅ All structure validations passed")
+    print(f"    📊 Today Sales: {ts['count']} orders, Rp {ts['total']:,.0f}")
+    print(f"    📊 Today Production: {tp['count']} batches, {tp['rendemenWeight']:.1f}kg, {tp['efficiency']:.1f}% efficiency")
+    print(f"    📊 Finance: AR={finance['totalAR']:,.0f}, AP={finance['totalAP']:,.0f}, Net={finance['netPosition']:,.0f}")
+    print(f"    📊 Inventory Value: Rp {data['inventoryValue']:,.0f}")
     
     return True
 
-def test_3_stock_detail_traceability(test_data):
-    """Test 3: Stock detail with traceability"""
-    print("\n" + "="*80)
-    print("TEST 3: Stock detail with traceability")
-    print("="*80)
+def validate_purchase_by_supplier(data):
+    """Validate purchase reports by supplier"""
+    print(f"\n  Validating purchase-reports/by-supplier...")
     
-    session = get_session("admin")
-    
-    if not test_data.get("stock_ids"):
-        print("❌ No stock IDs available")
+    if not isinstance(data, list):
+        print(f"    ❌ Expected array, got {type(data)}")
         return False
     
-    stock_id = test_data["stock_ids"][0]
-    resp = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id}", cookies=session)
-    
-    if resp.status_code == 200:
-        data = resp.json().get("data", {})
-        print(f"✅ Stock detail retrieved: {data.get('kodeSimpan')}")
-        print(f"   Product: {data.get('product', {}).get('name')}")
-        print(f"   Cold Storage: {data.get('coldStorage', {}).get('name')}")
-        print(f"   Source: {data.get('sourceType')} - {data.get('sourceBatch')}")
-        print(f"   Inbound Transaction: {data.get('inboundTransaction', {}).get('id')}")
-        print(f"   Children: {len(data.get('children', []))}")
-        print(f"   Parent: {data.get('parent')}")
-        return True
-    else:
-        print(f"❌ Failed to get stock detail: {resp.status_code}")
-        return False
-
-def test_4_transfer_cs(test_data):
-    """Test 4: Transfer between Cold Storages (requires BA)"""
-    print("\n" + "="*80)
-    print("TEST 4: Transfer between Cold Storages")
-    print("="*80)
-    
-    session = get_session("admin")
-    
-    if not test_data.get("stock_ids") or len(test_data["stock_ids"]) < 2:
-        print("❌ Not enough stock IDs available")
-        return False
-    
-    stock_ids_to_transfer = test_data["stock_ids"][:2]
-    
-    payload = {
-        "stockIds": stock_ids_to_transfer,
-        "toColdStorageId": test_data["cs_02_id"],
-        "notes": "pindah gudang"
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/transfer-cs", json=payload, cookies=session)
-    
-    if resp.status_code == 201:
-        data = resp.json().get("data", {})
-        print(f"✅ Transfer CS created: transactionId={data.get('transactionId')}, moved={data.get('moved')}")
-        
-        # Verify stocks moved
-        time.sleep(0.5)
-        resp2 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_ids_to_transfer[0]}", cookies=session)
-        if resp2.status_code == 200:
-            stock = resp2.json().get("data", {})
-            if stock.get("coldStorageId") == test_data["cs_02_id"]:
-                print(f"✅ Verified: Stock moved to CS-02")
-            else:
-                print(f"❌ Stock not moved to CS-02")
+    if len(data) > 0:
+        item = data[0]
+        required = ['supplierId', 'supplier', 'count', 'total', 'paid', 'outstanding']
+        for field in required:
+            if field not in item:
+                print(f"    ❌ Missing field: {field}")
                 return False
         
-        # Test transfer to same CS (should fail)
-        time.sleep(0.5)
-        payload2 = {
-            "stockIds": stock_ids_to_transfer,
-            "toColdStorageId": test_data["cs_02_id"],
-            "notes": "same CS"
-        }
-        resp3 = requests.post(f"{BASE_URL}/inventory/transfer-cs", json=payload2, cookies=session)
-        if resp3.status_code == 400:
-            print(f"✅ Transfer to same CS correctly rejected (400)")
-        else:
-            print(f"❌ Transfer to same CS should return 400, got {resp3.status_code}")
+        if 'code' not in item['supplier'] or 'name' not in item['supplier']:
+            print(f"    ❌ supplier missing code or name")
             return False
         
-        return True
-    else:
-        print(f"❌ Transfer CS failed: {resp.status_code} - {resp.text}")
-        return False
-
-def test_5_transfer_zone(test_data):
-    """Test 5: Transfer between Zones (no BA)"""
-    print("\n" + "="*80)
-    print("TEST 5: Transfer between Zones")
-    print("="*80)
-    
-    session = get_session("admin")
-    
-    if not test_data.get("zone_id"):
-        print("⚠️  No zone available, skipping zone transfer test")
-        return True
-    
-    if not test_data.get("stock_ids"):
-        print("❌ No stock IDs available")
-        return False
-    
-    stock_id = test_data["stock_ids"][0]
-    
-    payload = {
-        "stockIds": [stock_id],
-        "toZoneId": test_data["zone_id"],
-        "notes": "pindah zona"
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/transfer-zone", json=payload, cookies=session)
-    
-    if resp.status_code == 201:
-        data = resp.json().get("data", {})
-        print(f"✅ Transfer Zone created: transactionId={data.get('transactionId')}, moved={data.get('moved')}")
-        
-        # Verify stock zone updated
-        time.sleep(0.5)
-        resp2 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id}", cookies=session)
-        if resp2.status_code == 200:
-            stock = resp2.json().get("data", {})
-            if stock.get("zoneId") == test_data["zone_id"]:
-                print(f"✅ Verified: Stock zone updated")
-            else:
-                print(f"❌ Stock zone not updated")
-                return False
-        
-        return True
-    else:
-        print(f"❌ Transfer Zone failed: {resp.status_code} - {resp.text}")
-        return False
-
-def test_6_split_karung(test_data):
-    """Test 6: Split Karung"""
-    print("\n" + "="*80)
-    print("TEST 6: Split Karung")
-    print("="*80)
-    
-    session = get_session("admin")
-    
-    # Create a new karung stock for splitting
-    payload = {
-        "referenceType": "MANUAL",
-        "coldStorageId": test_data["cs_01_id"],
-        "items": [
-            {
-                "productId": test_data["krk_id"],
-                "weight": 30,
-                "quantity": 1,
-                "packagingType": "karung",
-                "expiredDate": "2025-12-31"
-            }
-        ]
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=session)
-    if resp.status_code != 201:
-        print(f"❌ Failed to create karung for splitting: {resp.status_code}")
-        return False
-    
-    karung_id = resp.json().get("data", {}).get("stockIds", [])[0]
-    print(f"✅ Created karung for splitting: {karung_id}")
-    
-    time.sleep(0.5)
-    
-    # Split karung
-    split_payload = {
-        "stockId": karung_id,
-        "packs": [
-            {"weight": 10, "quantity": 1},
-            {"weight": 10, "quantity": 1},
-            {"weight": 10, "quantity": 1}
-        ]
-    }
-    
-    resp2 = requests.post(f"{BASE_URL}/inventory/split-karung", json=split_payload, cookies=session)
-    
-    if resp2.status_code == 201:
-        data = resp2.json().get("data", {})
-        child_ids = data.get("childStockIds", [])
-        print(f"✅ Karung split: parentStockId={data.get('parentStockId')}, children={len(child_ids)}")
-        
-        # Verify parent status
-        time.sleep(0.5)
-        resp3 = requests.get(f"{BASE_URL}/inventory/stocks/{karung_id}", cookies=session)
-        if resp3.status_code == 200:
-            parent = resp3.json().get("data", {})
-            if parent.get("status") == "opened" and parent.get("openedAt"):
-                print(f"✅ Verified: Parent status='opened', openedAt set")
-            else:
-                print(f"❌ Parent status not updated correctly")
-                return False
-        
-        # Verify children
-        if len(child_ids) == 3:
-            child = resp3.json().get("data", {}).get("children", [])[0] if resp3.json().get("data", {}).get("children") else None
-            if child:
-                resp4 = requests.get(f"{BASE_URL}/inventory/stocks/{child_ids[0]}", cookies=session)
-                if resp4.status_code == 200:
-                    child_data = resp4.json().get("data", {})
-                    if child_data.get("packagingType") == "pack" and child_data.get("parentStockId") == karung_id:
-                        print(f"✅ Verified: Child packagingType='pack', parentStockId correct")
-                    else:
-                        print(f"❌ Child data incorrect")
-                        return False
-        
-        # Try split non-karung (should fail)
-        time.sleep(0.5)
-        resp5 = requests.post(f"{BASE_URL}/inventory/split-karung", json={"stockId": child_ids[0], "packs": [{"weight": 5, "quantity": 1}]}, cookies=session)
-        if resp5.status_code == 400:
-            print(f"✅ Split non-karung correctly rejected (400)")
-        else:
-            print(f"❌ Split non-karung should return 400, got {resp5.status_code}")
-        
-        # Try split already-opened karung (should fail)
-        time.sleep(0.5)
-        resp6 = requests.post(f"{BASE_URL}/inventory/split-karung", json=split_payload, cookies=session)
-        if resp6.status_code == 400:
-            print(f"✅ Split opened karung correctly rejected (400)")
-        else:
-            print(f"❌ Split opened karung should return 400, got {resp6.status_code}")
-        
-        return True
-    else:
-        print(f"❌ Split Karung failed: {resp2.status_code} - {resp2.text}")
-        return False
-
-def test_7_outbound_non_sales(test_data):
-    """Test 7: Outbound Non-Sales (as supervisor)"""
-    print("\n" + "="*80)
-    print("TEST 7: Outbound Non-Sales")
-    print("="*80)
-    
-    session = get_session("supervisor")
-    
-    # Create a stock for outbound
-    admin_session = get_session("admin")
-    payload = {
-        "referenceType": "MANUAL",
-        "coldStorageId": test_data["cs_01_id"],
-        "items": [
-            {
-                "productId": test_data["krk_id"],
-                "weight": 5,
-                "quantity": 1,
-                "packagingType": "karung"
-            }
-        ]
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=admin_session)
-    if resp.status_code != 201:
-        print(f"❌ Failed to create stock for outbound: {resp.status_code}")
-        return False
-    
-    stock_id = resp.json().get("data", {}).get("stockIds", [])[0]
-    print(f"✅ Created stock for outbound: {stock_id}")
-    
-    time.sleep(0.5)
-    
-    # Outbound non-sales
-    outbound_payload = {
-        "stockIds": [stock_id],
-        "subtype": "non_sales",
-        "reason": "Sample QC",
-        "notes": "For lab test"
-    }
-    
-    resp2 = requests.post(f"{BASE_URL}/inventory/outbound", json=outbound_payload, cookies=session)
-    
-    if resp2.status_code == 201:
-        data = resp2.json().get("data", {})
-        if data.get("status") == "confirmed":
-            print(f"✅ Outbound Non-Sales created: status='confirmed' (no approval needed)")
-            print(f"   transactionId={data.get('transactionId')}")
-            
-            # Verify stock status
-            time.sleep(0.5)
-            resp3 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id}", cookies=admin_session)
-            if resp3.status_code == 200:
-                stock = resp3.json().get("data", {})
-                if stock.get("status") == "used":
-                    print(f"✅ Verified: Stock status='used'")
-                else:
-                    print(f"❌ Stock status not updated to 'used'")
+        # Check sorted by total desc
+        if len(data) > 1:
+            for i in range(len(data) - 1):
+                if data[i]['total'] < data[i+1]['total']:
+                    print(f"    ❌ Not sorted by total desc")
                     return False
-            
-            return True
-        else:
-            print(f"❌ Expected status='confirmed', got {data.get('status')}")
-            return False
-    else:
-        print(f"❌ Outbound Non-Sales failed: {resp2.status_code} - {resp2.text}")
-        return False
-
-def test_8_outbound_damage(test_data):
-    """Test 8: Outbound Damage (as supervisor and admin)"""
-    print("\n" + "="*80)
-    print("TEST 8: Outbound Damage")
-    print("="*80)
-    
-    # Test as supervisor (should need approval)
-    supervisor_session = get_session("supervisor")
-    admin_session = get_session("admin")
-    
-    # Create a stock for damage
-    payload = {
-        "referenceType": "MANUAL",
-        "coldStorageId": test_data["cs_01_id"],
-        "items": [
-            {
-                "productId": test_data["krk_id"],
-                "weight": 5,
-                "quantity": 1,
-                "packagingType": "karung"
-            }
-        ]
-    }
-    
-    resp = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=admin_session)
-    if resp.status_code != 201:
-        print(f"❌ Failed to create stock for damage: {resp.status_code}")
-        return False
-    
-    stock_id = resp.json().get("data", {}).get("stockIds", [])[0]
-    print(f"✅ Created stock for damage: {stock_id}")
-    
-    time.sleep(0.5)
-    
-    # Outbound damage as supervisor
-    damage_payload = {
-        "stockIds": [stock_id],
-        "subtype": "damage",
-        "reason": "Rusak transport",
-        "notes": "5kg lost"
-    }
-    
-    resp2 = requests.post(f"{BASE_URL}/inventory/outbound", json=damage_payload, cookies=supervisor_session)
-    
-    if resp2.status_code == 201:
-        data = resp2.json().get("data", {})
-        if data.get("status") == "pending":
-            print(f"✅ Outbound Damage as supervisor: status='pending' (needs approval)")
-            notification = data.get("notification", {})
-            if "supervisor" in notification.get("to", []) and "direktur" in notification.get("to", []):
-                print(f"✅ Notification includes supervisor and direktur")
-            else:
-                print(f"❌ Notification recipients incorrect: {notification.get('to')}")
-                return False
-            
-            # Verify stock NOT yet marked damaged
-            time.sleep(0.5)
-            resp3 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id}", cookies=admin_session)
-            if resp3.status_code == 200:
-                stock = resp3.json().get("data", {})
-                if stock.get("status") != "damaged":
-                    print(f"✅ Verified: Stock NOT yet marked damaged (status={stock.get('status')})")
-                else:
-                    print(f"❌ Stock should not be marked damaged yet")
-                    return False
-        else:
-            print(f"❌ Expected status='pending', got {data.get('status')}")
-            return False
-    else:
-        print(f"❌ Outbound Damage as supervisor failed: {resp2.status_code} - {resp2.text}")
-        return False
-    
-    # Test as admin (should be confirmed immediately)
-    time.sleep(0.5)
-    
-    # Create another stock for admin test
-    resp4 = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=admin_session)
-    if resp4.status_code != 201:
-        print(f"❌ Failed to create stock for admin damage test: {resp4.status_code}")
-        return False
-    
-    stock_id2 = resp4.json().get("data", {}).get("stockIds", [])[0]
-    
-    time.sleep(0.5)
-    
-    damage_payload2 = {
-        "stockIds": [stock_id2],
-        "subtype": "damage",
-        "reason": "Rusak",
-        "notes": "Admin test"
-    }
-    
-    resp5 = requests.post(f"{BASE_URL}/inventory/outbound", json=damage_payload2, cookies=admin_session)
-    
-    if resp5.status_code == 201:
-        data = resp5.json().get("data", {})
-        if data.get("status") == "confirmed":
-            print(f"✅ Outbound Damage as admin: status='confirmed' (immediate)")
-            
-            # Verify stock marked damaged
-            time.sleep(0.5)
-            resp6 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id2}", cookies=admin_session)
-            if resp6.status_code == 200:
-                stock = resp6.json().get("data", {})
-                if stock.get("status") == "damaged":
-                    print(f"✅ Verified: Stock marked 'damaged'")
-                else:
-                    print(f"❌ Stock should be marked damaged, got status={stock.get('status')}")
-                    return False
-            
-            return True
-        else:
-            print(f"❌ Expected status='confirmed', got {data.get('status')}")
-            return False
-    else:
-        print(f"❌ Outbound Damage as admin failed: {resp5.status_code} - {resp5.text}")
-        return False
-
-def test_9_rbac_inventory(test_data):
-    """Test 9: RBAC on inventory operations"""
-    print("\n" + "="*80)
-    print("TEST 9: RBAC on inventory operations")
-    print("="*80)
-    
-    operator_session = get_session("operator")
-    direktur_session = get_session("direktur")
-    
-    # Operator tests
-    print("\n--- Operator RBAC ---")
-    
-    # Operator: POST /outbound -> 403
-    resp1 = requests.post(f"{BASE_URL}/inventory/outbound", json={"stockIds": ["test"], "subtype": "non_sales"}, cookies=operator_session)
-    if resp1.status_code == 403:
-        print(f"✅ Operator POST /outbound: 403 (correctly denied)")
-    else:
-        print(f"❌ Operator POST /outbound should return 403, got {resp1.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # Operator: POST /transfer-cs -> 403
-    resp2 = requests.post(f"{BASE_URL}/inventory/transfer-cs", json={"stockIds": ["test"], "toColdStorageId": "test"}, cookies=operator_session)
-    if resp2.status_code == 403:
-        print(f"✅ Operator POST /transfer-cs: 403 (correctly denied)")
-    else:
-        print(f"❌ Operator POST /transfer-cs should return 403, got {resp2.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # Operator: POST /transfer-zone -> 201 (allowed)
-    # Create a stock first
-    admin_session = get_session("admin")
-    payload = {
-        "referenceType": "MANUAL",
-        "coldStorageId": test_data["cs_01_id"],
-        "items": [{"productId": test_data["krk_id"], "weight": 5, "quantity": 1, "packagingType": "karung"}]
-    }
-    resp_stock = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=admin_session)
-    if resp_stock.status_code == 201:
-        stock_id = resp_stock.json().get("data", {}).get("stockIds", [])[0]
-        time.sleep(0.5)
         
-        if test_data.get("zone_id"):
-            resp3 = requests.post(f"{BASE_URL}/inventory/transfer-zone", json={"stockIds": [stock_id], "toZoneId": test_data["zone_id"]}, cookies=operator_session)
-            if resp3.status_code == 201:
-                print(f"✅ Operator POST /transfer-zone: 201 (allowed)")
-            else:
-                print(f"❌ Operator POST /transfer-zone should return 201, got {resp3.status_code}")
-                return False
-        else:
-            print(f"⚠️  No zone available, skipping operator transfer-zone test")
-    
-    time.sleep(0.5)
-    
-    # Operator: POST /split-karung -> 201 (allowed)
-    # Create a karung
-    resp_karung = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=admin_session)
-    if resp_karung.status_code == 201:
-        karung_id = resp_karung.json().get("data", {}).get("stockIds", [])[0]
-        time.sleep(0.5)
-        
-        resp4 = requests.post(f"{BASE_URL}/inventory/split-karung", json={"stockId": karung_id, "packs": [{"weight": 2.5, "quantity": 1}, {"weight": 2.5, "quantity": 1}]}, cookies=operator_session)
-        if resp4.status_code == 201:
-            print(f"✅ Operator POST /split-karung: 201 (allowed)")
-        else:
-            print(f"❌ Operator POST /split-karung should return 201, got {resp4.status_code}")
-            return False
-    
-    time.sleep(0.5)
-    
-    # Operator: POST /inbound -> 201 (allowed)
-    resp5 = requests.post(f"{BASE_URL}/inventory/inbound", json=payload, cookies=operator_session)
-    if resp5.status_code == 201:
-        print(f"✅ Operator POST /inbound: 201 (allowed)")
+        print(f"    ✅ Structure valid, {len(data)} suppliers")
+        print(f"    📊 Top supplier: {item['supplier']['name']} - {item['count']} POs, Rp {item['total']:,.0f}")
     else:
-        print(f"❌ Operator POST /inbound should return 201, got {resp5.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # Direktur tests
-    print("\n--- Direktur RBAC ---")
-    
-    # Direktur: POST /outbound -> 403
-    resp6 = requests.post(f"{BASE_URL}/inventory/outbound", json={"stockIds": ["test"], "subtype": "non_sales"}, cookies=direktur_session)
-    if resp6.status_code == 403:
-        print(f"✅ Direktur POST /outbound: 403 (correctly denied)")
-    else:
-        print(f"❌ Direktur POST /outbound should return 403, got {resp6.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # Direktur: GET /inventory/stocks -> 200
-    resp7 = requests.get(f"{BASE_URL}/inventory/stocks", cookies=direktur_session)
-    if resp7.status_code == 200:
-        print(f"✅ Direktur GET /inventory/stocks: 200 (allowed)")
-    else:
-        print(f"❌ Direktur GET /inventory/stocks should return 200, got {resp7.status_code}")
-        return False
+        print(f"    ✅ Empty result (no purchase orders yet)")
     
     return True
 
-def test_10_stock_opname(test_data):
-    """Test 10: Stock Opname (full lifecycle)"""
-    print("\n" + "="*80)
-    print("TEST 10: Stock Opname (full lifecycle)")
-    print("="*80)
+def validate_ap_aging(data):
+    """Validate AP aging report"""
+    print(f"\n  Validating purchase-reports/ap-aging...")
     
-    operator_session = get_session("operator")
-    supervisor_session = get_session("supervisor")
-    direktur_session = get_session("direktur")
-    admin_session = get_session("admin")
-    
-    # a) Create opname as operator
-    print("\n--- a) Create opname ---")
-    payload = {
-        "coldStorageId": test_data["cs_01_id"],
-        "opnameDate": "2025-06-16",
-        "notes": "Monthly opname"
-    }
-    
-    resp = requests.post(f"{BASE_URL}/opnames", json=payload, cookies=operator_session)
-    
-    if resp.status_code != 201:
-        print(f"❌ Failed to create opname: {resp.status_code} - {resp.text}")
-        return False
-    
-    opname = resp.json().get("data", {})
-    opname_id = opname.get("id")
-    opname_number = opname.get("opnameNumber")
-    
-    # Verify opname number format
-    import re
-    if re.match(r'^OPN/\d{6}/\d{4}$', opname_number):
-        print(f"✅ Opname created: {opname_number}, status={opname.get('status')}")
-    else:
-        print(f"❌ Opname number format incorrect: {opname_number}")
-        return False
-    
-    if opname.get("status") != "draft":
-        print(f"❌ Expected status='draft', got {opname.get('status')}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # b) GET /opnames - list
-    print("\n--- b) List opnames ---")
-    resp2 = requests.get(f"{BASE_URL}/opnames", cookies=operator_session)
-    if resp2.status_code == 200:
-        opnames = resp2.json().get("data", [])
-        if any(o.get("id") == opname_id for o in opnames):
-            print(f"✅ Opname found in list")
-        else:
-            print(f"❌ Opname not found in list")
+    required = ['buckets', 'details', 'totalOutstanding']
+    for field in required:
+        if field not in data:
+            print(f"    ❌ Missing field: {field}")
             return False
-    else:
-        print(f"❌ Failed to list opnames: {resp2.status_code}")
-        return False
     
-    time.sleep(0.5)
-    
-    # c) GET /opnames/:id - detail
-    print("\n--- c) Get opname detail ---")
-    resp3 = requests.get(f"{BASE_URL}/opnames/{opname_id}", cookies=operator_session)
-    if resp3.status_code == 200:
-        detail = resp3.json().get("data", {})
-        items = detail.get("items", [])
-        print(f"✅ Opname detail retrieved: {len(items)} items")
-        
-        # Verify items have stock + product enriched
-        if items:
-            item = items[0]
-            if item.get("stock") and item.get("product"):
-                print(f"✅ Items enriched with stock and product data")
-            else:
-                print(f"❌ Items not properly enriched")
-                return False
-    else:
-        print(f"❌ Failed to get opname detail: {resp3.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # d) POST /opnames/:id/items - update physical count
-    print("\n--- d) Update physical count ---")
-    if not items or len(items) < 2:
-        print(f"⚠️  Not enough items to test physical count update")
-        return True
-    
-    update_payload = {
-        "items": [
-            {
-                "id": items[0]["id"],
-                "physicalQty": items[0]["systemQty"] - 1,
-                "physicalWeight": items[0]["systemWeight"] - 5
-            },
-            {
-                "id": items[1]["id"],
-                "physicalQty": items[1]["systemQty"],
-                "physicalWeight": items[1]["systemWeight"] - 0.5
-            }
-        ]
-    }
-    
-    resp4 = requests.post(f"{BASE_URL}/opnames/{opname_id}/items", json=update_payload, cookies=operator_session)
-    if resp4.status_code == 200:
-        result = resp4.json().get("data", {})
-        total_delta_weight = result.get("totalDeltaWeight")
-        total_delta_qty = result.get("totalDeltaQty")
-        print(f"✅ Physical count updated: totalDeltaWeight={total_delta_weight}, totalDeltaQty={total_delta_qty}")
-        
-        # Verify delta calculations
-        expected_delta_weight = -5.5
-        expected_delta_qty = -1
-        if abs(total_delta_weight - expected_delta_weight) < 0.1 and total_delta_qty == expected_delta_qty:
-            print(f"✅ Delta calculations correct")
-        else:
-            print(f"❌ Delta calculations incorrect: expected ({expected_delta_weight}, {expected_delta_qty}), got ({total_delta_weight}, {total_delta_qty})")
+    buckets = data['buckets']
+    required_buckets = ['0-30', '31-60', '61-90', '90+']
+    for bucket in required_buckets:
+        if bucket not in buckets:
+            print(f"    ❌ Missing bucket: {bucket}")
             return False
-    else:
-        print(f"❌ Failed to update physical count: {resp4.status_code}")
+    
+    if not isinstance(data['details'], list):
+        print(f"    ❌ details should be array")
         return False
     
-    time.sleep(0.5)
-    
-    # e) POST /opnames/:id/submit
-    print("\n--- e) Submit opname ---")
-    resp5 = requests.post(f"{BASE_URL}/opnames/{opname_id}/submit", json={}, cookies=operator_session)
-    if resp5.status_code == 200:
-        result = resp5.json().get("data", {})
-        notification = result.get("notification", {})
-        print(f"✅ Opname submitted")
-        if "supervisor" in notification.get("to", []) and "direktur" in notification.get("to", []):
-            print(f"✅ Notification includes supervisor and direktur")
-        else:
-            print(f"❌ Notification recipients incorrect: {notification.get('to')}")
-            return False
-    else:
-        print(f"❌ Failed to submit opname: {resp5.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # f) POST /opnames/:id/submit again (should fail)
-    print("\n--- f) Submit again (should fail) ---")
-    resp6 = requests.post(f"{BASE_URL}/opnames/{opname_id}/submit", json={}, cookies=operator_session)
-    if resp6.status_code == 400:
-        print(f"✅ Submit again correctly rejected (400)")
-    else:
-        print(f"❌ Submit again should return 400, got {resp6.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # g) POST /opnames/:id/approve as direktur (should fail)
-    print("\n--- g) Approve as direktur (should fail) ---")
-    resp7 = requests.post(f"{BASE_URL}/opnames/{opname_id}/approve", json={}, cookies=direktur_session)
-    if resp7.status_code == 403:
-        print(f"✅ Approve as direktur correctly rejected (403)")
-    else:
-        print(f"❌ Approve as direktur should return 403, got {resp7.status_code}")
-        return False
-    
-    time.sleep(0.5)
-    
-    # h) POST /opnames/:id/approve as supervisor
-    print("\n--- h) Approve as supervisor ---")
-    resp8 = requests.post(f"{BASE_URL}/opnames/{opname_id}/approve", json={}, cookies=supervisor_session)
-    if resp8.status_code == 200:
-        result = resp8.json().get("data", {})
-        transaction_id = result.get("transactionId")
-        notification = result.get("notification", {})
-        print(f"✅ Opname approved: transactionId={transaction_id}")
-        
-        if "direktur" in notification.get("to", []):
-            print(f"✅ Notification includes direktur")
-        else:
-            print(f"❌ Notification should include direktur: {notification.get('to')}")
-            return False
-        
-        # Verify opname status
-        time.sleep(0.5)
-        resp9 = requests.get(f"{BASE_URL}/opnames/{opname_id}", cookies=supervisor_session)
-        if resp9.status_code == 200:
-            opname_detail = resp9.json().get("data", {})
-            if opname_detail.get("status") == "approved":
-                print(f"✅ Opname status='approved'")
-            else:
-                print(f"❌ Opname status should be 'approved', got {opname_detail.get('status')}")
+    if len(data['details']) > 0:
+        detail = data['details'][0]
+        required_detail = ['poId', 'poNumber', 'orderDate', 'daysOld', 'bucket', 'outstanding', 'supplier']
+        for field in required_detail:
+            if field not in detail:
+                print(f"    ❌ detail missing field: {field}")
                 return False
-        
-        # Verify inventory transaction created
-        time.sleep(0.5)
-        resp10 = requests.get(f"{BASE_URL}/inventory/transactions", cookies=supervisor_session)
-        if resp10.status_code == 200:
-            transactions = resp10.json().get("data", [])
-            opname_tx = next((t for t in transactions if t.get("id") == transaction_id), None)
-            if opname_tx:
-                if opname_tx.get("transactionType") == "OPNAME_ADJ" and opname_tx.get("baType") == "opname_adj":
-                    print(f"✅ Inventory transaction created: type=OPNAME_ADJ, baType=opname_adj")
-                    
-                    # Verify BA number format
-                    ba_number = opname_tx.get("baNumber")
-                    if re.match(r'^BA-OPN/\d{6}/\d{4}$', ba_number):
-                        print(f"✅ BA number format correct: {ba_number}")
-                    else:
-                        print(f"❌ BA number format incorrect: {ba_number}")
-                        return False
-                else:
-                    print(f"❌ Transaction type/baType incorrect: {opname_tx.get('transactionType')}, {opname_tx.get('baType')}")
-                    return False
-            else:
-                print(f"❌ Opname transaction not found")
-                return False
-        
-        # Verify stocks updated (check one of the items)
-        time.sleep(0.5)
-        if items:
-            stock_id = items[0]["stockId"]
-            resp11 = requests.get(f"{BASE_URL}/inventory/stocks/{stock_id}", cookies=supervisor_session)
-            if resp11.status_code == 200:
-                stock = resp11.json().get("data", {})
-                # The physical values should now be in the stock
-                print(f"✅ Stock quantities/weights updated to physical values")
-            else:
-                print(f"❌ Failed to verify stock update: {resp11.status_code}")
-                return False
-    else:
-        print(f"❌ Failed to approve opname: {resp8.status_code} - {resp8.text}")
-        return False
     
-    time.sleep(0.5)
-    
-    # i) Try approve again (should fail)
-    print("\n--- i) Approve again (should fail) ---")
-    resp12 = requests.post(f"{BASE_URL}/opnames/{opname_id}/approve", json={}, cookies=supervisor_session)
-    if resp12.status_code == 400:
-        print(f"✅ Approve again correctly rejected (400)")
-    else:
-        print(f"❌ Approve again should return 400, got {resp12.status_code}")
-        return False
+    print(f"    ✅ Structure valid")
+    print(f"    📊 Buckets: 0-30={buckets['0-30']:,.0f}, 31-60={buckets['31-60']:,.0f}, 61-90={buckets['61-90']:,.0f}, 90+={buckets['90+']:,.0f}")
+    print(f"    📊 Total Outstanding: Rp {data['totalOutstanding']:,.0f}")
     
     return True
 
-def test_11_reject_opname(test_data):
-    """Test 11: Reject opname"""
-    print("\n" + "="*80)
-    print("TEST 11: Reject opname")
-    print("="*80)
+def validate_susut_recap(data):
+    """Validate susut recap report"""
+    print(f"\n  Validating purchase-reports/susut-recap...")
     
-    operator_session = get_session("operator")
-    supervisor_session = get_session("supervisor")
+    required = ['details', 'summary']
+    for field in required:
+        if field not in data:
+            print(f"    ❌ Missing field: {field}")
+            return False
     
-    # Create another opname
-    payload = {
-        "coldStorageId": test_data["cs_01_id"],
-        "opnameDate": "2025-06-17",
-        "notes": "Test reject"
-    }
-    
-    resp = requests.post(f"{BASE_URL}/opnames", json=payload, cookies=operator_session)
-    if resp.status_code != 201:
-        print(f"❌ Failed to create opname: {resp.status_code}")
+    if not isinstance(data['details'], list):
+        print(f"    ❌ details should be array")
         return False
     
-    opname_id = resp.json().get("data", {}).get("id")
-    print(f"✅ Created opname for reject test: {opname_id}")
-    
-    time.sleep(0.5)
-    
-    # Submit
-    resp2 = requests.post(f"{BASE_URL}/opnames/{opname_id}/submit", json={}, cookies=operator_session)
-    if resp2.status_code != 200:
-        print(f"❌ Failed to submit opname: {resp2.status_code}")
+    summary = data['summary']
+    if not all(k in summary for k in ['totalSusut', 'totalValue', 'count']):
+        print(f"    ❌ summary missing required fields")
         return False
     
-    print(f"✅ Opname submitted")
-    
-    time.sleep(0.5)
-    
-    # Reject as supervisor
-    resp3 = requests.post(f"{BASE_URL}/opnames/{opname_id}/reject", json={}, cookies=supervisor_session)
-    if resp3.status_code == 200:
-        print(f"✅ Opname rejected")
-        
-        # Verify status
-        time.sleep(0.5)
-        resp4 = requests.get(f"{BASE_URL}/opnames/{opname_id}", cookies=supervisor_session)
-        if resp4.status_code == 200:
-            opname = resp4.json().get("data", {})
-            if opname.get("status") == "rejected":
-                print(f"✅ Opname status='rejected'")
-                return True
-            else:
-                print(f"❌ Opname status should be 'rejected', got {opname.get('status')}")
+    # Validate details structure
+    if len(data['details']) > 0:
+        detail = data['details'][0]
+        required_detail = ['poNumber', 'method', 'supplier', 'product', 'weightSupplier', 'weightRph', 'susut', 'value']
+        for field in required_detail:
+            if field not in detail:
+                print(f"    ❌ detail missing field: {field}")
                 return False
-    else:
-        print(f"❌ Failed to reject opname: {resp3.status_code}")
-        return False
+        
+        # Verify susut calculation
+        if detail['weightSupplier'] <= detail['weightRph']:
+            print(f"    ❌ weightSupplier should be > weightRph for susut items")
+            return False
+    
+    print(f"    ✅ Structure valid")
+    print(f"    📊 Total Susut: {summary['totalSusut']:.2f}kg, Value: Rp {summary['totalValue']:,.0f}, Count: {summary['count']}")
+    
+    return True
 
-def test_12_inventory_transactions(test_data):
-    """Test 12: GET /api/inventory/transactions"""
-    print("\n" + "="*80)
-    print("TEST 12: GET /api/inventory/transactions")
-    print("="*80)
+def validate_production_batches(data):
+    """Validate production batches report"""
+    print(f"\n  Validating production-reports/batches...")
     
-    session = get_session("admin")
+    required = ['batches', 'summary']
+    for field in required:
+        if field not in data:
+            print(f"    ❌ Missing field: {field}")
+            return False
     
-    resp = requests.get(f"{BASE_URL}/inventory/transactions", cookies=session)
-    
-    if resp.status_code == 200:
-        transactions = resp.json().get("data", [])
-        print(f"✅ Transactions listed: {len(transactions)} transactions")
-        
-        # Verify transaction types
-        types = set(t.get("transactionType") for t in transactions)
-        expected_types = {"IN", "OUT", "TRANSFER_CS", "TRANSFER_ZONE", "NON_SALES", "DAMAGE", "OPNAME_ADJ"}
-        
-        print(f"   Transaction types found: {types}")
-        
-        if types.intersection(expected_types):
-            print(f"✅ Transaction types include expected types")
-        else:
-            print(f"⚠️  No expected transaction types found (may be due to test order)")
-        
-        return True
-    else:
-        print(f"❌ Failed to list transactions: {resp.status_code}")
+    if not isinstance(data['batches'], list):
+        print(f"    ❌ batches should be array")
         return False
+    
+    summary = data['summary']
+    required_summary = ['totalBatches', 'totalBaseWeight', 'totalOutputWeight', 'totalCost', 'avgRendemenPct']
+    for field in required_summary:
+        if field not in summary:
+            print(f"    ❌ summary missing field: {field}")
+            return False
+    
+    if len(data['batches']) > 0:
+        batch = data['batches'][0]
+        required_batch = ['id', 'woNumber', 'mode', 'totalLiveBirdWeight', 'totalRendemenWeight', 'rendemenPct', 'avgHppPerKg', 'totalCost']
+        for field in required_batch:
+            if field not in batch:
+                print(f"    ❌ batch missing field: {field}")
+                return False
+    
+    print(f"    ✅ Structure valid")
+    print(f"    📊 Total Batches: {summary['totalBatches']}, Base Weight: {summary['totalBaseWeight']:.1f}kg")
+    print(f"    📊 Output Weight: {summary['totalOutputWeight']:.1f}kg, Avg Rendemen: {summary['avgRendemenPct']:.1f}%")
+    
+    return True
+
+def validate_production_efficiency(data):
+    """Validate production efficiency report"""
+    print(f"\n  Validating production-reports/efficiency...")
+    
+    if not isinstance(data, list):
+        print(f"    ❌ Expected array, got {type(data)}")
+        return False
+    
+    if len(data) > 0:
+        item = data[0]
+        required = ['productId', 'stage', 'totalWeight', 'avgHpp', 'avgCoef', 'count', 'product']
+        for field in required:
+            if field not in item:
+                print(f"    ❌ Missing field: {field}")
+                return False
+        
+        product = item['product']
+        if not all(k in product for k in ['sku', 'name', 'rendemenCoefficient']):
+            print(f"    ❌ product missing required fields")
+            return False
+        
+        # Check sorted by totalWeight desc
+        if len(data) > 1:
+            for i in range(len(data) - 1):
+                if data[i]['totalWeight'] < data[i+1]['totalWeight']:
+                    print(f"    ❌ Not sorted by totalWeight desc")
+                    return False
+        
+        print(f"    ✅ Structure valid, {len(data)} product-stage combinations")
+        print(f"    📊 Top: {product['name']} ({item['stage']}) - {item['totalWeight']:.1f}kg, {item['count']} batches")
+    else:
+        print(f"    ✅ Empty result (no production outputs yet)")
+    
+    return True
+
+def validate_inventory_by_cs(data):
+    """Validate inventory by cold storage report"""
+    print(f"\n  Validating inventory-reports/by-cs...")
+    
+    if not isinstance(data, list):
+        print(f"    ❌ Expected array, got {type(data)}")
+        return False
+    
+    if len(data) > 0:
+        item = data[0]
+        required = ['coldStorageId', 'coldStorage', 'rowCount', 'totalWeight', 'totalQty', 'utilization']
+        for field in required:
+            if field not in item:
+                print(f"    ❌ Missing field: {field}")
+                return False
+        
+        cs = item['coldStorage']
+        if 'code' not in cs or 'name' not in cs:
+            print(f"    ❌ coldStorage missing code or name")
+            return False
+        
+        print(f"    ✅ Structure valid, {len(data)} cold storages")
+        print(f"    📊 {cs['name']}: {item['totalWeight']:.1f}kg, {item['utilization']:.1f}% utilization")
+    else:
+        print(f"    ✅ Empty result (no inventory yet)")
+    
+    return True
+
+def validate_inventory_by_product(data):
+    """Validate inventory by product report"""
+    print(f"\n  Validating inventory-reports/by-product...")
+    
+    if not isinstance(data, list):
+        print(f"    ❌ Expected array, got {type(data)}")
+        return False
+    
+    if len(data) > 0:
+        item = data[0]
+        required = ['productId', 'product', 'rowCount', 'totalWeight', 'minStock', 'lowStock', 'estimatedValue']
+        for field in required:
+            if field not in item:
+                print(f"    ❌ Missing field: {field}")
+                return False
+        
+        # Check sorted by totalWeight desc
+        if len(data) > 1:
+            for i in range(len(data) - 1):
+                if data[i]['totalWeight'] < data[i+1]['totalWeight']:
+                    print(f"    ❌ Not sorted by totalWeight desc")
+                    return False
+        
+        print(f"    ✅ Structure valid, {len(data)} products")
+        print(f"    📊 Top: {item['product']['name']} - {item['totalWeight']:.1f}kg, Value: Rp {item['estimatedValue']:,.0f}")
+    else:
+        print(f"    ✅ Empty result (no inventory yet)")
+    
+    return True
+
+def validate_near_expired(data):
+    """Validate near expired report"""
+    print(f"\n  Validating inventory-reports/near-expired...")
+    
+    if not isinstance(data, list):
+        print(f"    ❌ Expected array, got {type(data)}")
+        return False
+    
+    if len(data) > 0:
+        item = data[0]
+        required = ['productId', 'product', 'coldStorage', 'daysToExpire', 'expiredDate', 'weight']
+        for field in required:
+            if field not in item:
+                print(f"    ❌ Missing field: {field}")
+                return False
+        
+        print(f"    ✅ Structure valid, {len(data)} items near expiry")
+        print(f"    📊 {item['product']['name']}: {item['weight']:.1f}kg, expires in {item['daysToExpire']} days")
+    else:
+        print(f"    ✅ Empty result (no near-expired items)")
+    
+    return True
+
+def validate_damage_recap(data):
+    """Validate damage recap report"""
+    print(f"\n  Validating inventory-reports/damage-recap...")
+    
+    required = ['items', 'summary']
+    for field in required:
+        if field not in data:
+            print(f"    ❌ Missing field: {field}")
+            return False
+    
+    if not isinstance(data['items'], list):
+        print(f"    ❌ items should be array")
+        return False
+    
+    summary = data['summary']
+    if not all(k in summary for k in ['totalRows', 'totalWeight']):
+        print(f"    ❌ summary missing required fields")
+        return False
+    
+    # Verify only DAMAGE transactions
+    for item in data['items']:
+        if item.get('transactionType') != 'DAMAGE':
+            print(f"    ❌ Found non-DAMAGE transaction")
+            return False
+    
+    print(f"    ✅ Structure valid")
+    print(f"    📊 Total Rows: {summary['totalRows']}, Total Weight (confirmed): {summary['totalWeight']:.1f}kg")
+    
+    return True
 
 def main():
-    """Main test runner"""
-    print("\n" + "="*80)
-    print("INVENTORY MODULE BACKEND TESTING")
-    print("="*80)
-    print(f"Base URL: {BASE_URL}")
-    print(f"Test Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\n" + "="*60)
+    print("BACKEND API TESTING - DASHBOARD + REPORTS + RBAC")
+    print("="*60)
     
     # Login all roles
-    print("\n" + "="*80)
-    print("AUTHENTICATION")
-    print("="*80)
-    for role in CREDENTIALS.keys():
-        if not login(role):
-            print(f"\n❌ CRITICAL: Failed to login as {role}")
+    for role in ["admin", "direktur", "operator"]:
+        session = login(role)
+        if not session:
+            print(f"\n❌ CRITICAL: Failed to login as {role}. Aborting tests.")
             return
+        time.sleep(0.5)  # Delay between logins
+    
+    results = {
+        "total": 0,
+        "passed": 0,
+        "failed": 0
+    }
+    
+    # Test 1: Dashboard Summary - All roles should have access
+    print("\n" + "="*60)
+    print("TEST 1: GET /dashboard/summary - All roles")
+    print("="*60)
+    
+    for role in ["admin", "direktur", "operator"]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/dashboard/summary", 200, f"Dashboard summary as {role}")
+        results["total"] += 1
+        
+        if success and resp:
+            try:
+                data = resp.json().get('data', {})
+                if validate_dashboard_summary(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        else:
+            results["failed"] += 1
+        
         time.sleep(0.5)
     
-    # Prep test data
-    test_data = test_prep()
-    if not test_data:
-        print("\n❌ CRITICAL: Failed to prepare test data")
-        return
+    # Test 2: Purchase Reports - by-supplier (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 2: GET /purchase-reports/by-supplier - RBAC")
+    print("="*60)
     
-    # Run tests
-    results = {}
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/by-supplier", expected, f"Purchase by supplier as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', [])
+                if validate_purchase_by_supplier(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
     
-    tests = [
-        ("1. Inbound (Manual)", test_1_inbound_manual),
-        ("2. List stocks + summary", test_2_list_stocks_summary),
-        ("3. Stock detail with traceability", test_3_stock_detail_traceability),
-        ("4. Transfer between Cold Storages", test_4_transfer_cs),
-        ("5. Transfer between Zones", test_5_transfer_zone),
-        ("6. Split Karung", test_6_split_karung),
-        ("7. Outbound Non-Sales", test_7_outbound_non_sales),
-        ("8. Outbound Damage", test_8_outbound_damage),
-        ("9. RBAC on inventory operations", test_9_rbac_inventory),
-        ("10. Stock Opname (full lifecycle)", test_10_stock_opname),
-        ("11. Reject opname", test_11_reject_opname),
-        ("12. GET /api/inventory/transactions", test_12_inventory_transactions),
-    ]
+    # Test 3: Purchase Reports - ap-aging (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 3: GET /purchase-reports/ap-aging - RBAC")
+    print("="*60)
     
-    for test_name, test_func in tests:
-        try:
-            result = test_func(test_data)
-            results[test_name] = result
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"\n❌ Test {test_name} crashed: {e}")
-            results[test_name] = False
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/ap-aging", expected, f"AP aging as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', {})
+                if validate_ap_aging(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
     
-    # Summary
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
+    # Test 4: Purchase Reports - susut-recap (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 4: GET /purchase-reports/susut-recap - RBAC")
+    print("="*60)
     
-    passed = sum(1 for r in results.values() if r)
-    total = len(results)
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/susut-recap", expected, f"Susut recap as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', {})
+                if validate_susut_recap(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
     
-    for test_name, result in results.items():
-        status = "✅ PASS" if result else "❌ FAIL"
-        print(f"{status} - {test_name}")
+    # Test 5: Production Reports - batches (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 5: GET /production-reports/batches - RBAC")
+    print("="*60)
     
-    print("\n" + "="*80)
-    print(f"TOTAL: {passed}/{total} tests passed ({passed*100//total}%)")
-    print("="*80)
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/production-reports/batches", expected, f"Production batches as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', {})
+                if validate_production_batches(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
     
-    if passed == total:
+    # Test 6: Production Reports - efficiency (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 6: GET /production-reports/efficiency - RBAC")
+    print("="*60)
+    
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/production-reports/efficiency", expected, f"Production efficiency as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', [])
+                if validate_production_efficiency(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
+    
+    # Test 7: Inventory Reports - by-cs (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 7: GET /inventory-reports/by-cs - RBAC")
+    print("="*60)
+    
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/by-cs", expected, f"Inventory by CS as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', [])
+                if validate_inventory_by_cs(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
+    
+    # Test 8: Inventory Reports - by-product (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 8: GET /inventory-reports/by-product - RBAC")
+    print("="*60)
+    
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/by-product", expected, f"Inventory by product as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', [])
+                if validate_inventory_by_product(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
+    
+    # Test 9: Inventory Reports - near-expired (all roles: 200)
+    print("\n" + "="*60)
+    print("TEST 9: GET /inventory-reports/near-expired?days=14 - All roles")
+    print("="*60)
+    
+    for role in ["admin", "direktur", "operator"]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/near-expired?days=14", 200, f"Near expired as {role}")
+        results["total"] += 1
+        
+        if success and resp:
+            try:
+                data = resp.json().get('data', [])
+                if validate_near_expired(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
+    
+    # Test 10: Inventory Reports - damage-recap (admin, direktur: 200, operator: 403)
+    print("\n" + "="*60)
+    print("TEST 10: GET /inventory-reports/damage-recap - RBAC")
+    print("="*60)
+    
+    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
+        print(f"\n--- Testing as {role} ---")
+        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/damage-recap", expected, f"Damage recap as {role}")
+        results["total"] += 1
+        
+        if success and expected == 200 and resp:
+            try:
+                data = resp.json().get('data', {})
+                if validate_damage_recap(data):
+                    results["passed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                print(f"  ❌ Validation error: {str(e)}")
+                results["failed"] += 1
+        elif success:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        
+        time.sleep(0.5)
+    
+    # Final Summary
+    print("\n" + "="*60)
+    print("FINAL TEST SUMMARY")
+    print("="*60)
+    print(f"Total Tests: {results['total']}")
+    print(f"✅ Passed: {results['passed']}")
+    print(f"❌ Failed: {results['failed']}")
+    print(f"Success Rate: {(results['passed']/results['total']*100):.1f}%")
+    print("="*60)
+    
+    if results['failed'] == 0:
         print("\n🎉 ALL TESTS PASSED!")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
+        print(f"\n⚠️  {results['failed']} test(s) failed. Review output above for details.")
 
 if __name__ == "__main__":
     main()
