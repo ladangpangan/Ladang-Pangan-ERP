@@ -27,7 +27,7 @@ const NAV = [
     section: 'Operasional',
     items: [
       { href: '/dashboard/purchase-orders', label: 'Purchase Order', icon: ShoppingCart, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '#', label: 'Work Order', icon: ClipboardList, disabled: true, roles: ['admin','supervisor','direktur','operator'] },
+      { href: '/dashboard/work-orders', label: 'Work Order', icon: ClipboardList, roles: ['admin','supervisor','direktur','operator'] },
       { href: '#', label: 'Inventory', icon: Boxes, disabled: true, roles: ['admin','supervisor','direktur','operator'] },
       { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin','supervisor','direktur','operator'] },
     ],

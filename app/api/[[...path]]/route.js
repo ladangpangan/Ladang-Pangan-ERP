@@ -1219,6 +1219,390 @@ async function handleRoute(request, { params }) {
     }
     // ===================================================================== END SALES
 
+    // =====================================================================
+    // WORK ORDERS (Produksi / Maklon)
+    // =====================================================================
+    const WO_STATUS = ['Draft', 'Disetujui', 'Dalam Proses', 'Selesai', 'Dibatalkan'];
+    const WO_FLOW = {
+      'Draft': ['Disetujui', 'Dibatalkan'],
+      'Disetujui': ['Dalam Proses', 'Dibatalkan'],
+      'Dalam Proses': ['Selesai', 'Dibatalkan'],
+      'Selesai': [],
+      'Dibatalkan': [],
+    };
+    const nextWoNumber = () => {
+      const ym = new Date();
+      const prefix = `WO/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const row = db.select({ c: sql`count(*)` }).from(s.workOrder).where(like(s.workOrder.woNumber, `${prefix}%`)).get();
+      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+    };
+    const nextKodeSimpan = () => {
+      const d = new Date();
+      const prefix = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+      const row = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(like(s.inventoryStock.kodeSimpan, `${prefix}%`)).get();
+      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+    };
+    const recalcWoCosts = (woId) => {
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, woId)).get();
+      const custom = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.woCustomCosts).where(eq(s.woCustomCosts.workOrderId, woId)).get();
+      const customCostTotal = Number(custom?.sum || 0);
+      const maklonCost = wo.mode === 'Maklon' ? Number(wo.maklonRatePerKg || 0) * Number(wo.totalLiveBirdWeight || 0) : 0;
+      const totalCost = Number(wo.baseCost || 0) + maklonCost + customCostTotal;
+      db.update(s.workOrder).set({ maklonCost, customCostTotal, totalCost, updatedAt: new Date() }).where(eq(s.workOrder.id, woId)).run();
+      return { baseCost: wo.baseCost, maklonCost, customCostTotal, totalCost };
+    };
+    const recalcWoOutputs = (woId) => {
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, woId)).get();
+      const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, woId)).all();
+      const totalWeight = outputs.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const totalCost = Number(wo.totalCost || 0);
+      const baseHpp = totalWeight > 0 ? totalCost / totalWeight : 0;
+      for (const out of outputs) {
+        const hppPerKg = baseHpp * Number(out.coefficient || 1);
+        const hppTotal = hppPerKg * Number(out.weight || 0);
+        db.update(s.woOutputs).set({ hppPerKg, hppTotal }).where(eq(s.woOutputs.id, out.id)).run();
+      }
+      db.update(s.workOrder).set({ totalRendemenWeight: totalWeight, updatedAt: new Date() }).where(eq(s.workOrder.id, woId)).run();
+      // Validation check
+      const outs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, woId)).all();
+      const allocated = outs.reduce((a, b) => a + Number(b.hppTotal || 0), 0);
+      return { totalCost, totalWeight, baseHpp, allocated, delta: totalCost - allocated };
+    };
+
+    // GET /work-orders
+    if (route === '/work-orders' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const status = url.searchParams.get('status');
+      const mode = url.searchParams.get('mode');
+      const q = url.searchParams.get('q');
+      const conds = [];
+      if (status && status !== 'all') conds.push(eq(s.workOrder.pipelineStatus, status));
+      if (mode && mode !== 'all') conds.push(eq(s.workOrder.mode, mode));
+      if (q) conds.push(like(s.workOrder.woNumber, `%${q}%`));
+      let query = db.select().from(s.workOrder);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(desc(s.workOrder.createdAt)).all();
+      const enriched = rows.map(r => {
+        const po = r.purchaseOrderId ? db.select({ poNumber: s.purchaseOrder.poNumber, method: s.purchaseOrder.method }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.purchaseOrderId)).get() : null;
+        const maklon = r.maklonSupplierId ? db.select({ code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, r.maklonSupplierId)).get() : null;
+        return { ...r, po, maklon };
+      });
+      return json({ data: enriched });
+    }
+
+    // POST /work-orders - create
+    if (route === '/work-orders' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const body = await request.json();
+      const now = new Date();
+      const id = uuidv4();
+      const startDate = body.startDate ? new Date(body.startDate) : now;
+      const row = {
+        id, woNumber: body.woNumber || nextWoNumber(),
+        purchaseOrderId: body.purchaseOrderId || null,
+        mode: body.mode || 'Internal',
+        maklonSupplierId: body.maklonSupplierId || null,
+        maklonRatePerKg: Number(body.maklonRatePerKg || 0),
+        startDate,
+        baseCost: Number(body.baseCost || 0),
+        pipelineStatus: 'Draft',
+        notes: body.notes || null,
+        createdBy: session.user.email,
+        createdAt: now, updatedAt: now,
+      };
+      db.insert(s.workOrder).values(row).run();
+      recalcWoCosts(id);
+      return json({ data: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get() }, { status: 201 });
+    }
+
+    // GET /work-orders/:id
+    if (route.startsWith('/work-orders/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const po = wo.purchaseOrderId ? db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, wo.purchaseOrderId)).get() : null;
+      const maklon = wo.maklonSupplierId ? db.select().from(s.contacts).where(eq(s.contacts.id, wo.maklonSupplierId)).get() : null;
+      const stages = db.select().from(s.workOrderDetails).where(eq(s.workOrderDetails.workOrderId, id)).orderBy(s.workOrderDetails.recordedAt).all();
+      const stagesWithData = stages.map(st => ({ ...st, rendemenData: st.rendemenData ? JSON.parse(st.rendemenData) : null }));
+      const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).all();
+      const outputsEnriched = outputs.map(o => ({ ...o, product: db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category, rendemenCoefficient: s.products.rendemenCoefficient }).from(s.products).where(eq(s.products.id, o.productId)).get() }));
+      const customCosts = db.select().from(s.woCustomCosts).where(eq(s.woCustomCosts.workOrderId, id)).orderBy(s.woCustomCosts.createdAt).all();
+      return json({ data: { ...wo, po, maklon, stages: stagesWithData, outputs: outputsEnriched, customCosts } });
+    }
+
+    // PATCH /work-orders/:id
+    if (route.startsWith('/work-orders/') && path.length === 2 && (method === 'PATCH' || method === 'PUT')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const existing = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!existing) return err('Not found', 404);
+      if (existing.pipelineStatus === 'Selesai') return err('WO Selesai tidak dapat diubah');
+      const body = await request.json();
+      const upd = {};
+      const fields = ['purchaseOrderId', 'mode', 'maklonSupplierId', 'maklonRatePerKg', 'baseCost', 'notes'];
+      for (const f of fields) if (body[f] !== undefined) upd[f] = body[f];
+      if (body.startDate) upd.startDate = new Date(body.startDate);
+      upd.updatedAt = new Date();
+      db.update(s.workOrder).set(upd).where(eq(s.workOrder.id, id)).run();
+      recalcWoCosts(id);
+      recalcWoOutputs(id);
+      return json({ data: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get() });
+    }
+
+    // DELETE /work-orders/:id (Draft only, admin)
+    if (route.startsWith('/work-orders/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      if (wo.pipelineStatus !== 'Draft') return err('Hanya WO Draft yang dapat dihapus');
+      db.delete(s.workOrder).where(eq(s.workOrder.id, id)).run();
+      return json({ ok: true });
+    }
+
+    // POST /work-orders/:id/status - transition
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'status' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const body = await request.json();
+      const target = body.status;
+      if (!WO_STATUS.includes(target)) return err('Status tidak valid');
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const allowed = WO_FLOW[wo.pipelineStatus] || [];
+      if (!allowed.includes(target)) return err(`Transisi ${wo.pipelineStatus} -> ${target} tidak diizinkan`);
+      const upd = { pipelineStatus: target, updatedAt: new Date() };
+      if (target === 'Disetujui') { upd.approvedBy = session.user.email; upd.approvedAt = new Date(); }
+      db.update(s.workOrder).set(upd).where(eq(s.workOrder.id, id)).run();
+      return json({ data: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get() });
+    }
+
+    // POST /work-orders/:id/arrival - record live bird arrival
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'arrival' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const body = await request.json();
+      const weight = Number(body.totalWeight || 0);
+      const heads = Number(body.totalHeadCount || 0);
+      const ekorMati = Number(body.ekorMati || 0);
+      const bwAvg = heads > 0 ? weight / heads : 0;
+      db.update(s.workOrder).set({
+        totalLiveBirdWeight: weight,
+        totalLiveBirdHeadCount: heads,
+        bwAvg, ekorMati,
+        arrivalRecordedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(s.workOrder.id, id)).run();
+      // Log as stage record
+      db.insert(s.workOrderDetails).values({
+        id: uuidv4(), workOrderId: id, type: 'kedatangan', stageName: 'Kedatangan Live Bird',
+        inputWeight: weight, outputWeight: weight, headCount: heads, bwAvg,
+        rendemenData: JSON.stringify({ ekorMati, notes: body.notes }),
+        recordedBy: session.user.email, recordedAt: new Date(),
+      }).run();
+      recalcWoCosts(id);
+      // Ekor mati handling if linked to PO
+      let ekorMatiImpact = null;
+      if (wo.purchaseOrderId && ekorMati > 0) {
+        const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, wo.purchaseOrderId)).get();
+        if (po) {
+          const impactType = po.method === 'Timbang Ulang' ? 'invoice_deduction' : 'hpp_increase';
+          ekorMatiImpact = { poMethod: po.method, ekorMati, impact: impactType, note: impactType === 'invoice_deduction' ? 'Ekor mati mengurangi invoice supplier (Timbang Ulang)' : 'Ekor mati menaikkan HPP/kg (Timbang Kandang)' };
+        }
+      }
+      return json({ data: { wo: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get(), ekorMatiImpact } });
+    }
+
+    // POST /work-orders/:id/stage - record production stage
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'stage' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const body = await request.json();
+      // type: pemotongan | eviscerasi | karkas | boneless_parting | packing_plastik | abf | panen_abf | packing_karung
+      const stageMap = {
+        pemotongan: 'Stage 1 - Pemotongan',
+        eviscerasi: 'Stage 2 - Eviscerasi',
+        karkas: 'Stage 3 - Karkas',
+        boneless_parting: 'Stage 4 - Boneless/Parting',
+        packing_plastik: 'Packing Plastik',
+        abf: 'ABF',
+        panen_abf: 'Panen ABF',
+        packing_karung: 'Packing Karung',
+      };
+      if (!stageMap[body.type]) return err('Stage type tidak valid');
+      const stageRow = {
+        id: uuidv4(), workOrderId: id, type: body.type, stageName: stageMap[body.type],
+        inputWeight: Number(body.inputWeight || 0),
+        outputWeight: Number(body.outputWeight || 0),
+        headCount: Number(body.headCount || 0),
+        bwAvg: Number(body.bwAvg || 0),
+        rendemenData: body.rendemenData ? JSON.stringify(body.rendemenData) : null,
+        recordedBy: session.user.email, recordedAt: new Date(),
+      };
+      db.insert(s.workOrderDetails).values(stageRow).run();
+      return json({ data: stageRow }, { status: 201 });
+    }
+
+    // POST /work-orders/:id/outputs - upsert final outputs (with coefficient)
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'outputs' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const body = await request.json();
+      if (!Array.isArray(body.outputs)) return err('outputs array required');
+      // Replace all outputs
+      db.delete(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).run();
+      for (const o of body.outputs) {
+        if (!o.productId) continue;
+        db.insert(s.woOutputs).values({
+          id: uuidv4(), workOrderId: id,
+          productId: o.productId,
+          stage: o.stage || 'karkas',
+          weight: Number(o.weight || 0),
+          headCount: Number(o.headCount || 0),
+          coefficient: Number(o.coefficient || 1),
+          isPremium: !!o.isPremium,
+          sizeGradingCode: o.sizeGradingCode || null,
+          notes: o.notes || null,
+        }).run();
+      }
+      const validation = recalcWoOutputs(id);
+      return json({ data: { ok: true, validation } });
+    }
+
+    // POST /work-orders/:id/costs - add custom cost
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'costs' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const body = await request.json();
+      if (!body.name || !body.amount) return err('name & amount required');
+      const row = {
+        id: uuidv4(), workOrderId: id,
+        name: body.name,
+        amount: Number(body.amount),
+        category: body.category || 'lain-lain',
+        notes: body.notes || null,
+        createdBy: session.user.email,
+        createdAt: new Date(),
+      };
+      db.insert(s.woCustomCosts).values(row).run();
+      recalcWoCosts(id);
+      recalcWoOutputs(id);
+      return json({ data: row }, { status: 201 });
+    }
+
+    // DELETE /work-orders/:id/costs/:costId
+    if (route.startsWith('/work-orders/') && path.length === 4 && path[2] === 'costs' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const woId = path[1]; const costId = path[3];
+      db.delete(s.woCustomCosts).where(eq(s.woCustomCosts.id, costId)).run();
+      recalcWoCosts(woId);
+      recalcWoOutputs(woId);
+      return json({ ok: true });
+    }
+
+    // GET /work-orders/:id/hpp - full HPP + validation
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'hpp' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      recalcWoCosts(id);
+      const validation = recalcWoOutputs(id);
+      const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).all();
+      const outputsEnriched = outputs.map(o => ({ ...o, product: db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, o.productId)).get() }));
+      return json({ data: { wo: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get(), outputs: outputsEnriched, validation } });
+    }
+
+    // POST /work-orders/:id/finalize - move outputs to inventory
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'finalize' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      if (wo.pipelineStatus === 'Selesai') return err('WO sudah Selesai');
+      const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).all();
+      if (outputs.length === 0) return err('Belum ada output. Isi outputs dulu.');
+      const body = await request.json().catch(() => ({}));
+      const coldStorageId = body.coldStorageId;
+      const zoneId = body.zoneId || null;
+      if (!coldStorageId) return err('coldStorageId required');
+      // Create inventory transaction
+      const txId = uuidv4();
+      db.insert(s.inventoryTransaction).values({
+        id: txId, transactionDate: new Date(), transactionType: 'IN', referenceId: id, referenceType: 'WO',
+        notes: `Finalize WO ${wo.woNumber} to inventory`, createdBy: session.user.email,
+      }).run();
+      // Insert stock rows
+      for (const o of outputs) {
+        db.insert(s.inventoryStock).values({
+          id: uuidv4(),
+          productId: o.productId,
+          coldStorageId, zoneId,
+          kodeSimpan: nextKodeSimpan(),
+          quantity: Number(o.headCount || 0),
+          weight: Number(o.weight || 0),
+          status: 'active',
+          sourceBatch: id, sourceType: 'WO',
+          transactionId: txId,
+        }).run();
+      }
+      // Transition status
+      db.update(s.workOrder).set({ pipelineStatus: 'Selesai', finalizedAt: new Date(), updatedAt: new Date() }).where(eq(s.workOrder.id, id)).run();
+      return json({ data: { ok: true, outputCount: outputs.length, transactionId: txId } });
+    }
+
+    // GET /work-orders/:id/rendemen-report - actual rendemen %
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'rendemen-report' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get();
+      if (!wo) return err('Not found', 404);
+      const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).all();
+      const baseWeight = Number(wo.totalLiveBirdWeight || 0);
+      const stages = db.select().from(s.workOrderDetails).where(eq(s.workOrderDetails.workOrderId, id)).all();
+      const stagesSummary = stages.map(st => ({
+        type: st.type, stageName: st.stageName, inputWeight: st.inputWeight, outputWeight: st.outputWeight,
+        headCount: st.headCount, bwAvg: st.bwAvg,
+        yieldPct: st.inputWeight > 0 ? (Number(st.outputWeight) / Number(st.inputWeight)) * 100 : 0,
+        rendemenData: st.rendemenData ? JSON.parse(st.rendemenData) : null,
+      }));
+      const outputsWithPct = outputs.map(o => {
+        const p = db.select({ sku: s.products.sku, name: s.products.name }).from(s.products).where(eq(s.products.id, o.productId)).get();
+        return { ...o, product: p, rendemenPct: baseWeight > 0 ? (Number(o.weight) / baseWeight) * 100 : 0 };
+      });
+      const totalOutputWeight = outputs.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const overallRendemenPct = baseWeight > 0 ? (totalOutputWeight / baseWeight) * 100 : 0;
+      return json({ data: {
+        wo, stages: stagesSummary, outputs: outputsWithPct,
+        summary: { baseWeight, totalOutputWeight, overallRendemenPct, ekorMati: wo.ekorMati, totalHeads: wo.totalLiveBirdHeadCount, bwAvg: wo.bwAvg },
+      } });
+    }
+    // ===================================================================== END WO
+
     return err(`Route ${route} not found`, 404);
   } catch (e) {
     console.error('API Error:', e);
