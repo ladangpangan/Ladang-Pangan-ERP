@@ -24,12 +24,12 @@ const NAV = [
     ],
   },
   {
-    section: 'Operasional (segera)',
+    section: 'Operasional',
     items: [
-      { href: '#', label: 'Purchase Order', icon: ShoppingCart, disabled: true, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/purchase-orders', label: 'Purchase Order', icon: ShoppingCart, roles: ['admin','supervisor','direktur','operator'] },
       { href: '#', label: 'Work Order', icon: ClipboardList, disabled: true, roles: ['admin','supervisor','direktur','operator'] },
       { href: '#', label: 'Inventory', icon: Boxes, disabled: true, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '#', label: 'Sales Order', icon: TrendingUp, disabled: true, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin','supervisor','direktur','operator'] },
     ],
   },
 ];

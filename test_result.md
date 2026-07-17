@@ -170,11 +170,240 @@ backend:
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "medium"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: true
         agent: "main"
         comment: "GET/POST/PATCH/DELETE /api/cold-storages (with zone counts and nested zones on detail). GET/POST/PATCH/DELETE /api/zones with cold_storage_id filter."
+
+  - task: "Purchase Orders Module - Full lifecycle"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Complete Purchase module implemented.
+          - PO CRUD with status pipeline: Draft -> Menunggu Konfirmasi -> Diproses -> Dikirim -> Tanda Terima -> Selesai (or Dibatalkan).
+          - PO types: Live Bird, Packaging, Bahan Baku, Produk Jadi, Operasional
+          - Live Bird weighing method locked once set (Timbang Ulang / Timbang Kandang)
+          - Per-item weighing at supplier (kandang) & RPH points via POST /api/purchase-orders/:id/weighings
+          - HPP auto-recalc with proportional additional_cost distribution by weight
+          - Timbang Ulang: susut potong invoice (weight_rph billed); Timbang Kandang: susut naikkan HPP/kg (weight_supplier billed, weight_rph as basis for /kg)
+          - Dropship option with dropship_customer_id (Live Bird only)
+          - GRN: POST /api/purchase-orders/:id/grn (auto-transition Dikirim -> Tanda Terima)
+          - Payments: POST /api/purchase-orders/:id/payments (Transfer/Tunai/QRIS, isDp flag, auto-updates payment_status; Tanda Terima -> Selesai when fully paid)
+          - Returns: POST /api/purchase-orders/:id/returns (resolution: potong_invoice or kirim_pengganti, notif payload included for supervisor+direktur)
+          - HPP breakdown: GET /api/purchase-orders/:id/hpp
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ PURCHASE ORDERS MODULE - ALL TESTS PASSED (13/13)
+          
+          Comprehensive testing completed for Purchase Orders module:
+          
+          1. ✅ Create PO with Timbang Ulang method
+             - PO number format correct (PO/YYYYMM/NNNN)
+             - Total amount calculation correct: (22000*150) + 500000 = 3,800,000
+             - Pipeline status: Draft
+             - Method locked as Timbang Ulang
+          
+          2. ✅ GET /purchase-orders?status=Draft
+             - List filtering works correctly
+             - Supplier enrichment working
+          
+          3. ✅ GET /purchase-orders/:id (detail)
+             - Full structure verified: items[], supplier, grn[], payments[], returns[], outstanding
+             - All relationships properly enriched
+          
+          4. ✅ POST /purchase-orders/:id/weighings
+             - Bulk weighing update working
+             - weightSupplier=150, weightRph=145, susut=5kg recorded correctly
+          
+          5. ✅ GET /purchase-orders/:id/hpp
+             - HPP calculation correct for Timbang Ulang method
+             - weightBilled = weightRph (145kg) ✓
+             - weightActual = 145kg ✓
+             - susut = 5kg ✓
+             - hppPerKg correctly includes proportional additional cost
+          
+          6. ✅ Method lock enforcement
+             - Cannot change method once set (400 error with correct message)
+          
+          7. ✅ Status pipeline transitions
+             - Valid transitions work: Draft -> Menunggu Konfirmasi -> Diproses -> Dikirim ✓
+             - Invalid transitions rejected: Draft -> Selesai (400) ✓
+             - Cannot skip steps in pipeline ✓
+          
+          8. ✅ POST /purchase-orders/:id/grn
+             - GRN number format correct (GRN/YYYYMM/NNNN)
+             - Auto-transition Dikirim -> Tanda Terima working ✓
+          
+          9. ✅ POST /purchase-orders/:id/payments
+             - Partial payment: paidAmount updated, paymentStatus='partial' ✓
+             - Full payment: paymentStatus='paid', auto-transition Tanda Terima -> Selesai ✓
+             - Payment tracking accurate
+          
+          10. ✅ POST /purchase-orders/:id/returns
+              - Return created successfully
+              - Notification payload includes ['supervisor', 'direktur'] ✓
+              - Payment status recalculated with returns
+          
+          11. ✅ Create PO with Timbang Kandang method
+              - Second PO created with different weighing method
+              - HPP calculation correct for Timbang Kandang:
+                * weightBilled = weightSupplier (100kg) ✓
+                * weightActual = weightRph (95kg) ✓
+                * susut = 5kg ✓
+                * hppPerKg higher than unit price due to susut ✓
+          
+          12. ✅ RBAC on Purchase Orders
+              - Operator: cannot create PO (403) ✓
+              - Operator: can update weighings (200) ✓
+              - Operator: can create returns (201) ✓
+              - Operator: cannot create payments (403) ✓
+              - Direktur: can view (200) ✓
+              - Direktur: cannot create (403) ✓
+          
+          13. ✅ DELETE /purchase-orders/:id
+              - Cannot delete non-Draft PO (400) ✓
+              - Can delete Draft PO as admin (200) ✓
+              - Supervisor cannot delete (403) ✓
+          
+          All Purchase Order functionality working correctly including:
+          - Both weighing methods (Timbang Ulang & Timbang Kandang)
+          - HPP calculations with susut handling
+          - Auto-transitions (GRN -> Tanda Terima, Full Payment -> Selesai)
+          - Method locking
+          - RBAC enforcement
+          - Returns with notifications
+
+  - task: "Sales Orders Module - Full lifecycle + Reports"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Complete Sales module implemented.
+          - SO CRUD with pipeline: Draft -> Confirmed -> Packed -> Shipped -> Invoiced (or Cancelled)
+          - Items with discount per item; totals auto-recalc
+          - On status transition to 'Confirmed': creates inventory_transaction OUT record; auto-deducts prepaid balance for subscriber customers
+          - On 'Invoiced': auto-generates invoice number (INV/YYYYMM/NNNN), invoice date, and due date based on TOP
+          - Surat Jalan: POST /api/sales-orders/:id/surat-jalan (auto-transition Packed -> Shipped)
+          - Payments: POST /api/sales-orders/:id/payments (Transfer/Tunai/QRIS, isDp)
+          - Returns: POST /api/sales-orders/:id/returns (potong_invoice or kirim_pengganti, notif payload for supervisor+direktur)
+          - Reports:
+              GET /api/sales-reports/daily?from=&to=
+              GET /api/sales-reports/ar-aging (buckets 0-30/31-60/61-90/90+)
+              GET /api/sales-reports/by-customer
+              GET /api/sales-reports/by-product
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ SALES ORDERS MODULE - ALL TESTS PASSED (10/10)
+          ✅ SALES REPORTS - ALL TESTS PASSED (4/4)
+          
+          === SALES ORDERS TESTING ===
+          
+          1. ✅ Create Sales Order
+             - SO number format correct (SO/YYYYMM/NNNN)
+             - Total calculation correct: 50*40000 - 50000 = 1,950,000
+             - Discount handling working
+             - Pipeline status: Draft
+          
+          2. ✅ GET /sales-orders?status=Draft
+             - List filtering works correctly
+             - Customer enrichment working
+          
+          3. ✅ GET /sales-orders/:id (detail)
+             - Full structure verified: items[], customer, suratJalan[], payments[], returns[], outstanding
+             - All relationships properly enriched
+          
+          4. ✅ Status pipeline transitions + validation
+             - Valid: Draft -> Confirmed ✓
+             - Invalid: Confirmed -> Draft rejected (400) ✓
+             - Invalid: Confirmed -> Shipped (skip Packed) rejected (400) ✓
+             - Valid: Confirmed -> Packed ✓
+             - Pipeline enforcement working correctly
+          
+          5. ✅ Subscriber prepaid deduction
+             - SO created for subscriber customer (CUST-002)
+             - Initial balance: 25,000,000
+             - SO total: 1,000,000
+             - After confirmation: balance = 24,000,000 ✓
+             - Prepaid deduction working correctly
+          
+          6. ✅ POST /sales-orders/:id/surat-jalan
+             - SJ number format correct (SJ/YYYYMM/NNNN)
+             - Auto-transition Packed -> Shipped working ✓
+             - Driver and vehicle info recorded
+          
+          7. ✅ Transition to Invoiced + auto-generate
+             - Invoice number auto-generated (INV/YYYYMM/NNNN) ✓
+             - Invoice date auto-set ✓
+             - Due date calculated from TOP 14 (14 days from invoice date) ✓
+          
+          8. ✅ POST /sales-orders/:id/payments
+             - Partial payment: paymentStatus='partial' ✓
+             - Full payment: paymentStatus='paid' ✓
+             - Payment tracking accurate
+          
+          9. ✅ POST /sales-orders/:id/returns
+             - Return created successfully
+             - Notification payload includes ['supervisor', 'direktur'] ✓
+             - Payment status recalculated with returns
+          
+          10. ✅ RBAC on Sales Orders
+              - Operator: cannot create SO (403) ✓
+              - Operator: can create returns (201) ✓
+              - Operator: cannot create payments (403) ✓
+              - Direktur: can view (200) ✓
+              - Direktur: cannot create (403) ✓
+          
+          === SALES REPORTS TESTING ===
+          
+          1. ✅ GET /sales-reports/daily?from=&to=
+             - Structure correct: {rows[], totalRevenue, totalOrders}
+             - Excludes Cancelled SOs
+             - Daily aggregation working
+             - Test data: 2 orders, 2,950,000 revenue
+          
+          2. ✅ GET /sales-reports/ar-aging
+             - Structure correct: {buckets{}, details[], totalOutstanding}
+             - All buckets present: 0-30, 31-60, 61-90, 90+
+             - Only includes Invoiced SOs with outstanding > 0
+             - Aging calculation based on invoice date
+          
+          3. ✅ GET /sales-reports/by-customer
+             - Returns array sorted by total desc
+             - Each row has: customer{code, name, isSubscriber}, count, total, paid, outstanding
+             - Customer aggregation working
+             - Test data: 2 customers
+          
+          4. ✅ GET /sales-reports/by-product
+             - Returns array sorted by totalRevenue desc
+             - Each row has: product{sku, name, unit, category}, totalQty, totalWeight, orderCount, totalRevenue
+             - Product aggregation working
+             - Excludes Cancelled SOs
+             - Test data: 1 product (Karkas)
+          
+          All Sales Order functionality working correctly including:
+          - Full pipeline with validation
+          - Subscriber prepaid deduction
+          - Auto-transitions (SJ -> Shipped, Invoiced auto-numbers)
+          - Invoice number & due date generation
+          - RBAC enforcement
+          - Returns with notifications
+          - All 4 sales reports with correct aggregations
 
 frontend:
   - task: "Login page & dashboard shell"
@@ -203,16 +432,16 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "0.1"
-  test_sequence: 1
+  version: "0.2"
+  test_sequence: 3
+  last_test_date: "2026-07-17"
+  total_backend_tests_run: 27
+  backend_tests_passed: 27
+  backend_tests_failed: 0
 
 test_plan:
   current_focus:
-    - "Auth foundation (Better Auth + Drizzle + SQLite)"
-    - "Seed endpoint (creates 4 role users + demo master data)"
-    - "Contacts CRUD + Search + History + RBAC"
-    - "Products CRUD"
-    - "Cold Storage + Zones CRUD"
+    - "Backend testing complete - Purchase Orders & Sales Orders modules fully tested"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -220,24 +449,106 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: |
-      Phase 1 (foundation) + Module 1 (Contacts enhanced) implemented.
-      Please test all backend endpoints under /api:
-      1. POST /api/seed - should create 4 users + demo master data (idempotent, safe to call twice).
-      2. POST /api/auth/sign-in/email with {email, password} for each of 4 roles:
-         - admin@lpi.co.id / admin123
-         - supervisor@lpi.co.id / super123
-         - direktur@lpi.co.id / direktur123
-         - operator@lpi.co.id / operator123
-      3. Contacts RBAC:
-         - Admin: GET, POST, PATCH, DELETE all allowed
-         - Supervisor: GET, POST, PATCH allowed; DELETE returns 403
-         - Direktur: GET allowed; POST/PATCH/DELETE return 403
-         - Operator: GET/POST/PATCH/DELETE all return 403
+      NEW MODULES to test: Purchase Orders + Sales Orders + Sales Reports.
+      Login as admin@lpi.co.id / admin123 (or supervisor / operator / direktur for RBAC checks).
+      All routes are session-cookie based via Better Auth.
+
+      === PURCHASE ORDERS ===
+      1. POST /api/purchase-orders with body:
+         { "supplierId": "<contact-id-of-SUP-001>", "poType": "Live Bird", "method": "Timbang Ulang",
+           "orderDate": "2025-06-15", "additionalCost": 500000, "paymentTerm": "TOP 14",
+           "items": [{"productId":"<LB-001-id>","quantity":100,"weight":150,"unitPrice":22000}] }
+         -> Expect 201 with poNumber like PO/YYYYMM/0001. Draft status.
+      2. GET /api/purchase-orders?status=Draft -> should include just-created PO.
+      3. GET /api/purchase-orders/:id -> full detail with items array, supplier, grn=[], payments=[], returns=[], outstanding calculated.
+      4. POST /api/purchase-orders/:id/weighings with items:[{id:<itemid>,weightSupplier:150,weightRph:145,headSupplier:100,headRph:100}]
+         -> Expect HPP recalc. weightRph billed (Timbang Ulang), susut=5kg.
+      5. POST /api/purchase-orders/:id/status body: {"status":"Menunggu Konfirmasi"} -> 200
+         Continue chain: -> Diproses -> Dikirim.
+         Invalid transition (e.g. Draft->Selesai directly) should return 400.
+      6. POST /api/purchase-orders/:id/grn body: {"receivedDate":"2025-06-16","notes":"received"} -> 201, GRN number generated, PO auto -> Tanda Terima.
+      7. POST /api/purchase-orders/:id/payments body: {"amount":3200000,"method":"Transfer","reference":"BCA-001","isDp":true}
+         -> 201. Check paidAmount updated. Then another payment for remaining amount -> paymentStatus 'paid' and pipelineStatus auto -> Selesai.
+      8. POST /api/purchase-orders/:id/returns body:{"reason":"5kg rusak","resolution":"potong_invoice","totalAmount":110000,"totalWeight":5} -> 201, notification payload returned.
+      9. GET /api/purchase-orders/:id/hpp -> breakdown per item with weightBilled, weightActual, susut, hppPerKg.
+     10. Test Timbang Kandang variant: create separate PO with method Timbang Kandang, verify HPP uses weight_supplier as billed but weight_rph as actual for /kg calc.
+     11. RBAC: as operator, POST /api/purchase-orders should return 403; POST /purchase-orders/:id/weighings should be allowed; POST /returns allowed; POST /payments should return 403.
+     12. DELETE /api/purchase-orders/:id (Draft only, admin only).
+
+      === SALES ORDERS ===
+      1. POST /api/sales-orders body: { "customerId":"<CUST-001-id>", "orderDate":"2025-06-15",
+         "paymentTerm":"TOP 14", "items":[{"productId":"<KRK-001-id>","quantity":50,"weight":50,"unitPrice":40000,"discount":50000}] }
+         -> 201 with soNumber SO/YYYYMM/0001. totalAmount = 50*40000 - 50000 = 1950000. Draft.
+      2. GET /api/sales-orders?status=Draft -> should list it.
+      3. GET /api/sales-orders/:id -> detail with items enriched, customer, suratJalan=[], payments=[], returns=[], outstanding.
+      4. Status pipeline: POST /api/sales-orders/:id/status {"status":"Confirmed"}
+         -> Should create inventory_transaction OUT (audit only). Should try to deduct prepaid balance for subscriber (test both regular CUST-001 and subscriber CUST-002 - CUST-002 has prepaidBalance 25M; after confirming SO of 1.95M, prepaidBalance should become ~23.05M).
+      5. Continue: Confirmed -> Packed -> Shipped -> Invoiced. On Invoiced: verify invoiceNumber (INV/YYYYMM/0001) and dueDate auto-set based on TOP.
+      6. POST /api/sales-orders/:id/surat-jalan {"deliveryDate":"2025-06-16","driverName":"Budi","vehicleNumber":"B 123 XY"} -> 201.
+         When status Packed, this auto-transitions to Shipped.
+      7. POST /api/sales-orders/:id/payments {"amount":1950000,"method":"Transfer","reference":"BCA-002"} -> 201, paymentStatus 'paid'.
+      8. POST /api/sales-orders/:id/returns {"reason":"Karkas rusak","resolution":"potong_invoice","totalAmount":100000,"totalWeight":2} -> 201 with notification payload.
+      9. RBAC: operator POST /sales-orders -> 403. Direktur POST /returns -> 403. Direktur GET everywhere -> 200.
+
+      === REPORTS ===
+      1. GET /api/sales-reports/daily?from=2025-06-01&to=2025-06-30 -> {rows:[{date,count,total}], totalRevenue, totalOrders}
+      2. GET /api/sales-reports/ar-aging -> buckets 0-30/31-60/61-90/90+ + details of outstanding Invoiced SOs.
+      3. GET /api/sales-reports/by-customer -> aggregated per customer, sorted by total.
+      4. GET /api/sales-reports/by-product -> aggregated per product, joined with SO to exclude Cancelled.
+
+      Please verify invalid transitions get 400, unauthenticated requests get 401, and RBAC violations get 403.
       4. GET /api/contacts?type=Supplier and ?q=Sejahtera should filter correctly.
       5. GET /api/contacts/:id/history should return {contact, salesOrders, purchaseOrders, workOrders, summary}.
       6. Products CRUD (admin/supervisor for write, all authenticated for GET).
       7. Cold Storages + Zones CRUD (admin/supervisor for write).
       Use cookies-based session (better-auth sets a cookie after sign-in). Ensure cookies are passed on subsequent requests.
+  
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE - ALL 27 TESTS PASSED
+      
+      Comprehensive backend testing completed for Purchase Orders, Sales Orders, and Sales Reports modules.
+      
+      === TEST SUMMARY ===
+      Purchase Orders: 13/13 tests passed ✅
+      Sales Orders: 10/10 tests passed ✅
+      Sales Reports: 4/4 tests passed ✅
+      
+      TOTAL: 27/27 tests passed (100%)
+      
+      === KEY FINDINGS ===
+      
+      ✅ Purchase Orders Module:
+      - Both weighing methods (Timbang Ulang & Timbang Kandang) working correctly
+      - HPP calculations accurate with proper susut handling
+      - Auto-transitions working: GRN -> Tanda Terima, Full Payment -> Selesai
+      - Method locking enforced correctly
+      - Status pipeline validation working (invalid transitions rejected with 400)
+      - RBAC correctly enforced for all roles
+      - Returns with notification payload to supervisor & direktur
+      - DELETE restricted to Draft POs and admin only
+      
+      ✅ Sales Orders Module:
+      - Full pipeline working with proper validation
+      - Subscriber prepaid balance deduction working correctly (25M -> 24M after 1M SO)
+      - Auto-transitions: Surat Jalan -> Shipped, Invoiced auto-generates invoice number
+      - Invoice number format correct (INV/YYYYMM/NNNN)
+      - Due date calculation from TOP working (TOP 14 = invoice date + 14 days)
+      - RBAC correctly enforced for all roles
+      - Returns with notification payload to supervisor & direktur
+      - Payment tracking accurate (partial -> paid)
+      
+      ✅ Sales Reports:
+      - Daily report: correct aggregation, excludes Cancelled SOs
+      - AR Aging: all 4 buckets working, only includes Invoiced SOs with outstanding
+      - By Customer: correct aggregation with customer details
+      - By Product: correct aggregation, excludes Cancelled SOs
+      
+      === NO ISSUES FOUND ===
+      All backend APIs are working correctly. No critical or major issues detected.
+      
+      Note: Initial test run encountered 502 errors due to server restart (memory threshold).
+      Retry tests confirmed all functionality working correctly.
 
 
 user_problem_statement: "Build a complete ERP for PT Ladang Pangan Indonesia based on PRD. Stack: Next.js 14 App Router + Tailwind + shadcn/ui + Drizzle ORM + SQLite + Better Auth. Phase 1 = (1) DB schema Section 6 of PRD, (2) Authentication with roles admin/supervisor/direktur/operator, (3) Master data module (contacts, products, cold storage, zones). Do NOT build other modules yet."
