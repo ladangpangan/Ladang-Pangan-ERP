@@ -9,7 +9,8 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
-  Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings
+  Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
+  FileBarChart, Smartphone, UserCog
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -30,6 +31,28 @@ const NAV = [
       { href: '/dashboard/work-orders', label: 'Work Order', icon: ClipboardList, roles: ['admin','supervisor','direktur','operator'] },
       { href: '/dashboard/inventory', label: 'Inventory', icon: Boxes, roles: ['admin','supervisor','direktur','operator'] },
       { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin','supervisor','direktur','operator'] },
+    ],
+  },
+  {
+    section: 'Laporan',
+    items: [
+      { href: '/dashboard/sales-reports', label: 'Laporan Penjualan', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/production-reports', label: 'Laporan Produksi', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+    ],
+  },
+  {
+    section: 'Tally App (Mobile)',
+    items: [
+      { href: '/tally', label: 'Produksi', icon: Smartphone, roles: ['admin','supervisor','operator'] },
+      { href: '/tally/inbound', label: 'Inbound Gudang', icon: Smartphone, roles: ['admin','supervisor','operator'] },
+    ],
+  },
+  {
+    section: 'Sistem',
+    items: [
+      { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['admin','direktur'] },
     ],
   },
 ];

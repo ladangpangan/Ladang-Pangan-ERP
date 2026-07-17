@@ -1,726 +1,814 @@
 #!/usr/bin/env python3
 """
-Backend API Testing Script for Dashboard Summary + Purchase/Production/Inventory Reports
-Tests all endpoints with RBAC verification for admin, direktur, and operator roles.
+Backend API Testing for User Management Module
+Tests all User Management endpoints with comprehensive RBAC verification
 """
 
 import requests
-import time
 import json
+import time
 from datetime import datetime
 
-# Base URL from .env
+# Configuration
 BASE_URL = "https://pangan-system.preview.emergentagent.com/api"
+AUTH_URL = "https://pangan-system.preview.emergentagent.com/api/auth/sign-in/email"
 
 # Test credentials
 CREDENTIALS = {
-    "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
-    "direktur": {"email": "direktur@lpi.co.id", "password": "direktur123"},
-    "operator": {"email": "operator@lpi.co.id", "password": "operator123"},
+    'admin': {'email': 'admin@lpi.co.id', 'password': 'admin123'},
+    'supervisor': {'email': 'supervisor@lpi.co.id', 'password': 'super123'},
+    'direktur': {'email': 'direktur@lpi.co.id', 'password': 'direktur123'},
+    'operator': {'email': 'operator@lpi.co.id', 'password': 'operator123'}
 }
 
-# Store sessions for each role
+# Global session storage
 sessions = {}
+test_user_ids = []  # Track created test users for cleanup
 
 def login(role):
     """Login and store session cookies"""
-    print(f"\n{'='*60}")
-    print(f"Logging in as {role}...")
-    print(f"{'='*60}")
+    if role in sessions:
+        return sessions[role]
     
-    session = requests.Session()
     creds = CREDENTIALS[role]
+    print(f"\n🔐 Logging in as {role}...")
     
     try:
-        # Login via Better Auth
-        resp = session.post(
-            f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
-            json={"email": creds["email"], "password": creds["password"]},
-            headers={"Content-Type": "application/json"},
-            timeout=10
-        )
-        
+        resp = requests.post(AUTH_URL, json=creds, timeout=10)
         if resp.status_code == 200:
+            sessions[role] = resp.cookies
             print(f"✅ Login successful for {role}")
-            sessions[role] = session
-            return session
+            return resp.cookies
         else:
-            print(f"❌ Login failed for {role}: {resp.status_code} - {resp.text[:200]}")
+            print(f"❌ Login failed for {role}: {resp.status_code} - {resp.text}")
             return None
     except Exception as e:
         print(f"❌ Login error for {role}: {str(e)}")
         return None
 
-def test_endpoint(session, role, method, endpoint, expected_status, description):
-    """Test a single endpoint"""
-    url = f"{BASE_URL}{endpoint}"
+def test_get_users():
+    """Test GET /api/users with different roles"""
+    print("\n" + "="*80)
+    print("TEST 1: GET /api/users - List Users")
+    print("="*80)
     
+    # Test 1.1: Admin can list users (200)
+    print("\n[1.1] Admin listing users...")
     try:
-        if method == "GET":
-            resp = session.get(url, timeout=10)
-        elif method == "POST":
-            resp = session.post(url, json={}, timeout=10)
+        cookies = login('admin')
+        resp = requests.get(f"{BASE_URL}/users", cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'data' in data and isinstance(data['data'], list):
+                print(f"✅ Admin: 200 - Found {len(data['data'])} users")
+                # Store admin ID for later tests
+                admin_user = [u for u in data['data'] if u['email'] == 'admin@lpi.co.id']
+                if admin_user:
+                    global admin_id
+                    admin_id = admin_user[0]['id']
+                    print(f"   Admin ID: {admin_id}")
+            else:
+                print(f"❌ Admin: Invalid response structure - {data}")
         else:
-            resp = session.request(method, url, timeout=10)
-        
-        status = resp.status_code
-        success = status == expected_status
-        
-        if success:
-            print(f"  ✅ {description}: {status}")
-            return True, resp
-        else:
-            print(f"  ❌ {description}: Expected {expected_status}, got {status}")
-            if status >= 400:
-                print(f"     Error: {resp.text[:200]}")
-            return False, resp
+            print(f"❌ Admin: {resp.status_code} - {resp.text}")
     except Exception as e:
-        print(f"  ❌ {description}: Exception - {str(e)}")
-        return False, None
+        print(f"❌ Admin test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 1.2: Direktur can list users (200)
+    print("\n[1.2] Direktur listing users...")
+    try:
+        cookies = login('direktur')
+        resp = requests.get(f"{BASE_URL}/users", cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'data' in data and isinstance(data['data'], list):
+                print(f"✅ Direktur: 200 - Found {len(data['data'])} users")
+            else:
+                print(f"❌ Direktur: Invalid response structure")
+        else:
+            print(f"❌ Direktur: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Direktur test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 1.3: Supervisor cannot list users (403)
+    print("\n[1.3] Supervisor listing users (should be 403)...")
+    try:
+        cookies = login('supervisor')
+        resp = requests.get(f"{BASE_URL}/users", cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Supervisor: 403 - Correctly denied")
+        else:
+            print(f"❌ Supervisor: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Supervisor test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 1.4: Operator cannot list users (403)
+    print("\n[1.4] Operator listing users (should be 403)...")
+    try:
+        cookies = login('operator')
+        resp = requests.get(f"{BASE_URL}/users", cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Operator: 403 - Correctly denied")
+        else:
+            print(f"❌ Operator: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Operator test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 1.5: Unauthenticated request (401)
+    print("\n[1.5] Unauthenticated request (should be 401)...")
+    try:
+        resp = requests.get(f"{BASE_URL}/users", timeout=10)
+        if resp.status_code == 401:
+            print(f"✅ Unauthenticated: 401 - Correctly denied")
+        else:
+            print(f"❌ Unauthenticated: Expected 401, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Unauthenticated test error: {str(e)}")
 
-def validate_dashboard_summary(data):
-    """Validate dashboard summary structure and data"""
-    print("\n  Validating dashboard summary structure...")
+def test_create_user():
+    """Test POST /api/users - Create new user"""
+    print("\n" + "="*80)
+    print("TEST 2: POST /api/users - Create User")
+    print("="*80)
     
-    required_fields = ['todaySales', 'activeWo', 'todayProduction', 'alerts', 'finance', 'inventoryValue']
-    for field in required_fields:
-        if field not in data:
-            print(f"    ❌ Missing field: {field}")
-            return False
+    # Test 2.1: Happy path - Admin creates operator user
+    print("\n[2.1] Admin creating test user (happy path)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'email': 'test1@lpi.co.id',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 201:
+            data = resp.json()
+            if 'data' in data and 'id' in data['data']:
+                test_user_ids.append(data['data']['id'])
+                print(f"✅ Admin: 201 - User created successfully")
+                print(f"   User ID: {data['data']['id']}")
+                print(f"   Email: {data['data']['email']}")
+                print(f"   Role: {data['data']['role']}")
+            else:
+                print(f"❌ Admin: Invalid response structure - {data}")
+        else:
+            print(f"❌ Admin: Expected 201, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Admin create test error: {str(e)}")
     
-    # Validate todaySales
-    ts = data['todaySales']
-    if not all(k in ts for k in ['count', 'total', 'paidToday']):
-        print(f"    ❌ todaySales missing required fields")
-        return False
-    if any(ts[k] < 0 for k in ['count', 'total', 'paidToday']):
-        print(f"    ❌ todaySales has negative values")
-        return False
+    time.sleep(0.5)
     
-    # Validate todayProduction
-    tp = data['todayProduction']
-    if not all(k in tp for k in ['count', 'rendemenWeight', 'baseWeight', 'efficiency']):
-        print(f"    ❌ todayProduction missing required fields")
-        return False
-    if any(tp[k] < 0 for k in ['count', 'rendemenWeight', 'baseWeight', 'efficiency']):
-        print(f"    ❌ todayProduction has negative values")
-        return False
+    # Test 2.2: Missing name field (400)
+    print("\n[2.2] Missing name field (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'email': 'test2@lpi.co.id',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            print(f"✅ Missing name: 400 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Missing name: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Missing name test error: {str(e)}")
     
-    # Validate alerts
-    alerts = data['alerts']
-    if not all(k in alerts for k in ['nearExpired', 'expired', 'damaged']):
-        print(f"    ❌ alerts missing required fields")
-        return False
-    if 'count' not in alerts['damaged'] or 'weight' not in alerts['damaged']:
-        print(f"    ❌ alerts.damaged missing count or weight")
-        return False
+    time.sleep(0.5)
     
-    # Validate finance
-    finance = data['finance']
-    if not all(k in finance for k in ['totalAR', 'totalAP', 'netPosition']):
-        print(f"    ❌ finance missing required fields")
-        return False
+    # Test 2.3: Missing email field (400)
+    print("\n[2.3] Missing email field (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            print(f"✅ Missing email: 400 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Missing email: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Missing email test error: {str(e)}")
     
-    # Validate inventoryValue
-    if data['inventoryValue'] < 0:
-        print(f"    ❌ inventoryValue is negative")
-        return False
+    time.sleep(0.5)
     
-    print(f"    ✅ All structure validations passed")
-    print(f"    📊 Today Sales: {ts['count']} orders, Rp {ts['total']:,.0f}")
-    print(f"    📊 Today Production: {tp['count']} batches, {tp['rendemenWeight']:.1f}kg, {tp['efficiency']:.1f}% efficiency")
-    print(f"    📊 Finance: AR={finance['totalAR']:,.0f}, AP={finance['totalAP']:,.0f}, Net={finance['netPosition']:,.0f}")
-    print(f"    📊 Inventory Value: Rp {data['inventoryValue']:,.0f}")
+    # Test 2.4: Missing password field (400)
+    print("\n[2.4] Missing password field (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'email': 'test3@lpi.co.id',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            print(f"✅ Missing password: 400 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Missing password: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Missing password test error: {str(e)}")
     
-    return True
+    time.sleep(0.5)
+    
+    # Test 2.5: Missing role field (400)
+    print("\n[2.5] Missing role field (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'email': 'test4@lpi.co.id',
+            'password': 'test123'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            print(f"✅ Missing role: 400 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Missing role: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Missing role test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.6: Password < 6 chars (400)
+    print("\n[2.6] Password < 6 chars (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'email': 'test5@lpi.co.id',
+            'password': 'abc',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if '6' in error_msg or 'minimal' in error_msg.lower():
+                print(f"✅ Short password: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Short password: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Short password: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Short password test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.7: Invalid role (400)
+    print("\n[2.7] Invalid role 'hacker' (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User',
+            'email': 'test6@lpi.co.id',
+            'password': 'test123',
+            'role': 'hacker'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if 'role' in error_msg.lower():
+                print(f"✅ Invalid role: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Invalid role: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Invalid role: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Invalid role test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.8: Duplicate email (400)
+    print("\n[2.8] Duplicate email (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {
+            'name': 'Test User Duplicate',
+            'email': 'test1@lpi.co.id',  # Same as 2.1
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if 'email' in error_msg.lower() or 'terdaftar' in error_msg.lower():
+                print(f"✅ Duplicate email: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Duplicate email: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Duplicate email: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Duplicate email test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.9: Supervisor cannot create user (403)
+    print("\n[2.9] Supervisor creating user (should be 403)...")
+    try:
+        cookies = login('supervisor')
+        payload = {
+            'name': 'Test User',
+            'email': 'test7@lpi.co.id',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Supervisor: 403 - Correctly denied")
+        else:
+            print(f"❌ Supervisor: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Supervisor test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.10: Direktur cannot create user (403)
+    print("\n[2.10] Direktur creating user (should be 403)...")
+    try:
+        cookies = login('direktur')
+        payload = {
+            'name': 'Test User',
+            'email': 'test8@lpi.co.id',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Direktur: 403 - Correctly denied")
+        else:
+            print(f"❌ Direktur: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Direktur test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 2.11: Operator cannot create user (403)
+    print("\n[2.11] Operator creating user (should be 403)...")
+    try:
+        cookies = login('operator')
+        payload = {
+            'name': 'Test User',
+            'email': 'test9@lpi.co.id',
+            'password': 'test123',
+            'role': 'operator'
+        }
+        resp = requests.post(f"{BASE_URL}/users", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Operator: 403 - Correctly denied")
+        else:
+            print(f"❌ Operator: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Operator test error: {str(e)}")
 
-def validate_purchase_by_supplier(data):
-    """Validate purchase reports by supplier"""
-    print(f"\n  Validating purchase-reports/by-supplier...")
+def test_update_user():
+    """Test PATCH /api/users/:id - Update user"""
+    print("\n" + "="*80)
+    print("TEST 3: PATCH /api/users/:id - Update User")
+    print("="*80)
     
-    if not isinstance(data, list):
-        print(f"    ❌ Expected array, got {type(data)}")
-        return False
+    if not test_user_ids:
+        print("❌ No test user available for update tests")
+        return
     
-    if len(data) > 0:
-        item = data[0]
-        required = ['supplierId', 'supplier', 'count', 'total', 'paid', 'outstanding']
-        for field in required:
-            if field not in item:
-                print(f"    ❌ Missing field: {field}")
-                return False
-        
-        if 'code' not in item['supplier'] or 'name' not in item['supplier']:
-            print(f"    ❌ supplier missing code or name")
-            return False
-        
-        # Check sorted by total desc
-        if len(data) > 1:
-            for i in range(len(data) - 1):
-                if data[i]['total'] < data[i+1]['total']:
-                    print(f"    ❌ Not sorted by total desc")
-                    return False
-        
-        print(f"    ✅ Structure valid, {len(data)} suppliers")
-        print(f"    📊 Top supplier: {item['supplier']['name']} - {item['count']} POs, Rp {item['total']:,.0f}")
-    else:
-        print(f"    ✅ Empty result (no purchase orders yet)")
+    test_user_id = test_user_ids[0]
     
-    return True
+    # Test 3.1: Update name only (200)
+    print("\n[3.1] Admin updating user name...")
+    try:
+        cookies = login('admin')
+        payload = {'name': 'Test User Updated'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('data', {}).get('name') == 'Test User Updated':
+                print(f"✅ Update name: 200 - Name updated successfully")
+            else:
+                print(f"⚠️ Update name: 200 but name not updated - {data}")
+        else:
+            print(f"❌ Update name: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Update name test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.2: Update role from operator -> supervisor (200)
+    print("\n[3.2] Admin updating user role (operator -> supervisor)...")
+    try:
+        cookies = login('admin')
+        payload = {'role': 'supervisor'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('data', {}).get('role') == 'supervisor':
+                print(f"✅ Update role: 200 - Role updated to supervisor")
+            else:
+                print(f"⚠️ Update role: 200 but role not updated - {data}")
+        else:
+            print(f"❌ Update role: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Update role test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.3: Update status to inactive (200)
+    print("\n[3.3] Admin updating user status to inactive...")
+    try:
+        cookies = login('admin')
+        payload = {'status': 'inactive'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('data', {}).get('status') == 'inactive':
+                print(f"✅ Update status: 200 - Status updated to inactive")
+            else:
+                print(f"⚠️ Update status: 200 but status not updated - {data}")
+        else:
+            print(f"❌ Update status: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Update status test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.4: Invalid role value (400)
+    print("\n[3.4] Invalid role value 'superadmin' (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {'role': 'superadmin'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if 'role' in error_msg.lower():
+                print(f"✅ Invalid role: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Invalid role: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Invalid role: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Invalid role test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.5: Invalid status value (400)
+    print("\n[3.5] Invalid status value 'suspended' (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {'status': 'suspended'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if 'status' in error_msg.lower():
+                print(f"✅ Invalid status: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Invalid status: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Invalid status: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Invalid status test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.6: Cannot modify own role (400)
+    print("\n[3.6] Admin trying to modify own role (should be 400)...")
+    try:
+        cookies = login('admin')
+        # Get admin ID from global variable set in test_get_users
+        if 'admin_id' in globals():
+            payload = {'role': 'operator'}
+            resp = requests.patch(f"{BASE_URL}/users/{admin_id}", json=payload, cookies=cookies, timeout=10)
+            if resp.status_code == 400:
+                error_msg = resp.json().get('error', '')
+                if 'sendiri' in error_msg.lower() or 'own' in error_msg.lower():
+                    print(f"✅ Modify own role: 400 - {error_msg}")
+                else:
+                    print(f"⚠️ Modify own role: 400 but unexpected message - {error_msg}")
+            else:
+                print(f"❌ Modify own role: Expected 400, got {resp.status_code} - {resp.text}")
+        else:
+            print("⚠️ Admin ID not available, skipping test")
+    except Exception as e:
+        print(f"❌ Modify own role test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.7: Cannot set own status to inactive (400)
+    print("\n[3.7] Admin trying to set own status to inactive (should be 400)...")
+    try:
+        cookies = login('admin')
+        if 'admin_id' in globals():
+            payload = {'status': 'inactive'}
+            resp = requests.patch(f"{BASE_URL}/users/{admin_id}", json=payload, cookies=cookies, timeout=10)
+            if resp.status_code == 400:
+                error_msg = resp.json().get('error', '')
+                if 'sendiri' in error_msg.lower() or 'own' in error_msg.lower():
+                    print(f"✅ Modify own status: 400 - {error_msg}")
+                else:
+                    print(f"⚠️ Modify own status: 400 but unexpected message - {error_msg}")
+            else:
+                print(f"❌ Modify own status: Expected 400, got {resp.status_code} - {resp.text}")
+        else:
+            print("⚠️ Admin ID not available, skipping test")
+    except Exception as e:
+        print(f"❌ Modify own status test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.8: Non-existent user ID (404)
+    print("\n[3.8] Updating non-existent user (should be 404)...")
+    try:
+        cookies = login('admin')
+        fake_id = 'non-existent-user-id-12345'
+        payload = {'name': 'Test'}
+        resp = requests.patch(f"{BASE_URL}/users/{fake_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 404:
+            print(f"✅ Non-existent user: 404 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Non-existent user: Expected 404, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Non-existent user test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 3.9: Non-admin cannot update (403)
+    print("\n[3.9] Supervisor updating user (should be 403)...")
+    try:
+        cookies = login('supervisor')
+        payload = {'name': 'Test'}
+        resp = requests.patch(f"{BASE_URL}/users/{test_user_id}", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Supervisor: 403 - Correctly denied")
+        else:
+            print(f"❌ Supervisor: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Supervisor test error: {str(e)}")
 
-def validate_ap_aging(data):
-    """Validate AP aging report"""
-    print(f"\n  Validating purchase-reports/ap-aging...")
+def test_reset_password():
+    """Test POST /api/users/:id/reset-password - Reset password"""
+    print("\n" + "="*80)
+    print("TEST 4: POST /api/users/:id/reset-password - Reset Password")
+    print("="*80)
     
-    required = ['buckets', 'details', 'totalOutstanding']
-    for field in required:
-        if field not in data:
-            print(f"    ❌ Missing field: {field}")
-            return False
+    if not test_user_ids:
+        print("❌ No test user available for password reset tests")
+        return
     
-    buckets = data['buckets']
-    required_buckets = ['0-30', '31-60', '61-90', '90+']
-    for bucket in required_buckets:
-        if bucket not in buckets:
-            print(f"    ❌ Missing bucket: {bucket}")
-            return False
+    test_user_id = test_user_ids[0]
     
-    if not isinstance(data['details'], list):
-        print(f"    ❌ details should be array")
-        return False
+    # Test 4.1: Reset password to "newpass123" (200)
+    print("\n[4.1] Admin resetting user password to 'newpass123'...")
+    try:
+        cookies = login('admin')
+        payload = {'newPassword': 'newpass123'}
+        resp = requests.post(f"{BASE_URL}/users/{test_user_id}/reset-password", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('ok') == True:
+                print(f"✅ Reset password: 200 - Password reset successful")
+            else:
+                print(f"⚠️ Reset password: 200 but unexpected response - {data}")
+        else:
+            print(f"❌ Reset password: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Reset password test error: {str(e)}")
     
-    if len(data['details']) > 0:
-        detail = data['details'][0]
-        required_detail = ['poId', 'poNumber', 'orderDate', 'daysOld', 'bucket', 'outstanding', 'supplier']
-        for field in required_detail:
-            if field not in detail:
-                print(f"    ❌ detail missing field: {field}")
-                return False
+    time.sleep(0.5)
     
-    print(f"    ✅ Structure valid")
-    print(f"    📊 Buckets: 0-30={buckets['0-30']:,.0f}, 31-60={buckets['31-60']:,.0f}, 61-90={buckets['61-90']:,.0f}, 90+={buckets['90+']:,.0f}")
-    print(f"    📊 Total Outstanding: Rp {data['totalOutstanding']:,.0f}")
+    # Test 4.2: Verify user can login with new password
+    print("\n[4.2] Verifying user can login with new password...")
+    try:
+        login_payload = {'email': 'test1@lpi.co.id', 'password': 'newpass123'}
+        resp = requests.post(AUTH_URL, json=login_payload, timeout=10)
+        if resp.status_code == 200:
+            print(f"✅ Login with new password: 200 - Login successful")
+        else:
+            print(f"❌ Login with new password: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Login verification test error: {str(e)}")
     
-    return True
+    time.sleep(0.5)
+    
+    # Test 4.3: Password < 6 chars (400)
+    print("\n[4.3] Reset password with < 6 chars (should be 400)...")
+    try:
+        cookies = login('admin')
+        payload = {'newPassword': 'abc'}
+        resp = requests.post(f"{BASE_URL}/users/{test_user_id}/reset-password", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 400:
+            error_msg = resp.json().get('error', '')
+            if '6' in error_msg or 'minimal' in error_msg.lower():
+                print(f"✅ Short password: 400 - {error_msg}")
+            else:
+                print(f"⚠️ Short password: 400 but unexpected message - {error_msg}")
+        else:
+            print(f"❌ Short password: Expected 400, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Short password test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 4.4: Non-existent user (404)
+    print("\n[4.4] Reset password for non-existent user (should be 404)...")
+    try:
+        cookies = login('admin')
+        fake_id = 'non-existent-user-id-12345'
+        payload = {'newPassword': 'newpass123'}
+        resp = requests.post(f"{BASE_URL}/users/{fake_id}/reset-password", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 404:
+            print(f"✅ Non-existent user: 404 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Non-existent user: Expected 404, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Non-existent user test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 4.5: Non-admin cannot reset password (403)
+    print("\n[4.5] Supervisor resetting password (should be 403)...")
+    try:
+        cookies = login('supervisor')
+        payload = {'newPassword': 'newpass123'}
+        resp = requests.post(f"{BASE_URL}/users/{test_user_id}/reset-password", json=payload, cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Supervisor: 403 - Correctly denied")
+        else:
+            print(f"❌ Supervisor: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Supervisor test error: {str(e)}")
 
-def validate_susut_recap(data):
-    """Validate susut recap report"""
-    print(f"\n  Validating purchase-reports/susut-recap...")
+def test_delete_user():
+    """Test DELETE /api/users/:id - Delete user"""
+    print("\n" + "="*80)
+    print("TEST 5: DELETE /api/users/:id - Delete User")
+    print("="*80)
     
-    required = ['details', 'summary']
-    for field in required:
-        if field not in data:
-            print(f"    ❌ Missing field: {field}")
-            return False
+    if not test_user_ids:
+        print("❌ No test user available for delete tests")
+        return
     
-    if not isinstance(data['details'], list):
-        print(f"    ❌ details should be array")
-        return False
+    test_user_id = test_user_ids[0]
     
-    summary = data['summary']
-    if not all(k in summary for k in ['totalSusut', 'totalValue', 'count']):
-        print(f"    ❌ summary missing required fields")
-        return False
+    # Test 5.1: Cannot delete self (400)
+    print("\n[5.1] Admin trying to delete own account (should be 400)...")
+    try:
+        cookies = login('admin')
+        if 'admin_id' in globals():
+            resp = requests.delete(f"{BASE_URL}/users/{admin_id}", cookies=cookies, timeout=10)
+            if resp.status_code == 400:
+                error_msg = resp.json().get('error', '')
+                if 'sendiri' in error_msg.lower() or 'self' in error_msg.lower():
+                    print(f"✅ Delete self: 400 - {error_msg}")
+                else:
+                    print(f"⚠️ Delete self: 400 but unexpected message - {error_msg}")
+            else:
+                print(f"❌ Delete self: Expected 400, got {resp.status_code} - {resp.text}")
+        else:
+            print("⚠️ Admin ID not available, skipping test")
+    except Exception as e:
+        print(f"❌ Delete self test error: {str(e)}")
     
-    # Validate details structure
-    if len(data['details']) > 0:
-        detail = data['details'][0]
-        required_detail = ['poNumber', 'method', 'supplier', 'product', 'weightSupplier', 'weightRph', 'susut', 'value']
-        for field in required_detail:
-            if field not in detail:
-                print(f"    ❌ detail missing field: {field}")
-                return False
-        
-        # Verify susut calculation
-        if detail['weightSupplier'] <= detail['weightRph']:
-            print(f"    ❌ weightSupplier should be > weightRph for susut items")
-            return False
+    time.sleep(0.5)
     
-    print(f"    ✅ Structure valid")
-    print(f"    📊 Total Susut: {summary['totalSusut']:.2f}kg, Value: Rp {summary['totalValue']:,.0f}, Count: {summary['count']}")
+    # Test 5.2: Non-existent user (404)
+    print("\n[5.2] Deleting non-existent user (should be 404)...")
+    try:
+        cookies = login('admin')
+        fake_id = 'non-existent-user-id-12345'
+        resp = requests.delete(f"{BASE_URL}/users/{fake_id}", cookies=cookies, timeout=10)
+        if resp.status_code == 404:
+            print(f"✅ Non-existent user: 404 - {resp.json().get('error', '')}")
+        else:
+            print(f"❌ Non-existent user: Expected 404, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Non-existent user test error: {str(e)}")
     
-    return True
+    time.sleep(0.5)
+    
+    # Test 5.3: Non-admin cannot delete (403)
+    print("\n[5.3] Supervisor deleting user (should be 403)...")
+    try:
+        cookies = login('supervisor')
+        resp = requests.delete(f"{BASE_URL}/users/{test_user_id}", cookies=cookies, timeout=10)
+        if resp.status_code == 403:
+            print(f"✅ Supervisor: 403 - Correctly denied")
+        else:
+            print(f"❌ Supervisor: Expected 403, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Supervisor test error: {str(e)}")
+    
+    time.sleep(0.5)
+    
+    # Test 5.4: Admin can delete test user (200)
+    print("\n[5.4] Admin deleting test user...")
+    try:
+        cookies = login('admin')
+        resp = requests.delete(f"{BASE_URL}/users/{test_user_id}", cookies=cookies, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('ok') == True:
+                print(f"✅ Delete user: 200 - User deleted successfully")
+                test_user_ids.remove(test_user_id)
+            else:
+                print(f"⚠️ Delete user: 200 but unexpected response - {data}")
+        else:
+            print(f"❌ Delete user: Expected 200, got {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"❌ Delete user test error: {str(e)}")
 
-def validate_production_batches(data):
-    """Validate production batches report"""
-    print(f"\n  Validating production-reports/batches...")
+def test_regression():
+    """Test existing endpoints to ensure they still work"""
+    print("\n" + "="*80)
+    print("TEST 6: REGRESSION CHECK - Existing Endpoints")
+    print("="*80)
     
-    required = ['batches', 'summary']
-    for field in required:
-        if field not in data:
-            print(f"    ❌ Missing field: {field}")
-            return False
+    cookies = login('admin')
     
-    if not isinstance(data['batches'], list):
-        print(f"    ❌ batches should be array")
-        return False
+    endpoints = [
+        '/contacts',
+        '/products',
+        '/dashboard/summary',
+        '/sales-orders',
+        '/purchase-orders'
+    ]
     
-    summary = data['summary']
-    required_summary = ['totalBatches', 'totalBaseWeight', 'totalOutputWeight', 'totalCost', 'avgRendemenPct']
-    for field in required_summary:
-        if field not in summary:
-            print(f"    ❌ summary missing field: {field}")
-            return False
-    
-    if len(data['batches']) > 0:
-        batch = data['batches'][0]
-        required_batch = ['id', 'woNumber', 'mode', 'totalLiveBirdWeight', 'totalRendemenWeight', 'rendemenPct', 'avgHppPerKg', 'totalCost']
-        for field in required_batch:
-            if field not in batch:
-                print(f"    ❌ batch missing field: {field}")
-                return False
-    
-    print(f"    ✅ Structure valid")
-    print(f"    📊 Total Batches: {summary['totalBatches']}, Base Weight: {summary['totalBaseWeight']:.1f}kg")
-    print(f"    📊 Output Weight: {summary['totalOutputWeight']:.1f}kg, Avg Rendemen: {summary['avgRendemenPct']:.1f}%")
-    
-    return True
+    for endpoint in endpoints:
+        print(f"\n[6.{endpoints.index(endpoint)+1}] Testing GET {endpoint}...")
+        try:
+            resp = requests.get(f"{BASE_URL}{endpoint}", cookies=cookies, timeout=10)
+            if resp.status_code == 200:
+                print(f"✅ {endpoint}: 200 - Still working")
+            else:
+                print(f"❌ {endpoint}: Expected 200, got {resp.status_code} - {resp.text}")
+        except Exception as e:
+            print(f"❌ {endpoint} test error: {str(e)}")
+        time.sleep(0.5)
 
-def validate_production_efficiency(data):
-    """Validate production efficiency report"""
-    print(f"\n  Validating production-reports/efficiency...")
+def cleanup():
+    """Delete any remaining test users"""
+    print("\n" + "="*80)
+    print("CLEANUP: Deleting remaining test users")
+    print("="*80)
     
-    if not isinstance(data, list):
-        print(f"    ❌ Expected array, got {type(data)}")
-        return False
+    if not test_user_ids:
+        print("✅ No test users to clean up")
+        return
     
-    if len(data) > 0:
-        item = data[0]
-        required = ['productId', 'stage', 'totalWeight', 'avgHpp', 'avgCoef', 'count', 'product']
-        for field in required:
-            if field not in item:
-                print(f"    ❌ Missing field: {field}")
-                return False
-        
-        product = item['product']
-        if not all(k in product for k in ['sku', 'name', 'rendemenCoefficient']):
-            print(f"    ❌ product missing required fields")
-            return False
-        
-        # Check sorted by totalWeight desc
-        if len(data) > 1:
-            for i in range(len(data) - 1):
-                if data[i]['totalWeight'] < data[i+1]['totalWeight']:
-                    print(f"    ❌ Not sorted by totalWeight desc")
-                    return False
-        
-        print(f"    ✅ Structure valid, {len(data)} product-stage combinations")
-        print(f"    📊 Top: {product['name']} ({item['stage']}) - {item['totalWeight']:.1f}kg, {item['count']} batches")
-    else:
-        print(f"    ✅ Empty result (no production outputs yet)")
-    
-    return True
-
-def validate_inventory_by_cs(data):
-    """Validate inventory by cold storage report"""
-    print(f"\n  Validating inventory-reports/by-cs...")
-    
-    if not isinstance(data, list):
-        print(f"    ❌ Expected array, got {type(data)}")
-        return False
-    
-    if len(data) > 0:
-        item = data[0]
-        required = ['coldStorageId', 'coldStorage', 'rowCount', 'totalWeight', 'totalQty', 'utilization']
-        for field in required:
-            if field not in item:
-                print(f"    ❌ Missing field: {field}")
-                return False
-        
-        cs = item['coldStorage']
-        if 'code' not in cs or 'name' not in cs:
-            print(f"    ❌ coldStorage missing code or name")
-            return False
-        
-        print(f"    ✅ Structure valid, {len(data)} cold storages")
-        print(f"    📊 {cs['name']}: {item['totalWeight']:.1f}kg, {item['utilization']:.1f}% utilization")
-    else:
-        print(f"    ✅ Empty result (no inventory yet)")
-    
-    return True
-
-def validate_inventory_by_product(data):
-    """Validate inventory by product report"""
-    print(f"\n  Validating inventory-reports/by-product...")
-    
-    if not isinstance(data, list):
-        print(f"    ❌ Expected array, got {type(data)}")
-        return False
-    
-    if len(data) > 0:
-        item = data[0]
-        required = ['productId', 'product', 'rowCount', 'totalWeight', 'minStock', 'lowStock', 'estimatedValue']
-        for field in required:
-            if field not in item:
-                print(f"    ❌ Missing field: {field}")
-                return False
-        
-        # Check sorted by totalWeight desc
-        if len(data) > 1:
-            for i in range(len(data) - 1):
-                if data[i]['totalWeight'] < data[i+1]['totalWeight']:
-                    print(f"    ❌ Not sorted by totalWeight desc")
-                    return False
-        
-        print(f"    ✅ Structure valid, {len(data)} products")
-        print(f"    📊 Top: {item['product']['name']} - {item['totalWeight']:.1f}kg, Value: Rp {item['estimatedValue']:,.0f}")
-    else:
-        print(f"    ✅ Empty result (no inventory yet)")
-    
-    return True
-
-def validate_near_expired(data):
-    """Validate near expired report"""
-    print(f"\n  Validating inventory-reports/near-expired...")
-    
-    if not isinstance(data, list):
-        print(f"    ❌ Expected array, got {type(data)}")
-        return False
-    
-    if len(data) > 0:
-        item = data[0]
-        required = ['productId', 'product', 'coldStorage', 'daysToExpire', 'expiredDate', 'weight']
-        for field in required:
-            if field not in item:
-                print(f"    ❌ Missing field: {field}")
-                return False
-        
-        print(f"    ✅ Structure valid, {len(data)} items near expiry")
-        print(f"    📊 {item['product']['name']}: {item['weight']:.1f}kg, expires in {item['daysToExpire']} days")
-    else:
-        print(f"    ✅ Empty result (no near-expired items)")
-    
-    return True
-
-def validate_damage_recap(data):
-    """Validate damage recap report"""
-    print(f"\n  Validating inventory-reports/damage-recap...")
-    
-    required = ['items', 'summary']
-    for field in required:
-        if field not in data:
-            print(f"    ❌ Missing field: {field}")
-            return False
-    
-    if not isinstance(data['items'], list):
-        print(f"    ❌ items should be array")
-        return False
-    
-    summary = data['summary']
-    if not all(k in summary for k in ['totalRows', 'totalWeight']):
-        print(f"    ❌ summary missing required fields")
-        return False
-    
-    # Verify only DAMAGE transactions
-    for item in data['items']:
-        if item.get('transactionType') != 'DAMAGE':
-            print(f"    ❌ Found non-DAMAGE transaction")
-            return False
-    
-    print(f"    ✅ Structure valid")
-    print(f"    📊 Total Rows: {summary['totalRows']}, Total Weight (confirmed): {summary['totalWeight']:.1f}kg")
-    
-    return True
+    cookies = login('admin')
+    for user_id in test_user_ids[:]:
+        print(f"\nDeleting test user {user_id}...")
+        try:
+            resp = requests.delete(f"{BASE_URL}/users/{user_id}", cookies=cookies, timeout=10)
+            if resp.status_code == 200:
+                print(f"✅ Deleted user {user_id}")
+                test_user_ids.remove(user_id)
+            else:
+                print(f"⚠️ Failed to delete user {user_id}: {resp.status_code}")
+        except Exception as e:
+            print(f"❌ Error deleting user {user_id}: {str(e)}")
+        time.sleep(0.5)
 
 def main():
-    print("\n" + "="*60)
-    print("BACKEND API TESTING - DASHBOARD + REPORTS + RBAC")
-    print("="*60)
+    """Run all tests"""
+    print("\n" + "="*80)
+    print("USER MANAGEMENT API - COMPREHENSIVE BACKEND TESTING")
+    print("="*80)
+    print(f"Base URL: {BASE_URL}")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Login all roles
-    for role in ["admin", "direktur", "operator"]:
-        session = login(role)
-        if not session:
-            print(f"\n❌ CRITICAL: Failed to login as {role}. Aborting tests.")
-            return
-        time.sleep(0.5)  # Delay between logins
-    
-    results = {
-        "total": 0,
-        "passed": 0,
-        "failed": 0
-    }
-    
-    # Test 1: Dashboard Summary - All roles should have access
-    print("\n" + "="*60)
-    print("TEST 1: GET /dashboard/summary - All roles")
-    print("="*60)
-    
-    for role in ["admin", "direktur", "operator"]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/dashboard/summary", 200, f"Dashboard summary as {role}")
-        results["total"] += 1
+    try:
+        # Run all tests
+        test_get_users()
+        test_create_user()
+        test_update_user()
+        test_reset_password()
+        test_delete_user()
+        test_regression()
         
-        if success and resp:
-            try:
-                data = resp.json().get('data', {})
-                if validate_dashboard_summary(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        else:
-            results["failed"] += 1
+        # Cleanup
+        cleanup()
         
-        time.sleep(0.5)
-    
-    # Test 2: Purchase Reports - by-supplier (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 2: GET /purchase-reports/by-supplier - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/by-supplier", expected, f"Purchase by supplier as {role}")
-        results["total"] += 1
+        print("\n" + "="*80)
+        print("ALL TESTS COMPLETED")
+        print("="*80)
+        print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', [])
-                if validate_purchase_by_supplier(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 3: Purchase Reports - ap-aging (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 3: GET /purchase-reports/ap-aging - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/ap-aging", expected, f"AP aging as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', {})
-                if validate_ap_aging(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 4: Purchase Reports - susut-recap (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 4: GET /purchase-reports/susut-recap - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/purchase-reports/susut-recap", expected, f"Susut recap as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', {})
-                if validate_susut_recap(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 5: Production Reports - batches (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 5: GET /production-reports/batches - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/production-reports/batches", expected, f"Production batches as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', {})
-                if validate_production_batches(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 6: Production Reports - efficiency (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 6: GET /production-reports/efficiency - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/production-reports/efficiency", expected, f"Production efficiency as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', [])
-                if validate_production_efficiency(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 7: Inventory Reports - by-cs (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 7: GET /inventory-reports/by-cs - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/by-cs", expected, f"Inventory by CS as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', [])
-                if validate_inventory_by_cs(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 8: Inventory Reports - by-product (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 8: GET /inventory-reports/by-product - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/by-product", expected, f"Inventory by product as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', [])
-                if validate_inventory_by_product(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 9: Inventory Reports - near-expired (all roles: 200)
-    print("\n" + "="*60)
-    print("TEST 9: GET /inventory-reports/near-expired?days=14 - All roles")
-    print("="*60)
-    
-    for role in ["admin", "direktur", "operator"]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/near-expired?days=14", 200, f"Near expired as {role}")
-        results["total"] += 1
-        
-        if success and resp:
-            try:
-                data = resp.json().get('data', [])
-                if validate_near_expired(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Test 10: Inventory Reports - damage-recap (admin, direktur: 200, operator: 403)
-    print("\n" + "="*60)
-    print("TEST 10: GET /inventory-reports/damage-recap - RBAC")
-    print("="*60)
-    
-    for role, expected in [("admin", 200), ("direktur", 200), ("operator", 403)]:
-        print(f"\n--- Testing as {role} ---")
-        success, resp = test_endpoint(sessions[role], role, "GET", "/inventory-reports/damage-recap", expected, f"Damage recap as {role}")
-        results["total"] += 1
-        
-        if success and expected == 200 and resp:
-            try:
-                data = resp.json().get('data', {})
-                if validate_damage_recap(data):
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-            except Exception as e:
-                print(f"  ❌ Validation error: {str(e)}")
-                results["failed"] += 1
-        elif success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        time.sleep(0.5)
-    
-    # Final Summary
-    print("\n" + "="*60)
-    print("FINAL TEST SUMMARY")
-    print("="*60)
-    print(f"Total Tests: {results['total']}")
-    print(f"✅ Passed: {results['passed']}")
-    print(f"❌ Failed: {results['failed']}")
-    print(f"Success Rate: {(results['passed']/results['total']*100):.1f}%")
-    print("="*60)
-    
-    if results['failed'] == 0:
-        print("\n🎉 ALL TESTS PASSED!")
-    else:
-        print(f"\n⚠️  {results['failed']} test(s) failed. Review output above for details.")
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Tests interrupted by user")
+        cleanup()
+    except Exception as e:
+        print(f"\n\n❌ Unexpected error: {str(e)}")
+        cleanup()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

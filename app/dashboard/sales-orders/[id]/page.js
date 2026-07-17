@@ -15,10 +15,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, CheckCircle2, XCircle, Bell, Printer } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, CheckCircle2, XCircle, Bell, Printer, FileDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
+import { generateInvoicePDF } from '@/lib/pdf/invoice';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -74,6 +75,22 @@ export default function SODetailPage() {
             ))}
           </div>
         )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            try {
+              const doc = generateInvoicePDF(so);
+              const name = so.invoiceNumber || so.soNumber;
+              doc.save(`Invoice-${name}.pdf`);
+              toast.success('PDF berhasil diunduh');
+            } catch (e) {
+              toast.error('Gagal membuat PDF: ' + e.message);
+            }
+          }}
+        >
+          <FileDown className="w-4 h-4 mr-1" /> PDF Invoice
+        </Button>
       </div>
 
       <Card><CardContent className="pt-6">
