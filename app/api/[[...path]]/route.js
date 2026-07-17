@@ -2012,6 +2012,227 @@ async function handleRoute(request, { params }) {
     }
     // ===================================================================== END INVENTORY
 
+    // =====================================================================
+    // DASHBOARD SUMMARY
+    // =====================================================================
+    if (route === '/dashboard/summary' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+      // Today sales (non-Cancelled)
+      const todaySalesRow = db.select({ count: sql`count(*)`, total: sql`coalesce(sum(${s.salesOrder.totalAmount}), 0)` })
+        .from(s.salesOrder).where(and(sql`${s.salesOrder.orderDate} >= ${todayStart}`, sql`${s.salesOrder.pipelineStatus} != 'Cancelled'`)).get();
+      const todayPaidRow = db.select({ total: sql`coalesce(sum(amount), 0)` }).from(s.salesPayments).where(sql`payment_date >= ${todayStart}`).get();
+      // Active WO
+      const activeWoStages = db.select({ status: s.workOrder.pipelineStatus, count: sql`count(*)` }).from(s.workOrder).where(sql`${s.workOrder.pipelineStatus} in ('Draft','Disetujui','Dalam Proses')`).groupBy(s.workOrder.pipelineStatus).all();
+      // Today production
+      const todayWoRow = db.select({ count: sql`count(*)`, totalWeight: sql`coalesce(sum(total_rendemen_weight), 0)`, baseWeight: sql`coalesce(sum(total_live_bird_weight), 0)` })
+        .from(s.workOrder).where(sql`arrival_recorded_at >= ${todayStart}`).get();
+      // Low stock / near expired
+      const nearExpiredCount = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(and(eq(s.inventoryStock.status, 'active'), sql`expired_date is not null and expired_date < ${Math.floor(Date.now()/1000) + 7*24*3600}`)).get();
+      const expiredCount = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(and(eq(s.inventoryStock.status, 'active'), sql`expired_date is not null and expired_date < ${Math.floor(Date.now()/1000)}`)).get();
+      const damagedCount = db.select({ c: sql`count(*)`, w: sql`coalesce(sum(weight), 0)` }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'damaged')).get();
+      // AR (piutang: Invoiced SOs outstanding)
+      const arRows = db.select().from(s.salesOrder).where(eq(s.salesOrder.pipelineStatus, 'Invoiced')).all();
+      let totalAR = 0;
+      for (const so of arRows) {
+        const retSum = db.select({ s: sql`coalesce(sum(total_amount),0)` }).from(s.salesReturns).where(eq(s.salesReturns.salesOrderId, so.id)).get();
+        totalAR += Math.max(0, Number(so.totalAmount) - Number(so.paidAmount || 0) - Number(retSum?.s || 0));
+      }
+      // AP (utang: PO not fully paid, status not Dibatalkan)
+      const apRows = db.select().from(s.purchaseOrder).where(sql`pipeline_status not in ('Dibatalkan','Draft') and payment_status != 'paid'`).all();
+      let totalAP = 0;
+      for (const po of apRows) {
+        const retSum = db.select({ s: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+        totalAP += Math.max(0, Number(po.totalAmount) - Number(po.paidAmount || 0) - Number(retSum?.s || 0));
+      }
+      // Inventory value (sum weight * hpp not tracked yet — use base_price of product as approx)
+      const stockRows = db.select({ productId: s.inventoryStock.productId, w: sql`sum(${s.inventoryStock.weight})` }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.productId).all();
+      let inventoryValue = 0;
+      for (const r of stockRows) {
+        const p = db.select({ price: s.products.basePrice }).from(s.products).where(eq(s.products.id, r.productId)).get();
+        inventoryValue += Number(r.w || 0) * Number(p?.price || 0);
+      }
+      return json({ data: {
+        todaySales: { count: Number(todaySalesRow?.count || 0), total: Number(todaySalesRow?.total || 0), paidToday: Number(todayPaidRow?.total || 0) },
+        activeWo: activeWoStages.reduce((a, b) => ({ ...a, [b.status]: Number(b.count) }), {}),
+        todayProduction: {
+          count: Number(todayWoRow?.count || 0),
+          rendemenWeight: Number(todayWoRow?.totalWeight || 0),
+          baseWeight: Number(todayWoRow?.baseWeight || 0),
+          efficiency: Number(todayWoRow?.baseWeight || 0) > 0 ? (Number(todayWoRow.totalWeight) / Number(todayWoRow.baseWeight)) * 100 : 0,
+        },
+        alerts: { nearExpired: Number(nearExpiredCount?.c || 0), expired: Number(expiredCount?.c || 0), damaged: { count: Number(damagedCount?.c || 0), weight: Number(damagedCount?.w || 0) } },
+        finance: { totalAR, totalAP, netPosition: totalAR - totalAP },
+        inventoryValue,
+      } });
+    }
+
+    // =====================================================================
+    // PURCHASE REPORTS
+    // =====================================================================
+    if (route === '/purchase-reports/by-supplier' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select({
+        supplierId: s.purchaseOrder.supplierId,
+        count: sql`count(*)`,
+        total: sql`coalesce(sum(${s.purchaseOrder.totalAmount}), 0)`,
+        paid: sql`coalesce(sum(${s.purchaseOrder.paidAmount}), 0)`,
+      }).from(s.purchaseOrder).where(sql`${s.purchaseOrder.pipelineStatus} != 'Dibatalkan'`).groupBy(s.purchaseOrder.supplierId).all();
+      const enriched = rows.map(r => {
+        const c = db.select({ code: s.contacts.code, name: s.contacts.displayName, contactType: s.contacts.contactType }).from(s.contacts).where(eq(s.contacts.id, r.supplierId)).get();
+        return { ...r, supplier: c, outstanding: Number(r.total) - Number(r.paid) };
+      }).sort((a, b) => Number(b.total) - Number(a.total));
+      return json({ data: enriched });
+    }
+    if (route === '/purchase-reports/ap-aging' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const pos = db.select().from(s.purchaseOrder).where(sql`pipeline_status not in ('Dibatalkan','Draft') and payment_status != 'paid'`).all();
+      const buckets = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
+      const details = [];
+      const now = Date.now();
+      for (const po of pos) {
+        const retSum = db.select({ s: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+        const outstanding = Number(po.totalAmount) - Number(po.paidAmount || 0) - Number(retSum?.s || 0);
+        if (outstanding <= 0) continue;
+        const invDate = po.invoiceDate ? new Date(po.invoiceDate).getTime() : (po.orderDate ? new Date(po.orderDate).getTime() : now);
+        const daysOld = Math.max(0, Math.floor((now - invDate) / (24*60*60*1000)));
+        let bucket = daysOld <= 30 ? '0-30' : daysOld <= 60 ? '31-60' : daysOld <= 90 ? '61-90' : '90+';
+        buckets[bucket] += outstanding;
+        const supplier = db.select({ code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, po.supplierId)).get();
+        details.push({ poId: po.id, poNumber: po.poNumber, invoiceNumber: po.invoiceNumber, orderDate: po.orderDate, outstanding, daysOld, bucket, supplier });
+      }
+      return json({ data: { buckets, details, totalOutstanding: Object.values(buckets).reduce((a, b) => a + b, 0) } });
+    }
+    if (route === '/purchase-reports/susut-recap' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      // For Live Bird PO items with weight difference
+      const pos = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.poType, 'Live Bird')).all();
+      const details = [];
+      let totalSusut = 0, totalValue = 0;
+      for (const po of pos) {
+        const items = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.id)).all();
+        for (const it of items) {
+          const susut = Math.max(0, Number(it.weightSupplier || 0) - Number(it.weightRph || 0));
+          if (susut > 0) {
+            const value = susut * Number(it.unitPrice || 0);
+            totalSusut += susut; totalValue += value;
+            const sup = db.select({ code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, po.supplierId)).get();
+            const p = db.select({ sku: s.products.sku, name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
+            details.push({ poNumber: po.poNumber, method: po.method, orderDate: po.orderDate, supplier: sup, product: p, weightSupplier: it.weightSupplier, weightRph: it.weightRph, susut, value });
+          }
+        }
+      }
+      return json({ data: { details, summary: { totalSusut, totalValue, count: details.length } } });
+    }
+
+    // =====================================================================
+    // PRODUCTION REPORTS
+    // =====================================================================
+    if (route === '/production-reports/batches' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select().from(s.workOrder).orderBy(desc(s.workOrder.startDate)).all();
+      const enriched = rows.map(r => {
+        const rendemen = r.totalLiveBirdWeight > 0 ? (Number(r.totalRendemenWeight) / Number(r.totalLiveBirdWeight)) * 100 : 0;
+        const avgHpp = r.totalRendemenWeight > 0 ? Number(r.totalCost) / Number(r.totalRendemenWeight) : 0;
+        const maklon = r.maklonSupplierId ? db.select({ code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, r.maklonSupplierId)).get() : null;
+        return { ...r, rendemenPct: rendemen, avgHppPerKg: avgHpp, maklon };
+      });
+      const summary = {
+        totalBatches: enriched.length,
+        totalBaseWeight: enriched.reduce((a, b) => a + Number(b.totalLiveBirdWeight || 0), 0),
+        totalOutputWeight: enriched.reduce((a, b) => a + Number(b.totalRendemenWeight || 0), 0),
+        totalCost: enriched.reduce((a, b) => a + Number(b.totalCost || 0), 0),
+        avgRendemenPct: 0,
+      };
+      if (summary.totalBaseWeight > 0) summary.avgRendemenPct = (summary.totalOutputWeight / summary.totalBaseWeight) * 100;
+      return json({ data: { batches: enriched, summary } });
+    }
+    if (route === '/production-reports/efficiency' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      // Compare actual output per output product across batches
+      const rows = db.select({
+        productId: s.woOutputs.productId,
+        stage: s.woOutputs.stage,
+        totalWeight: sql`coalesce(sum(${s.woOutputs.weight}), 0)`,
+        avgHpp: sql`avg(${s.woOutputs.hppPerKg})`,
+        avgCoef: sql`avg(${s.woOutputs.coefficient})`,
+        count: sql`count(*)`,
+      }).from(s.woOutputs).groupBy(s.woOutputs.productId, s.woOutputs.stage).all();
+      const enriched = rows.map(r => {
+        const p = db.select({ sku: s.products.sku, name: s.products.name, rendemenCoefficient: s.products.rendemenCoefficient }).from(s.products).where(eq(s.products.id, r.productId)).get();
+        return { ...r, product: p };
+      }).sort((a, b) => Number(b.totalWeight) - Number(a.totalWeight));
+      return json({ data: enriched });
+    }
+
+    // =====================================================================
+    // INVENTORY REPORTS
+    // =====================================================================
+    if (route === '/inventory-reports/by-cs' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select({
+        coldStorageId: s.inventoryStock.coldStorageId,
+        rowCount: sql`count(*)`,
+        totalWeight: sql`coalesce(sum(${s.inventoryStock.weight}), 0)`,
+        totalQty: sql`coalesce(sum(${s.inventoryStock.quantity}), 0)`,
+      }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.coldStorageId).all();
+      const enriched = rows.map(r => {
+        const cs = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
+        return { ...r, coldStorage: cs, utilization: cs?.capacityKg > 0 ? (Number(r.totalWeight) / Number(cs.capacityKg)) * 100 : 0 };
+      });
+      return json({ data: enriched });
+    }
+    if (route === '/inventory-reports/by-product' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select({
+        productId: s.inventoryStock.productId,
+        rowCount: sql`count(*)`,
+        totalWeight: sql`coalesce(sum(${s.inventoryStock.weight}), 0)`,
+        totalQty: sql`coalesce(sum(${s.inventoryStock.quantity}), 0)`,
+      }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.productId).all();
+      const enriched = rows.map(r => {
+        const p = db.select().from(s.products).where(eq(s.products.id, r.productId)).get();
+        return { ...r, product: p, minStock: Number(p?.minStock || 0), lowStock: Number(r.totalWeight) < Number(p?.minStock || 0), estimatedValue: Number(r.totalWeight) * Number(p?.basePrice || 0) };
+      }).sort((a, b) => Number(b.totalWeight) - Number(a.totalWeight));
+      return json({ data: enriched });
+    }
+    if (route === '/inventory-reports/near-expired' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const days = Number(url.searchParams.get('days') || 7);
+      const threshold = Math.floor(Date.now() / 1000) + days * 24 * 3600;
+      const rows = db.select().from(s.inventoryStock).where(and(
+        eq(s.inventoryStock.status, 'active'),
+        sql`expired_date is not null and expired_date < ${threshold}`,
+      )).orderBy(s.inventoryStock.expiredDate).all();
+      const enriched = rows.map(r => {
+        const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, r.productId)).get();
+        const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
+        const daysToExpire = r.expiredDate ? Math.floor((new Date(r.expiredDate).getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
+        return { ...r, product: p, coldStorage: cs, daysToExpire };
+      });
+      return json({ data: enriched });
+    }
+    if (route === '/inventory-reports/damage-recap' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select().from(s.inventoryTransaction).where(eq(s.inventoryTransaction.transactionType, 'DAMAGE')).orderBy(desc(s.inventoryTransaction.transactionDate)).all();
+      const enriched = rows.map(r => ({ ...r, coldStorage: r.fromColdStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.fromColdStorageId)).get() : null }));
+      const totalDamage = rows.filter(r => r.status === 'confirmed').reduce((a, b) => a + Number(b.totalWeight || 0), 0);
+      return json({ data: { items: enriched, summary: { totalRows: rows.length, totalWeight: totalDamage } } });
+    }
+    // ===================================================================== END REPORTS
+
     return err(`Route ${route} not found`, 404);
   } catch (e) {
     console.error('API Error:', e);
