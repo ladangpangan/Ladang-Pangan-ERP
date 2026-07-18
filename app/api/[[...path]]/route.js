@@ -931,14 +931,26 @@ async function handleRoute(request, { params }) {
     const nextSalesReturnNumber = () => {
       const ym = new Date();
       const prefix = `RET-S/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.salesReturns).where(like(s.salesReturns.returnNumber, `${prefix}%`)).get();
-      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      const rows = db.select({ n: s.salesReturns.returnNumber }).from(s.salesReturns).where(like(s.salesReturns.returnNumber, `${prefix}%`)).all();
+      let maxNum = 0;
+      for (const r of rows) {
+        const suffix = String(r.n).slice(prefix.length);
+        const n = parseInt(suffix, 10);
+        if (!isNaN(n) && n > maxNum) maxNum = n;
+      }
+      return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
     };
     const nextReceiptNumber = () => {
       const ym = new Date();
       const prefix = `RCP/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.salesOrderReceipts).where(like(s.salesOrderReceipts.receiptNumber, `${prefix}%`)).get();
-      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      const rows = db.select({ n: s.salesOrderReceipts.receiptNumber }).from(s.salesOrderReceipts).where(like(s.salesOrderReceipts.receiptNumber, `${prefix}%`)).all();
+      let maxNum = 0;
+      for (const r of rows) {
+        const suffix = String(r.n).slice(prefix.length);
+        const n = parseInt(suffix, 10);
+        if (!isNaN(n) && n > maxNum) maxNum = n;
+      }
+      return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
     };
 
     const recalcSoTotals = (soId) => {
