@@ -934,6 +934,12 @@ async function handleRoute(request, { params }) {
       const row = db.select({ c: sql`count(*)` }).from(s.salesReturns).where(like(s.salesReturns.returnNumber, `${prefix}%`)).get();
       return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
     };
+    const nextReceiptNumber = () => {
+      const ym = new Date();
+      const prefix = `RCP/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const row = db.select({ c: sql`count(*)` }).from(s.salesOrderReceipts).where(like(s.salesOrderReceipts.receiptNumber, `${prefix}%`)).get();
+      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+    };
 
     const recalcSoTotals = (soId) => {
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
@@ -1082,9 +1088,20 @@ async function handleRoute(request, { params }) {
       const sjRows = db.select().from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, id)).orderBy(desc(s.suratJalan.deliveryDate)).all();
       const payments = db.select().from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).orderBy(desc(s.salesPayments.paymentDate)).all();
       const returns = db.select().from(s.salesReturns).where(eq(s.salesReturns.salesOrderId, id)).orderBy(desc(s.salesReturns.returnDate)).all();
+      const receiptRows = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).orderBy(desc(s.salesOrderReceipts.receivedDate)).all();
+      const receipts = receiptRows.map(r => {
+        const rItems = db.select().from(s.salesOrderReceiptItems).where(eq(s.salesOrderReceiptItems.receiptId, r.id)).all();
+        const itemsWithProduct = rItems.map(li => {
+          const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, li.productId)).get();
+          return { ...li, product: p };
+        });
+        return { ...r, items: itemsWithProduct };
+      });
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      const totalShrinkageValue = receipts.reduce((a, b) => a + Number(b.totalShrinkageValue || 0), 0);
+      const totalShrinkageWeight = receipts.reduce((a, b) => a + Number(b.totalShrinkageWeight || 0), 0);
       const outstanding = Number(so.totalAmount) - Number(so.paidAmount || 0) - totalReturns;
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, outstanding, totalReturns } });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight } });
     }
 
     // PATCH /sales-orders/:id
@@ -1376,6 +1393,153 @@ async function handleRoute(request, { params }) {
           notification: { to: ['supervisor', 'direktur'], subject: `Retur Penjualan SO ${so.soNumber}` },
         },
       }, { status: 201 });
+    }
+
+    // POST /sales-orders/:id/receipts - Catat Penerimaan Customer + Penyusutan per SO per Produk
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'receipts' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      if (!['Shipped', 'Invoiced'].includes(so.pipelineStatus)) {
+        return err('Penerimaan hanya bisa dicatat setelah SO dikirim (Shipped/Invoiced)');
+      }
+      const body = await request.json();
+      if (!Array.isArray(body.items) || body.items.length === 0) return err('items required (per produk)');
+
+      // Aggregate SO items by productId → orderedWeight + avgUnitPrice (weighted by weight)
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      const perProduct = {};
+      for (const it of soItems) {
+        if (!perProduct[it.productId]) perProduct[it.productId] = { orderedWeight: 0, totalValue: 0 };
+        perProduct[it.productId].orderedWeight += Number(it.weight || 0);
+        perProduct[it.productId].totalValue += Number(it.weight || 0) * Number(it.unitPrice || 0);
+      }
+      // avgUnitPrice = totalValue / orderedWeight
+      for (const pid in perProduct) {
+        const p = perProduct[pid];
+        p.avgUnitPrice = p.orderedWeight > 0 ? p.totalValue / p.orderedWeight : 0;
+      }
+
+      // Validate each received item and compute shrinkage
+      let totalOrdered = 0, totalReceived = 0, totalShrinkage = 0, totalShrinkageValue = 0;
+      const lineItems = [];
+      for (const ri of body.items) {
+        if (!ri.productId) return err('productId required per line');
+        const pp = perProduct[ri.productId];
+        if (!pp) return err(`Produk ${ri.productId} tidak ada di SO`);
+        const receivedWeight = Number(ri.receivedWeight || 0);
+        if (receivedWeight < 0) return err('receivedWeight tidak boleh negatif');
+        if (receivedWeight > pp.orderedWeight + 0.0001) {
+          return err(`Berat diterima (${receivedWeight} kg) melebihi berat SO (${pp.orderedWeight} kg) untuk produk ini`);
+        }
+        const shrinkageWeight = pp.orderedWeight - receivedWeight;
+        const shrinkagePct = pp.orderedWeight > 0 ? (shrinkageWeight / pp.orderedWeight) * 100 : 0;
+        const shrinkageValue = shrinkageWeight * pp.avgUnitPrice;
+        totalOrdered += pp.orderedWeight;
+        totalReceived += receivedWeight;
+        totalShrinkage += shrinkageWeight;
+        totalShrinkageValue += shrinkageValue;
+        lineItems.push({
+          id: uuidv4(),
+          productId: ri.productId,
+          orderedWeight: pp.orderedWeight,
+          receivedWeight,
+          shrinkageWeight,
+          shrinkagePct: Math.round(shrinkagePct * 100) / 100,
+          avgUnitPrice: pp.avgUnitPrice,
+          shrinkageValue: Math.round(shrinkageValue),
+          notes: ri.notes || null,
+        });
+      }
+
+      const totalShrinkagePct = totalOrdered > 0 ? (totalShrinkage / totalOrdered) * 100 : 0;
+      const statusValue = totalShrinkage <= 0.001 ? 'received' : (totalReceived <= 0.001 ? 'rejected' : 'partial');
+      const applyToInvoice = !!body.applyToInvoice;
+
+      const rec = {
+        id: uuidv4(),
+        receiptNumber: nextReceiptNumber(),
+        salesOrderId: id,
+        receivedDate: body.receivedDate ? new Date(body.receivedDate) : new Date(),
+        totalOrderedWeight: totalOrdered,
+        totalReceivedWeight: totalReceived,
+        totalShrinkageWeight: totalShrinkage,
+        totalShrinkagePct: Math.round(totalShrinkagePct * 100) / 100,
+        totalShrinkageValue: Math.round(totalShrinkageValue),
+        status: statusValue,
+        applyToInvoice,
+        receivedBy: body.receivedBy || null,
+        notes: body.notes || null,
+        photoUrl: body.photoUrl || null,
+        createdBy: session.user.email,
+        createdAt: new Date(),
+      };
+      db.insert(s.salesOrderReceipts).values(rec).run();
+      for (const li of lineItems) {
+        db.insert(s.salesOrderReceiptItems).values({ ...li, receiptId: rec.id }).run();
+      }
+
+      // If applyToInvoice, treat shrinkageValue as an implicit return (potong outstanding via recompute)
+      // We track this via `paymentStatus` recomputation which considers salesReturns; for MVP,
+      // we auto-create a "shadow" sales return record so outstanding decreases.
+      if (applyToInvoice && totalShrinkageValue > 0) {
+        db.insert(s.salesReturns).values({
+          id: uuidv4(),
+          returnNumber: nextSalesReturnNumber(),
+          salesOrderId: id,
+          returnDate: rec.receivedDate,
+          reason: `Penyusutan otomatis dari Penerimaan ${rec.receiptNumber}`,
+          resolution: 'potong_invoice',
+          totalAmount: Math.round(totalShrinkageValue),
+          totalWeight: totalShrinkage,
+          status: 'open',
+          notes: `Auto-generated dari Receipt ${rec.receiptNumber}`,
+          createdBy: session.user.email,
+          createdAt: new Date(),
+        }).run();
+        recomputeSoPaymentStatus(id);
+      }
+
+      return json({ data: { ...rec, items: lineItems } }, { status: 201 });
+    }
+
+    // GET /sales-orders/:id/receipts - list receipts
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'receipts' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const rows = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).orderBy(desc(s.salesOrderReceipts.receivedDate)).all();
+      const enriched = rows.map(r => {
+        const items = db.select().from(s.salesOrderReceiptItems).where(eq(s.salesOrderReceiptItems.receiptId, r.id)).all();
+        const itemsWithProduct = items.map(li => {
+          const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, li.productId)).get();
+          return { ...li, product: p };
+        });
+        return { ...r, items: itemsWithProduct };
+      });
+      return json({ data: enriched });
+    }
+
+    // DELETE /sales-orders/:id/receipts/:receiptId - delete receipt (admin only)
+    if (route.startsWith('/sales-orders/') && path.length === 4 && path[2] === 'receipts' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const soId = path[1];
+      const receiptId = path[3];
+      const rec = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.id, receiptId)).get();
+      if (!rec) return err('Receipt tidak ditemukan', 404);
+      // Also remove associated shadow salesReturn if applyToInvoice was true
+      if (rec.applyToInvoice) {
+        db.delete(s.salesReturns).where(and(
+          eq(s.salesReturns.salesOrderId, soId),
+          like(s.salesReturns.notes, `Auto-generated dari Receipt ${rec.receiptNumber}%`),
+        )).run();
+      }
+      db.delete(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.id, receiptId)).run();
+      recomputeSoPaymentStatus(soId);
+      return json({ ok: true });
     }
 
     // =====================================================================
