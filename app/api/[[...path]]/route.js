@@ -51,6 +51,98 @@ async function handleRoute(request, { params }) {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
 
+    // ---------- Shared helpers (hoisted early so all route blocks can use) ----------
+    // Broadcast in-app notifications to all users with any of the given roles.
+    const createNotification = ({ roles = ['supervisor', 'direktur'], type = 'info', category, title, message, entityType, entityId, entityNumber, linkPath, refApprovalId, priority = 'normal' }) => {
+      try {
+        if (!Array.isArray(roles) || roles.length === 0) return;
+        const recipients = db.select({ id: s.user.id, status: s.user.status }).from(s.user).where(inArray(s.user.role, roles)).all();
+        const now = new Date();
+        for (const r of recipients) {
+          if (r.status && r.status !== 'active') continue;
+          db.insert(s.notifications).values({
+            id: uuidv4(),
+            userId: r.id,
+            type,
+            category,
+            title,
+            message: message || null,
+            entityType: entityType || null,
+            entityId: entityId || null,
+            entityNumber: entityNumber || null,
+            linkPath: linkPath || null,
+            refApprovalId: refApprovalId || null,
+            priority,
+            isRead: false,
+            createdAt: now,
+          }).run();
+        }
+      } catch (e) {
+        console.error('createNotification failed:', e?.message || e);
+      }
+    };
+
+    // Create an approval concern row.
+    // Supervisor is the approver (approve/reject → drives status).
+    // Direktur is concern-only (view + optional acknowledge/flag).
+    // Also auto-broadcasts in-app notifications to supervisor+direktur.
+    const createApproval = ({ concernType, entityType, entityId, entityNumber, title, description, priority = 'normal', amount = 0, metadata = null, createdBy, notifyRoles }) => {
+      const id = uuidv4();
+      db.insert(s.approvals).values({
+        id,
+        concernType,
+        entityType,
+        entityId,
+        entityNumber,
+        requiredRole: 'both',
+        title,
+        description,
+        priority,
+        amount,
+        metadata: metadata ? (typeof metadata === 'string' ? metadata : JSON.stringify(metadata)) : null,
+        status: 'pending',
+        createdBy: createdBy || 'system',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).run();
+      // Auto notify (default: both supervisor & direktur)
+      createNotification({
+        roles: notifyRoles || ['supervisor', 'direktur'],
+        type: 'approval',
+        category: concernType,
+        title,
+        message: description,
+        entityType,
+        entityId,
+        entityNumber,
+        linkPath: '/dashboard/approvals',
+        refApprovalId: id,
+        priority,
+      });
+      return id;
+    };
+
+    // Compute reference HPP for a product from latest WO output or PO item.
+    const getProductHpp = (productId) => {
+      try {
+        const wo = db.select({ hpp: s.woOutputs.hppPerKg }).from(s.woOutputs)
+          .where(and(eq(s.woOutputs.productId, productId), sql`${s.woOutputs.hppPerKg} > 0`))
+          .orderBy(desc(s.woOutputs.createdAt)).limit(5).all();
+        if (wo.length > 0) {
+          const avg = wo.reduce((a, b) => a + Number(b.hpp), 0) / wo.length;
+          if (avg > 0) return avg;
+        }
+        const po = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+          .where(and(eq(s.purchaseOrderItems.productId, productId), sql`${s.purchaseOrderItems.hppPerKg} > 0`))
+          .all();
+        if (po.length > 0) {
+          const avg = po.reduce((a, b) => a + Number(b.hpp), 0) / po.length;
+          if (avg > 0) return avg;
+        }
+      } catch (e) { /* ignore */ }
+      return 0;
+    };
+
     // ---------- SEED (idempotent) ----------
     if (route === '/seed' && method === 'POST') {
       const auth = getAuth();
@@ -133,6 +225,61 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth();
       if (error) return error;
       return json({ user: session.user });
+    }
+
+    // ---------- NOTIFICATIONS (in-app) ----------
+    // GET /notifications?limit=50&unreadOnly=1
+    if (route === '/notifications' && method === 'GET') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      const url = new URL(request.url);
+      const limit = Math.min(200, Number(url.searchParams.get('limit') || 50));
+      const unreadOnly = url.searchParams.get('unreadOnly') === '1' || url.searchParams.get('unreadOnly') === 'true';
+      const conds = [eq(s.notifications.userId, session.user.id)];
+      if (unreadOnly) conds.push(eq(s.notifications.isRead, false));
+      const rows = db.select().from(s.notifications).where(and(...conds)).orderBy(desc(s.notifications.createdAt)).limit(limit).all();
+      const unreadCount = db.select({ c: sql`count(*)` }).from(s.notifications).where(and(eq(s.notifications.userId, session.user.id), eq(s.notifications.isRead, false))).get()?.c || 0;
+      return json({ data: rows, unreadCount: Number(unreadCount) });
+    }
+
+    // GET /notifications/unread-count
+    if (route === '/notifications/unread-count' && method === 'GET') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      const c = db.select({ c: sql`count(*)` }).from(s.notifications).where(and(eq(s.notifications.userId, session.user.id), eq(s.notifications.isRead, false))).get();
+      return json({ count: Number(c?.c || 0) });
+    }
+
+    // POST /notifications/read-all
+    if (route === '/notifications/read-all' && method === 'POST') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      db.update(s.notifications).set({ isRead: true, readAt: new Date() })
+        .where(and(eq(s.notifications.userId, session.user.id), eq(s.notifications.isRead, false)))
+        .run();
+      return json({ ok: true });
+    }
+
+    // POST /notifications/:id/read
+    if (route.startsWith('/notifications/') && path.length === 3 && path[2] === 'read' && method === 'POST') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      const id = path[1];
+      const row = db.select().from(s.notifications).where(and(eq(s.notifications.id, id), eq(s.notifications.userId, session.user.id))).get();
+      if (!row) return err('Notifikasi tidak ditemukan', 404);
+      db.update(s.notifications).set({ isRead: true, readAt: new Date() }).where(eq(s.notifications.id, id)).run();
+      return json({ ok: true });
+    }
+
+    // DELETE /notifications/:id
+    if (route.startsWith('/notifications/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      const id = path[1];
+      const row = db.select().from(s.notifications).where(and(eq(s.notifications.id, id), eq(s.notifications.userId, session.user.id))).get();
+      if (!row) return err('Notifikasi tidak ditemukan', 404);
+      db.delete(s.notifications).where(eq(s.notifications.id, id)).run();
+      return json({ ok: true });
     }
 
     // ---------- APPROVALS / CONCERNS ----------
@@ -700,6 +847,17 @@ async function handleRoute(request, { params }) {
       }
       recalcPoHpp(id);
       const created = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
+      // Info notification to supervisor + direktur
+      const supplier = db.select().from(s.contacts).where(eq(s.contacts.id, body.supplierId)).get();
+      createNotification({
+        roles: ['supervisor', 'direktur'],
+        type: 'info',
+        category: 'po_new',
+        title: `PO Baru · ${poNumber}`,
+        message: `PO ${body.poType || 'Live Bird'} dari ${supplier?.displayName || 'supplier'} dibuat oleh ${session.user.name || session.user.email}.`,
+        entityType: 'PO', entityId: id, entityNumber: poNumber,
+        linkPath: `/dashboard/purchase-orders/${id}`,
+      });
       return json({ data: created }, { status: 201 });
     }
 
@@ -1049,31 +1207,6 @@ async function handleRoute(request, { params }) {
       return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
     };
 
-    // Helper: create an approval concern
-    // Supervisor is the approver (approve/reject → drives status)
-    // Direktur is concern-only (view + optional acknowledge/flag, does not gate status)
-    const createApproval = ({ concernType, entityType, entityId, entityNumber, title, description, priority = 'normal', amount = 0, metadata = null, createdBy }) => {
-      const id = uuidv4();
-      db.insert(s.approvals).values({
-        id,
-        concernType,
-        entityType,
-        entityId,
-        entityNumber,
-        requiredRole: 'both', // supervisor approver + direktur concern
-        title,
-        description,
-        priority,
-        amount,
-        metadata: metadata ? (typeof metadata === 'string' ? metadata : JSON.stringify(metadata)) : null,
-        status: 'pending',
-        createdBy: createdBy || 'system',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }).run();
-      return id;
-    };
-
     const recalcSoTotals = (soId) => {
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
       let subtotal = 0, discountTotal = 0;
@@ -1212,6 +1345,53 @@ async function handleRoute(request, { params }) {
           createdBy: session.user.email,
         });
       }
+
+      // Auto-create approval concern for SO price below HPP
+      const belowHppItems = [];
+      for (const it of body.items) {
+        const hpp = getProductHpp(it.productId);
+        const up = Number(it.unitPrice || 0);
+        if (hpp > 0 && up > 0 && up < hpp) {
+          const prod = db.select({ sku: s.products.sku, name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
+          belowHppItems.push({
+            productId: it.productId,
+            sku: prod?.sku,
+            name: prod?.name,
+            unitPrice: up,
+            hpp: Math.round(hpp),
+            marginPerKg: Math.round(up - hpp),
+            weight: Number(it.weight || 0),
+          });
+        }
+      }
+      if (belowHppItems.length > 0) {
+        const totalLoss = belowHppItems.reduce((a, it) => a + (it.hpp - it.unitPrice) * it.weight, 0);
+        createApproval({
+          concernType: 'so_price_below_hpp',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: soNumber,
+          title: `Harga SO ${soNumber} di bawah HPP · ${belowHppItems.length} produk`,
+          description: `${belowHppItems.length} produk memiliki harga jual di bawah HPP. Potensi kerugian ± Rp ${Math.round(totalLoss).toLocaleString('id-ID')}. Butuh approval Supervisor.`,
+          priority: totalLoss > 5_000_000 ? 'urgent' : totalLoss > 1_000_000 ? 'high' : 'normal',
+          amount: Math.round(totalLoss),
+          metadata: { soNumber, items: belowHppItems, totalLoss: Math.round(totalLoss) },
+          createdBy: session.user.email,
+        });
+      }
+
+      // Info notification to supervisor + direktur
+      const customer = db.select().from(s.contacts).where(eq(s.contacts.id, body.customerId)).get();
+      const soTotal = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get()?.totalAmount || 0;
+      createNotification({
+        roles: ['supervisor', 'direktur'],
+        type: 'info',
+        category: 'so_new',
+        title: `SO Baru · ${soNumber}`,
+        message: `SO untuk ${customer?.displayName || 'customer'} · Total Rp ${Math.round(soTotal).toLocaleString('id-ID')} · dibuat oleh ${session.user.name || session.user.email}.`,
+        entityType: 'SO', entityId: id, entityNumber: soNumber,
+        linkPath: `/dashboard/sales-orders/${id}`,
+      });
 
       return json({ data: created }, { status: 201 });
     }
@@ -1416,6 +1596,21 @@ async function handleRoute(request, { params }) {
           createdBy: session.user.email,
         });
       }
+      // Concern (Supervisor) when SO enters shipping stage
+      if (target === 'Shipped') {
+        createApproval({
+          concernType: 'so_shipping',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: so.soNumber,
+          title: `SO ${so.soNumber} sedang Pengiriman`,
+          description: `Sales Order ${so.soNumber} beralih ke status Shipped. Total Rp ${Number(so.totalAmount || 0).toLocaleString('id-ID')}. Concern Supervisor untuk memastikan proses pengiriman on-track.`,
+          priority: 'normal',
+          amount: Number(so.totalAmount || 0),
+          metadata: { previousStatus: so.pipelineStatus, soNumber: so.soNumber, stage: 'shipping' },
+          createdBy: session.user.email,
+        });
+      }
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       return json({ data: updated });
     }
@@ -1441,9 +1636,21 @@ async function handleRoute(request, { params }) {
         createdAt: new Date(),
       };
       db.insert(s.suratJalan).values(sj).run();
-      // Auto-transition Packed -> Shipped when SJ created
+      // Auto-transition Packed -> Shipped when SJ created + create Shipping concern
       if (so.pipelineStatus === 'Packed') {
         db.update(s.salesOrder).set({ pipelineStatus: 'Shipped', updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
+        createApproval({
+          concernType: 'so_shipping',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: so.soNumber,
+          title: `SO ${so.soNumber} sedang Pengiriman`,
+          description: `Surat Jalan ${sj.sjNumber} diterbitkan. SO ${so.soNumber} beralih ke Shipped. Total Rp ${Number(so.totalAmount || 0).toLocaleString('id-ID')}. Concern Supervisor untuk memantau proses pengiriman.`,
+          priority: 'normal',
+          amount: Number(so.totalAmount || 0),
+          metadata: { previousStatus: 'Packed', soNumber: so.soNumber, sjNumber: sj.sjNumber, stage: 'shipping', driverName: sj.driverName, vehicleNumber: sj.vehicleNumber },
+          createdBy: session.user.email,
+        });
       }
       return json({ data: sj }, { status: 201 });
     }
@@ -1926,6 +2133,16 @@ async function handleRoute(request, { params }) {
       };
       db.insert(s.workOrder).values(row).run();
       recalcWoCosts(id);
+      // Info notification to supervisor + direktur
+      createNotification({
+        roles: ['supervisor', 'direktur'],
+        type: 'info',
+        category: 'wo_new',
+        title: `WO Baru · ${row.woNumber}`,
+        message: `Work Order ${row.mode} dibuat oleh ${session.user.name || session.user.email}.`,
+        entityType: 'WO', entityId: id, entityNumber: row.woNumber,
+        linkPath: `/dashboard/work-orders/${id}`,
+      });
       return json({ data: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get() }, { status: 201 });
     }
 

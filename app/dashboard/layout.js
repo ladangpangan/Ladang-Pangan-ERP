@@ -9,5 +9,7 @@ export default async function DashboardLayout({ children }) {
     session = await getAuth().api.getSession({ headers: await headers() });
   } catch (e) {}
   if (!session?.user) redirect('/login');
+  // Operator role only has access to Tally App
+  if (session.user.role === 'operator') redirect('/tally');
   return <DashboardShell user={session.user}>{children}</DashboardShell>;
 }

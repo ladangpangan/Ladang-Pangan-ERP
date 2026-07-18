@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { authClient } from '@/lib/auth/auth-client';
@@ -8,11 +8,16 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuLabel, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
-  FileBarChart, Smartphone, UserCog, ClipboardCheck
+  FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDistanceToNow } from 'date-fns';
+import { id as idLocale } from 'date-fns/locale';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
@@ -52,6 +57,7 @@ const NAV = [
   {
     section: 'Sistem',
     items: [
+      { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur'] },
       { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['admin', 'supervisor', 'direktur'] },
       { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['admin','direktur'] },
     ],
@@ -147,11 +153,119 @@ export default function DashboardShell({ user, children }) {
           <div className="flex-1">
             <div className="text-sm text-muted-foreground">PT Ladang Pangan Indonesia</div>
           </div>
+          <NotificationBell />
           <Badge variant="secondary" className="hidden sm:inline-flex">Beta v0.1</Badge>
         </header>
         <main className="p-6">{children}</main>
       </div>
     </div>
+  );
+}
+
+function NotificationBell() {
+  const [items, setItems] = useState([]);
+  const [unread, setUnread] = useState(0);
+  const [openMenu, setOpenMenu] = useState(false);
+  const router = useRouter();
+
+  const fetchNotifs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/notifications?limit=15');
+      const data = await res.json();
+      setItems(Array.isArray(data.data) ? data.data : []);
+      setUnread(Number(data.unreadCount || 0));
+    } catch (e) {}
+  }, []);
+
+  useEffect(() => {
+    fetchNotifs();
+    const t = setInterval(fetchNotifs, 20000);
+    return () => clearInterval(t);
+  }, [fetchNotifs]);
+
+  const markAllRead = async () => {
+    await fetch('/api/notifications/read-all', { method: 'POST' });
+    fetchNotifs();
+  };
+
+  const openItem = async (n) => {
+    if (!n.isRead) {
+      try { await fetch(`/api/notifications/${n.id}/read`, { method: 'POST' }); } catch (e) {}
+    }
+    setOpenMenu(false);
+    fetchNotifs();
+    if (n.linkPath) router.push(n.linkPath);
+  };
+
+  const iconFor = (n) => {
+    if (n.type === 'approval') return <AlertTriangle className="w-4 h-4 text-amber-600" />;
+    if (n.type === 'concern') return <AlertTriangle className="w-4 h-4 text-red-600" />;
+    return <Info className="w-4 h-4 text-blue-600" />;
+  };
+
+  return (
+    <DropdownMenu open={openMenu} onOpenChange={setOpenMenu}>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="relative">
+          <Bell className="w-5 h-5" />
+          {unread > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+              {unread > 99 ? '99+' : unread}
+            </span>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-96 p-0">
+        <div className="flex items-center justify-between p-3 border-b">
+          <DropdownMenuLabel className="p-0">
+            Notifikasi {unread > 0 && <span className="ml-1 text-xs text-red-600 font-normal">({unread} belum dibaca)</span>}
+          </DropdownMenuLabel>
+          {unread > 0 && (
+            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={markAllRead}>
+              <CheckCheck className="w-3.5 h-3.5 mr-1" /> Tandai semua
+            </Button>
+          )}
+        </div>
+        <div className="max-h-[420px] overflow-y-auto">
+          {items.length === 0 && (
+            <div className="p-6 text-center text-sm text-muted-foreground">Belum ada notifikasi</div>
+          )}
+          {items.map(n => (
+            <button
+              key={n.id}
+              onClick={() => openItem(n)}
+              className={cn(
+                'w-full text-left p-3 border-b hover:bg-slate-50 flex gap-2',
+                !n.isRead && 'bg-emerald-50/40'
+              )}
+            >
+              <div className="mt-0.5">{iconFor(n)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div className={cn('text-sm truncate', !n.isRead && 'font-semibold')}>{n.title}</div>
+                  {!n.isRead && <span className="mt-1.5 w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />}
+                </div>
+                {n.message && <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</div>}
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  {(() => {
+                    try {
+                      const d = new Date(Number(n.createdAt) * 1000);
+                      if (!isNaN(d.getTime())) return formatDistanceToNow(d, { addSuffix: true, locale: idLocale });
+                    } catch (e) {}
+                    return '';
+                  })()}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+        <div className="p-2 border-t bg-slate-50">
+          <Link href="/dashboard/notifications" onClick={() => setOpenMenu(false)}>
+            <Button variant="ghost" className="w-full h-8 text-xs">Lihat semua notifikasi</Button>
+          </Link>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
