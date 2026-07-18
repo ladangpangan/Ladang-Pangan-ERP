@@ -19,7 +19,7 @@ import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, Che
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
-import { generateInvoicePDF } from '@/lib/pdf/invoice';
+import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -75,22 +75,42 @@ export default function SODetailPage() {
             ))}
           </div>
         )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            try {
-              const doc = generateInvoicePDF(so);
-              const name = so.invoiceNumber || so.soNumber;
-              doc.save(`Invoice-${name}.pdf`);
-              toast.success('PDF berhasil diunduh');
-            } catch (e) {
-              toast.error('Gagal membuat PDF: ' + e.message);
-            }
-          }}
-        >
-          <FileDown className="w-4 h-4 mr-1" /> PDF Invoice
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              try {
+                const doc = generateSOPDF(so);
+                doc.save(`SO-${so.soNumber}.pdf`);
+                toast.success('PDF SO berhasil diunduh');
+              } catch (e) {
+                console.error('PDF SO error:', e);
+                toast.error('Gagal membuat PDF SO: ' + (e.message || 'unknown'));
+              }
+            }}
+          >
+            <FileDown className="w-4 h-4 mr-1" /> PDF SO
+          </Button>
+          {(so.invoiceNumber || ['Shipped', 'Invoiced'].includes(so.pipelineStatus)) && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                try {
+                  const doc = generateInvoicePDF(so);
+                  doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
+                  toast.success('PDF Invoice berhasil diunduh');
+                } catch (e) {
+                  console.error('PDF Invoice error:', e);
+                  toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
+                }
+              }}
+            >
+              <FileDown className="w-4 h-4 mr-1" /> PDF Invoice
+            </Button>
+          )}
+        </div>
       </div>
 
       <Card><CardContent className="pt-6">
@@ -247,12 +267,28 @@ function SjTab({ so, onSaved, canOperate }) {
         {(so.suratJalan || []).length === 0 ? <div className="text-center py-8 text-muted-foreground text-sm">Belum ada Surat Jalan</div> :
           <div className="border rounded-lg divide-y">
             {so.suratJalan.map(sj => (
-              <div key={sj.id} className="p-3 flex items-center justify-between text-sm">
-                <div>
+              <div key={sj.id} className="p-3 flex items-center justify-between text-sm gap-2">
+                <div className="flex-1 min-w-0">
                   <div className="font-mono font-semibold">{sj.sjNumber}</div>
                   <div className="text-xs text-muted-foreground">{format(new Date(sj.deliveryDate), 'dd MMM yyyy')} · {sj.driverName || '-'} · {sj.vehicleNumber || '-'}</div>
                 </div>
                 <Badge>{sj.status}</Badge>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    try {
+                      const doc = generateSuratJalanPDF(sj, so);
+                      doc.save(`SJ-${sj.sjNumber}.pdf`);
+                      toast.success('PDF Surat Jalan berhasil diunduh');
+                    } catch (e) {
+                      console.error('PDF SJ error:', e);
+                      toast.error('Gagal PDF SJ: ' + (e.message || 'unknown'));
+                    }
+                  }}
+                >
+                  <FileDown className="w-4 h-4 mr-1" /> PDF
+                </Button>
               </div>
             ))}
           </div>}
