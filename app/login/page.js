@@ -27,7 +27,18 @@ export default function LoginPage() {
         setError(error.message || 'Login gagal');
       } else {
         toast.success('Login berhasil');
-        router.push('/dashboard');
+        // Get user role to determine landing page
+        try {
+          const meRes = await fetch('/api/me');
+          const me = await meRes.json();
+          if (me?.user?.role === 'operator') {
+            router.push('/tally');
+          } else {
+            router.push('/dashboard');
+          }
+        } catch (e) {
+          router.push('/dashboard');
+        }
         router.refresh();
       }
     } catch (e) {

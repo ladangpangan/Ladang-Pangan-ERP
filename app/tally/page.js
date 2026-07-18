@@ -85,7 +85,9 @@ export default function TallyHomePage() {
       </div>
 
       <div className="mt-6 text-center">
-        <Link href="/dashboard" className="text-xs text-muted-foreground hover:text-foreground">← Kembali ke Dashboard</Link>
+        {session?.user?.role !== 'operator' && (
+          <Link href="/dashboard" className="text-xs text-muted-foreground hover:text-foreground">← Kembali ke Dashboard</Link>
+        )}
       </div>
     </div>
   );
