@@ -135,6 +135,74 @@ async function handleRoute(request, { params }) {
       return json({ user: session.user });
     }
 
+    // ---------- APPROVALS / CONCERNS ----------
+    // GET /approvals - list concerns (supervisor + direktur + admin see all)
+    if (route === '/approvals' && method === 'GET') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const status = url.searchParams.get('status'); // pending | approved | rejected | all
+      const concernType = url.searchParams.get('type');
+      const conds = [];
+      if (status && status !== 'all') conds.push(eq(s.approvals.status, status));
+      if (concernType) conds.push(eq(s.approvals.concernType, concernType));
+      let query = db.select().from(s.approvals);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(desc(s.approvals.createdAt)).all();
+      const enriched = rows.map(r => ({
+        ...r,
+        metadata: r.metadata ? (() => { try { return JSON.parse(r.metadata); } catch { return null; } })() : null,
+      }));
+      // Also provide summary counts
+      const allRows = db.select({ status: s.approvals.status }).from(s.approvals).all();
+      const summary = {
+        total: allRows.length,
+        pending: allRows.filter(r => r.status === 'pending').length,
+        approved: allRows.filter(r => r.status === 'approved').length,
+        rejected: allRows.filter(r => r.status === 'rejected').length,
+      };
+      return json({ data: enriched, summary });
+    }
+
+    // POST /approvals/:id/action - take action (approve/reject as supervisor, acknowledge/flag as direktur)
+    if (route.startsWith('/approvals/') && path.length === 3 && path[2] === 'action' && method === 'POST') {
+      const { session, error } = await requireAuth();
+      if (error) return error;
+      const userRole = session.user.role;
+      if (!['admin', 'supervisor', 'direktur'].includes(userRole)) return err('Forbidden', 403);
+      const id = path[1];
+      const body = await request.json();
+      const { action, note } = body || {};
+      const ap = db.select().from(s.approvals).where(eq(s.approvals.id, id)).get();
+      if (!ap) return err('Concern tidak ditemukan', 404);
+
+      const now = new Date();
+      const upd = { updatedAt: now };
+
+      if (userRole === 'supervisor' || userRole === 'admin') {
+        // Supervisor / admin can approve or reject (drives status)
+        if (!['approved', 'rejected'].includes(action)) return err('action harus approved atau rejected untuk supervisor');
+        if (ap.status !== 'pending') return err(`Concern ini sudah ${ap.status}, tidak bisa diubah`);
+        upd.supervisorAction = action;
+        upd.supervisorNote = note || null;
+        upd.supervisorActedAt = now;
+        upd.supervisorActedBy = session.user.email;
+        upd.status = action; // approved | rejected
+      } else if (userRole === 'direktur') {
+        // Direktur: concern-only (add note, mark acknowledged/flagged, does NOT change status)
+        if (!['acknowledged', 'flagged'].includes(action)) return err('action harus acknowledged atau flagged untuk direktur');
+        upd.direkturAction = action;
+        upd.direkturNote = note || null;
+        upd.direkturActedAt = now;
+        upd.direkturActedBy = session.user.email;
+      }
+
+      db.update(s.approvals).set(upd).where(eq(s.approvals.id, id)).run();
+      const updated = db.select().from(s.approvals).where(eq(s.approvals.id, id)).get();
+      return json({ data: { ...updated, metadata: updated.metadata ? (() => { try { return JSON.parse(updated.metadata); } catch { return null; } })() : null } });
+    }
+
     // ---------- USERS ----------
     // GET /users - list users (admin/direktur)
     if (route === '/users' && method === 'GET') {
@@ -852,6 +920,19 @@ async function handleRoute(request, { params }) {
       if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
       else if (totalPaid > 0) ps = 'partial';
       db.update(s.purchaseOrder).set({ paymentStatus: ps, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      // Auto-create approval concern
+      createApproval({
+        concernType: 'purchase_return',
+        entityType: 'PR',
+        entityId: r.id,
+        entityNumber: r.returnNumber,
+        title: `Retur Pembelian ${r.returnNumber}`,
+        description: `PO ${po.poNumber} · Alasan: ${r.reason || '-'} · Resolusi: ${r.resolution}`,
+        priority: r.totalAmount > 5_000_000 ? 'high' : 'normal',
+        amount: r.totalAmount,
+        metadata: { poId: id, poNumber: po.poNumber, totalWeight: r.totalWeight },
+        createdBy: session.user.email,
+      });
       return json({ data: { ...r, notification: { to: ['supervisor', 'direktur'], subject: `Retur PO ${po.poNumber}` } } }, { status: 201 });
     }
 
@@ -951,6 +1032,31 @@ async function handleRoute(request, { params }) {
         if (!isNaN(n) && n > maxNum) maxNum = n;
       }
       return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
+    };
+
+    // Helper: create an approval concern
+    // Supervisor is the approver (approve/reject → drives status)
+    // Direktur is concern-only (view + optional acknowledge/flag, does not gate status)
+    const createApproval = ({ concernType, entityType, entityId, entityNumber, title, description, priority = 'normal', amount = 0, metadata = null, createdBy }) => {
+      const id = uuidv4();
+      db.insert(s.approvals).values({
+        id,
+        concernType,
+        entityType,
+        entityId,
+        entityNumber,
+        requiredRole: 'both', // supervisor approver + direktur concern
+        title,
+        description,
+        priority,
+        amount,
+        metadata: metadata ? (typeof metadata === 'string' ? metadata : JSON.stringify(metadata)) : null,
+        status: 'pending',
+        createdBy: createdBy || 'system',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).run();
+      return id;
     };
 
     const recalcSoTotals = (soId) => {
@@ -1397,6 +1503,20 @@ async function handleRoute(request, { params }) {
         }).run();
       }
 
+      // Auto-create approval concern for supervisor + direktur
+      createApproval({
+        concernType: 'sales_return',
+        entityType: 'SR',
+        entityId: r.id,
+        entityNumber: r.returnNumber,
+        title: `Retur Penjualan ${r.returnNumber}`,
+        description: `SO ${so.soNumber} · Alasan: ${r.reason || '-'} · Resolusi: ${r.resolution} · ${restoredCount} stok dikembalikan`,
+        priority: r.totalAmount > 5_000_000 ? 'high' : 'normal',
+        amount: r.totalAmount,
+        metadata: { soId: id, soNumber: so.soNumber, totalWeight: r.totalWeight, restoredCount },
+        createdBy: session.user.email,
+      });
+
       recomputeSoPaymentStatus(id);
       return json({
         data: {
@@ -1491,6 +1611,22 @@ async function handleRoute(request, { params }) {
       db.insert(s.salesOrderReceipts).values(rec).run();
       for (const li of lineItems) {
         db.insert(s.salesOrderReceiptItems).values({ ...li, receiptId: rec.id }).run();
+      }
+
+      // Auto-create approval concern if shrinkage > 5%
+      if (totalShrinkagePct > 5 || totalShrinkageValue > 500_000) {
+        createApproval({
+          concernType: 'high_shrinkage',
+          entityType: 'RCP',
+          entityId: rec.id,
+          entityNumber: rec.receiptNumber,
+          title: `Penyusutan Tinggi ${totalShrinkagePct.toFixed(2)}% pada ${so.soNumber}`,
+          description: `Penerimaan ${rec.receiptNumber} · Susut ${totalShrinkage.toFixed(2)} kg dari ${totalOrdered.toFixed(2)} kg · Nilai Rp ${Math.round(totalShrinkageValue).toLocaleString('id-ID')}${applyToInvoice ? ' · dipotong dari invoice' : ''}`,
+          priority: totalShrinkagePct > 10 ? 'urgent' : 'high',
+          amount: totalShrinkageValue,
+          metadata: { soId: id, soNumber: so.soNumber, shrinkagePct: totalShrinkagePct, shrinkageWeight: totalShrinkage, applyToInvoice },
+          createdBy: session.user.email,
+        });
       }
 
       // If applyToInvoice, treat shrinkageValue as an implicit return (potong outstanding via recompute)

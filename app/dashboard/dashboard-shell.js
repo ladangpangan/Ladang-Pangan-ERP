@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
-  FileBarChart, Smartphone, UserCog
+  FileBarChart, Smartphone, UserCog, ClipboardCheck
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -52,6 +52,7 @@ const NAV = [
   {
     section: 'Sistem',
     items: [
+      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['admin', 'supervisor', 'direktur'] },
       { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['admin','direktur'] },
     ],
   },
