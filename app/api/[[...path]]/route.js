@@ -2098,6 +2098,13 @@ async function handleRoute(request, { params }) {
         const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).where(eq(s.products.id, r.productId)).get();
         const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
         const zone = r.zoneId ? db.select({ code: s.zones.code, name: s.zones.name }).from(s.zones).where(eq(s.zones.id, r.zoneId)).get() : null;
+        // Source lookup (PO/WO reference number for grouping)
+        let source = null;
+        if (r.sourceType === 'PO' && r.sourceBatch) {
+          source = db.select({ id: s.purchaseOrder.id, number: s.purchaseOrder.poNumber, poType: s.purchaseOrder.poType, orderDate: s.purchaseOrder.orderDate }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.sourceBatch)).get();
+        } else if (r.sourceType === 'WO' && r.sourceBatch) {
+          source = db.select({ id: s.workOrder.id, number: s.workOrder.woNumber, mode: s.workOrder.mode, startDate: s.workOrder.startDate }).from(s.workOrder).where(eq(s.workOrder.id, r.sourceBatch)).get();
+        }
         const daysToExpire = r.expiredDate ? Math.floor((new Date(r.expiredDate).getTime() - Date.now()) / (24*60*60*1000)) : null;
         const reserved = reservedMap[r.id] || { weight: 0, quantity: 0, sos: new Set() };
         let reservedWeight = reserved.weight;
@@ -2111,7 +2118,7 @@ async function handleRoute(request, { params }) {
         const availableWeight = Math.max(0, Number(r.weight || 0) - reservedWeight);
         const availableQty = Math.max(0, Number(r.quantity || 0) - reservedQty);
         return {
-          ...r, product: p, coldStorage: cs, zone, daysToExpire,
+          ...r, product: p, coldStorage: cs, zone, source, daysToExpire,
           reservedWeight, reservedQty,
           reservedSoCount: reserved.sos ? reserved.sos.size : 0,
           availableWeight, availableQty,

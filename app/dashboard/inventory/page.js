@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye } from 'lucide-react';
+import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -29,6 +29,8 @@ export default function InventoryPage() {
 
   const [filter, setFilter] = useState({ cs: 'all', product: 'all', status: 'active', sort: 'FEFO', q: '' });
   const [selected, setSelected] = useState([]);
+  const [viewMode, setViewMode] = useState('flat'); // 'flat' or 'grouped'
+  const [expandedGroups, setExpandedGroups] = useState({}); // { key: bool }
 
   const { data: cs } = useSWR('/api/cold-storages', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
@@ -89,6 +91,26 @@ export default function InventoryPage() {
               <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="opened">Opened</SelectItem><SelectItem value="used">Used</SelectItem><SelectItem value="damaged">Damaged</SelectItem><SelectItem value="all">Semua</SelectItem></SelectContent>
             </Select>
+            <div className="flex gap-1 border rounded-md p-1">
+              <Button
+                size="sm"
+                variant={viewMode === 'flat' ? 'default' : 'ghost'}
+                onClick={() => setViewMode('flat')}
+                className="h-7 px-2"
+                title="Tampilan tabel"
+              >
+                <LayoutList className="w-4 h-4" />
+              </Button>
+              <Button
+                size="sm"
+                variant={viewMode === 'grouped' ? 'default' : 'ghost'}
+                onClick={() => setViewMode('grouped')}
+                className="h-7 px-2"
+                title="Group by PO/WO"
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
           {selected.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap p-3 rounded-lg bg-slate-100">
@@ -101,6 +123,12 @@ export default function InventoryPage() {
           )}
         </CardHeader>
         <CardContent className="p-0">
+          {isLoading && <div className="p-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
+          {!isLoading && rows.length === 0 && <div className="p-8 text-center text-muted-foreground">Belum ada stock</div>}
+          {!isLoading && rows.length > 0 && viewMode === 'grouped' && (
+            <GroupedView rows={rows} selected={selected} toggle={toggle} canOperate={canOperate} mutate={mutate} expandedGroups={expandedGroups} setExpandedGroups={setExpandedGroups} />
+          )}
+          {!isLoading && rows.length > 0 && viewMode === 'flat' && (
           <Table>
             <TableHeader><TableRow>
               {canOperate && <TableHead className="w-10"><Checkbox checked={selected.length === rows.length && rows.length > 0} onCheckedChange={toggleAll} /></TableHead>}
@@ -111,8 +139,6 @@ export default function InventoryPage() {
               <TableHead>Status</TableHead><TableHead></TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {isLoading && <TableRow><TableCell colSpan={11} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={11} className="text-center py-8 text-muted-foreground">Belum ada stock</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id} className={selected.includes(r.id) ? 'bg-emerald-50' : 'hover:bg-slate-50'}>
                   {canOperate && <TableCell><Checkbox checked={selected.includes(r.id)} onCheckedChange={() => toggle(r.id)} /></TableCell>}
@@ -123,7 +149,7 @@ export default function InventoryPage() {
                   <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
                   <TableCell className="text-right">{r.quantity}</TableCell>
                   <TableCell className="text-sm">{r.expiredDate ? <><div>{format(new Date(r.expiredDate), 'dd MMM yyyy')}</div>{r.daysToExpire !== null && <div className={`text-xs ${r.daysToExpire < 0 ? 'text-red-600 font-bold' : r.daysToExpire <= 7 ? 'text-amber-600' : 'text-muted-foreground'}`}>{r.daysToExpire < 0 ? `Expired ${-r.daysToExpire}d` : `${r.daysToExpire}d`}</div>}</> : '-'}</TableCell>
-                  <TableCell className="text-xs">{r.sourceType ? <Badge variant="secondary">{r.sourceType}</Badge> : '-'}</TableCell>
+                  <TableCell className="text-xs">{r.source?.number ? <Badge variant="secondary" className="font-mono">{r.sourceType} · {r.source.number}</Badge> : (r.sourceType ? <Badge variant="secondary">{r.sourceType}</Badge> : '-')}</TableCell>
                   <TableCell><Badge className={r.status === 'active' ? 'bg-emerald-100 text-emerald-700' : r.status === 'damaged' ? 'bg-red-100 text-red-700' : r.status === 'opened' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}>{r.status}</Badge></TableCell>
                   <TableCell className="space-x-1">
                     <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
@@ -133,6 +159,7 @@ export default function InventoryPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -142,6 +169,136 @@ export default function InventoryPage() {
 function Stat({ label, value, color = 'slate' }) {
   const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-slate-900' }[color];
   return <Card><CardContent className="pt-6"><div className="text-xs text-muted-foreground uppercase">{label}</div><div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div></CardContent></Card>;
+}
+
+function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroups, setExpandedGroups }) {
+  // Group by sourceType + sourceBatch (or 'manual' if empty)
+  const groups = {};
+  for (const r of rows) {
+    const key = r.sourceType && r.sourceBatch ? `${r.sourceType}::${r.sourceBatch}` : 'MANUAL';
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        sourceType: r.sourceType || 'MANUAL',
+        sourceNumber: r.source?.number || null,
+        sourceOrderDate: r.source?.orderDate || r.source?.startDate || null,
+        items: [],
+        totalWeight: 0,
+        productSet: new Set(),
+      };
+    }
+    groups[key].items.push(r);
+    groups[key].totalWeight += Number(r.weight || 0);
+    if (r.product?.name) groups[key].productSet.add(r.product.name);
+  }
+  const groupsList = Object.values(groups).sort((a, b) => {
+    // MANUAL last, else newest source first
+    if (a.sourceType === 'MANUAL') return 1;
+    if (b.sourceType === 'MANUAL') return -1;
+    return (b.sourceOrderDate || 0) - (a.sourceOrderDate || 0);
+  });
+
+  const toggleGroup = (key) => setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+
+  return (
+    <div className="divide-y">
+      {groupsList.map(g => {
+        const isExpanded = expandedGroups[g.key] !== false; // default expanded
+        const Icon = g.sourceType === 'PO' ? ShoppingCart : g.sourceType === 'WO' ? ClipboardList : Package;
+        const badgeColor = g.sourceType === 'PO' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                           g.sourceType === 'WO' ? 'bg-purple-100 text-purple-700 border-purple-200' :
+                           'bg-slate-100 text-slate-700 border-slate-200';
+        return (
+          <div key={g.key}>
+            <button
+              type="button"
+              onClick={() => toggleGroup(g.key)}
+              className="w-full flex items-center gap-3 p-4 hover:bg-slate-50 text-left"
+            >
+              {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+              <Icon className="w-5 h-5 text-slate-600" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant="outline" className={`font-mono text-xs ${badgeColor}`}>
+                    {g.sourceType}{g.sourceNumber ? ` · ${g.sourceNumber}` : ''}
+                  </Badge>
+                  <span className="text-sm font-semibold">{g.items.length} kode simpan</span>
+                  <span className="text-xs text-muted-foreground">
+                    · {Array.from(g.productSet).slice(0, 2).join(', ')}
+                    {g.productSet.size > 2 && ` +${g.productSet.size - 2} lain`}
+                  </span>
+                </div>
+                {g.sourceOrderDate && (
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {format(new Date(g.sourceOrderDate), 'dd MMM yyyy')}
+                  </div>
+                )}
+              </div>
+              <div className="text-right">
+                <div className="text-lg font-bold text-emerald-700">{g.totalWeight.toFixed(1)} kg</div>
+                <div className="text-[10px] text-muted-foreground uppercase">total</div>
+              </div>
+            </button>
+            {isExpanded && (
+              <div className="bg-slate-50/50 px-4 pb-4">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      {canOperate && <TableHead className="w-10"></TableHead>}
+                      <TableHead>Kode Simpan</TableHead>
+                      <TableHead>Produk</TableHead>
+                      <TableHead>CS / Zone</TableHead>
+                      <TableHead>Pkg</TableHead>
+                      <TableHead className="text-right">Berat</TableHead>
+                      <TableHead>Expired</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {g.items.map(r => (
+                      <TableRow key={r.id} className={selected.includes(r.id) ? 'bg-emerald-50' : 'hover:bg-white'}>
+                        {canOperate && <TableCell><Checkbox checked={selected.includes(r.id)} onCheckedChange={() => toggle(r.id)} /></TableCell>}
+                        <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}</TableCell>
+                        <TableCell>
+                          <div className="font-medium text-sm">{r.product?.name}</div>
+                          <div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div>
+                        </TableCell>
+                        <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
+                        <TableCell><Badge variant="outline" className="text-xs">{r.packagingType}</Badge></TableCell>
+                        <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
+                        <TableCell className="text-sm">
+                          {r.expiredDate ? (
+                            <>
+                              <div>{format(new Date(r.expiredDate), 'dd MMM yyyy')}</div>
+                              {r.daysToExpire !== null && (
+                                <div className={`text-xs ${r.daysToExpire < 0 ? 'text-red-600 font-bold' : r.daysToExpire <= 7 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                                  {r.daysToExpire < 0 ? `Expired ${-r.daysToExpire}d` : `${r.daysToExpire}d`}
+                                </div>
+                              )}
+                            </>
+                          ) : '-'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={r.status === 'active' ? 'bg-emerald-100 text-emerald-700' : r.status === 'damaged' ? 'bg-red-100 text-red-700' : r.status === 'opened' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}>
+                            {r.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="space-x-1">
+                          <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                          {canOperate && r.packagingType === 'karung' && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function TransferCsDialog({ stockIds, onDone, cs }) {
