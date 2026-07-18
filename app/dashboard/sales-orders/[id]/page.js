@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth/auth-client';
+import { cn } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,8 +15,8 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, CheckCircle2, XCircle, Bell, Printer, FileDown } from 'lucide-react';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
@@ -124,24 +125,32 @@ export default function SODetailPage() {
         </div>
       </CardContent></Card>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <SumCard label="Total SO" value={`Rp ${Number(so.totalAmount).toLocaleString('id-ID')}`} sub={`Diskon Rp ${Number(so.discountTotal || 0).toLocaleString('id-ID')}`} />
         <SumCard label="Sudah Dibayar" value={`Rp ${Number(so.paidAmount).toLocaleString('id-ID')}`} sub={`Status: ${so.paymentStatus}`} color="emerald" />
         <SumCard label="Total Retur" value={`Rp ${Number(so.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${so.returns?.length || 0} retur`} color="amber" />
+        <SumCard
+          label="Penyusutan"
+          value={`${Number(so.totalShrinkageWeight || 0).toFixed(2)} kg`}
+          sub={`Rp ${Number(so.totalShrinkageValue || 0).toLocaleString('id-ID')} · ${so.receipts?.length || 0} penerimaan`}
+          color={so.totalShrinkageWeight > 0 ? 'amber' : 'slate'}
+        />
         <SumCard label="Outstanding" value={`Rp ${Number(so.outstanding || 0).toLocaleString('id-ID')}`} sub={so.paymentTerm || '-'} color={so.outstanding > 0 ? 'red' : 'slate'} />
       </div>
 
       <Tabs defaultValue="items">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-5">
+        <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
           <TabsTrigger value="info"><Receipt className="w-4 h-4 mr-1" />Info</TabsTrigger>
           <TabsTrigger value="items"><Package className="w-4 h-4 mr-1" />Items</TabsTrigger>
           <TabsTrigger value="sj"><Truck className="w-4 h-4 mr-1" />Surat Jalan</TabsTrigger>
+          <TabsTrigger value="receipts"><PackageCheck className="w-4 h-4 mr-1" />Penerimaan</TabsTrigger>
           <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payment</TabsTrigger>
           <TabsTrigger value="returns"><RotateCcw className="w-4 h-4 mr-1" />Retur</TabsTrigger>
         </TabsList>
         <TabsContent value="info"><InfoTab so={so} /></TabsContent>
         <TabsContent value="items"><ItemsTab so={so} /></TabsContent>
         <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
+        <TabsContent value="receipts"><ReceiptsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
         <TabsContent value="payments"><PaymentsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
@@ -431,4 +440,339 @@ function ReturnsTab({ so, onSaved, canOperate }) {
 
 function F({ label, children, className = '' }) {
   return <div className={`space-y-1.5 ${className}`}><Label className="text-xs">{label}</Label>{children}</div>;
+}
+
+function ReceiptsTab({ so, onSaved, canOperate }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [applyToInvoice, setApplyToInvoice] = useState(false);
+  const [receivedDate, setReceivedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [receivedBy, setReceivedBy] = useState('');
+  const [notes, setNotes] = useState('');
+  const [items, setItems] = useState([]); // [{productId, productName, sku, unit, orderedWeight, avgUnitPrice, receivedWeight}]
+
+  // On dialog open, aggregate SO items by product
+  useEffect(() => {
+    if (open) {
+      const map = {};
+      for (const it of (so.items || [])) {
+        const pid = it.productId;
+        if (!map[pid]) map[pid] = {
+          productId: pid,
+          productName: it.product?.name || 'Unknown',
+          sku: it.product?.sku || '',
+          unit: it.product?.unit || 'kg',
+          orderedWeight: 0,
+          totalValue: 0,
+        };
+        map[pid].orderedWeight += Number(it.weight || 0);
+        map[pid].totalValue += Number(it.weight || 0) * Number(it.unitPrice || 0);
+      }
+      const arr = Object.values(map).map(m => ({
+        ...m,
+        avgUnitPrice: m.orderedWeight > 0 ? m.totalValue / m.orderedWeight : 0,
+        receivedWeight: m.orderedWeight, // default: full received
+      }));
+      setItems(arr);
+      setReceivedDate(new Date().toISOString().slice(0, 10));
+      setReceivedBy('');
+      setNotes('');
+      setApplyToInvoice(false);
+    }
+  }, [open, so]);
+
+  const updItem = (idx, patch) => setItems(items.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+
+  const totals = items.reduce((acc, it) => {
+    const shrinkageW = Math.max(0, it.orderedWeight - Number(it.receivedWeight || 0));
+    const shrinkageV = shrinkageW * it.avgUnitPrice;
+    acc.ordered += it.orderedWeight;
+    acc.received += Number(it.receivedWeight || 0);
+    acc.shrinkageW += shrinkageW;
+    acc.shrinkageV += shrinkageV;
+    return acc;
+  }, { ordered: 0, received: 0, shrinkageW: 0, shrinkageV: 0 });
+
+  const totalShrinkagePct = totals.ordered > 0 ? (totals.shrinkageW / totals.ordered) * 100 : 0;
+
+  const submit = async () => {
+    if (items.length === 0) return toast.error('Tidak ada produk untuk diterima');
+    for (const it of items) {
+      if (Number(it.receivedWeight || 0) > it.orderedWeight + 0.0001) {
+        return toast.error(`Berat diterima melebihi SO pada ${it.productName}`);
+      }
+    }
+    setSaving(true);
+    try {
+      const body = {
+        receivedDate,
+        receivedBy,
+        notes,
+        applyToInvoice,
+        items: items.map(it => ({
+          productId: it.productId,
+          receivedWeight: Number(it.receivedWeight || 0),
+          notes: it.notes || undefined,
+        })),
+      };
+      const res = await fetch(`/api/sales-orders/${so.id}/receipts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success(`Penerimaan tercatat: ${j.data.receiptNumber} (susut ${j.data.totalShrinkageWeight?.toFixed?.(2) || 0} kg)`);
+      setOpen(false);
+      onSaved?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async (receiptId) => {
+    if (!confirm('Hapus penerimaan ini?')) return;
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/receipts/${receiptId}`, { method: 'DELETE' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Penerimaan dihapus');
+      onSaved?.();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const shipped = ['Shipped', 'Invoiced'].includes(so.pipelineStatus);
+  const receipts = so.receipts || [];
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="text-base flex items-center gap-2">
+            <PackageCheck className="w-4 h-4" /> Penerimaan Customer
+          </CardTitle>
+          <CardDescription>Catat berat diterima customer per <b>produk</b>, sistem otomatis hitung penyusutan (susut) dan nilai kerugian.</CardDescription>
+        </div>
+        {canOperate && shipped && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <PackageCheck className="w-4 h-4 mr-1" />Catat Penerimaan
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Catat Penerimaan Customer</DialogTitle>
+                <DialogDescription>
+                  Masukkan <b>berat aktual yang diterima</b> customer per produk. Selisih vs berat SO otomatis jadi penyusutan.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid grid-cols-2 gap-3">
+                <F label="Tanggal Penerimaan">
+                  <Input type="date" value={receivedDate} onChange={e => setReceivedDate(e.target.value)} />
+                </F>
+                <F label="Diterima oleh (nama PIC customer)">
+                  <Input value={receivedBy} onChange={e => setReceivedBy(e.target.value)} placeholder="Contoh: Pak Budi" />
+                </F>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2 text-sm">
+                  <Calculator className="w-4 h-4" /> Rekap per Produk (dari SO)
+                </Label>
+                <div className="border rounded-lg overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Produk</TableHead>
+                        <TableHead className="text-right">Ordered (kg)</TableHead>
+                        <TableHead className="text-right">Diterima (kg) *</TableHead>
+                        <TableHead className="text-right">Susut (kg)</TableHead>
+                        <TableHead className="text-right">Susut (%)</TableHead>
+                        <TableHead className="text-right">Nilai Susut</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {items.map((it, i) => {
+                        const shrinkageW = Math.max(0, it.orderedWeight - Number(it.receivedWeight || 0));
+                        const shrinkageP = it.orderedWeight > 0 ? (shrinkageW / it.orderedWeight) * 100 : 0;
+                        const shrinkageV = shrinkageW * it.avgUnitPrice;
+                        const isBig = shrinkageP > 2;
+                        return (
+                          <TableRow key={i}>
+                            <TableCell>
+                              <div className="font-medium text-sm">{it.productName}</div>
+                              <div className="text-[10px] text-muted-foreground font-mono">{it.sku}</div>
+                              <div className="text-[10px] text-muted-foreground">Avg Rp {Number(it.avgUnitPrice).toLocaleString('id-ID')}/kg</div>
+                            </TableCell>
+                            <TableCell className="text-right font-semibold">{it.orderedWeight.toFixed(2)}</TableCell>
+                            <TableCell className="text-right">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                className="w-24 ml-auto text-right font-semibold"
+                                value={it.receivedWeight}
+                                max={it.orderedWeight}
+                                onChange={e => updItem(i, { receivedWeight: Number(e.target.value) })}
+                              />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className={cn('font-semibold', isBig ? 'text-red-600' : 'text-amber-600')}>
+                                {shrinkageW.toFixed(2)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Badge variant="outline" className={cn(shrinkageP > 5 ? 'bg-red-50 text-red-700 border-red-200' : shrinkageP > 2 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200')}>
+                                {shrinkageP.toFixed(2)}%
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right font-semibold text-red-600">
+                              Rp {Math.round(shrinkageV).toLocaleString('id-ID')}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                      <TableRow className="bg-slate-50 font-bold">
+                        <TableCell>TOTAL</TableCell>
+                        <TableCell className="text-right">{totals.ordered.toFixed(2)}</TableCell>
+                        <TableCell className="text-right">{totals.received.toFixed(2)}</TableCell>
+                        <TableCell className="text-right text-red-600">{totals.shrinkageW.toFixed(2)}</TableCell>
+                        <TableCell className="text-right">
+                          <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                            {totalShrinkagePct.toFixed(2)}%
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right text-red-600">Rp {Math.round(totals.shrinkageV).toLocaleString('id-ID')}</TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              <F label="Catatan">
+                <Textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Opsional: kondisi barang, dsb" />
+              </F>
+
+              <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <input
+                  type="checkbox"
+                  id="applyToInvoice"
+                  checked={applyToInvoice}
+                  onChange={(e) => setApplyToInvoice(e.target.checked)}
+                  className="mt-1"
+                />
+                <label htmlFor="applyToInvoice" className="text-sm flex-1 cursor-pointer">
+                  <div className="font-semibold">Potong Invoice sesuai penyusutan?</div>
+                  <div className="text-xs text-muted-foreground">
+                    Jika dicentang, sistem otomatis membuat catatan retur senilai Rp {Math.round(totals.shrinkageV).toLocaleString('id-ID')} untuk memotong outstanding customer. Cocok untuk kesepakatan potong berat susut.
+                  </div>
+                </label>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setOpen(false)}>Batal</Button>
+                <Button onClick={submit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+                  {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  Simpan Penerimaan
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+      </CardHeader>
+      <CardContent>
+        {!shipped && (
+          <div className="text-center py-6 text-sm text-muted-foreground">
+            Penerimaan hanya bisa dicatat setelah SO status Shipped/Invoiced.
+          </div>
+        )}
+        {shipped && receipts.length === 0 && (
+          <div className="text-center py-8 text-muted-foreground text-sm">Belum ada penerimaan tercatat</div>
+        )}
+        {receipts.length > 0 && (
+          <div className="space-y-3">
+            {receipts.map(r => (
+              <div key={r.id} className="border rounded-lg p-3 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <div className="font-mono font-semibold">{r.receiptNumber}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {format(new Date(r.receivedDate), 'dd MMM yyyy')}
+                      {r.receivedBy && ` · Diterima oleh ${r.receivedBy}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className={r.status === 'received' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : r.status === 'partial' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-red-50 text-red-700 border-red-200'}>
+                      {r.status}
+                    </Badge>
+                    {r.applyToInvoice && (
+                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-[10px]">
+                        <TrendingDown className="w-3 h-3 mr-1" /> potong invoice
+                      </Badge>
+                    )}
+                    <Button size="icon" variant="ghost" onClick={() => del(r.id)} title="Hapus" className="h-6 w-6 text-red-500">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                  <div className="p-2 bg-slate-50 rounded">
+                    <div className="text-muted-foreground">Ordered</div>
+                    <div className="font-bold">{Number(r.totalOrderedWeight).toFixed(2)} kg</div>
+                  </div>
+                  <div className="p-2 bg-emerald-50 rounded">
+                    <div className="text-muted-foreground">Diterima</div>
+                    <div className="font-bold text-emerald-700">{Number(r.totalReceivedWeight).toFixed(2)} kg</div>
+                  </div>
+                  <div className="p-2 bg-amber-50 rounded">
+                    <div className="text-muted-foreground">Susut</div>
+                    <div className="font-bold text-amber-700">{Number(r.totalShrinkageWeight).toFixed(2)} kg ({Number(r.totalShrinkagePct).toFixed(2)}%)</div>
+                  </div>
+                  <div className="p-2 bg-red-50 rounded">
+                    <div className="text-muted-foreground">Nilai Susut</div>
+                    <div className="font-bold text-red-600">Rp {Number(r.totalShrinkageValue).toLocaleString('id-ID')}</div>
+                  </div>
+                </div>
+                {r.items?.length > 0 && (
+                  <div className="border rounded overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Produk</TableHead>
+                          <TableHead className="text-right">Ordered</TableHead>
+                          <TableHead className="text-right">Diterima</TableHead>
+                          <TableHead className="text-right">Susut kg</TableHead>
+                          <TableHead className="text-right">Susut %</TableHead>
+                          <TableHead className="text-right">Nilai</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {r.items.map((li) => (
+                          <TableRow key={li.id}>
+                            <TableCell className="text-xs">
+                              <div className="font-medium">{li.product?.name}</div>
+                              <div className="text-[10px] text-muted-foreground font-mono">{li.product?.sku}</div>
+                            </TableCell>
+                            <TableCell className="text-right text-xs">{Number(li.orderedWeight).toFixed(2)} kg</TableCell>
+                            <TableCell className="text-right text-xs text-emerald-700">{Number(li.receivedWeight).toFixed(2)} kg</TableCell>
+                            <TableCell className="text-right text-xs text-amber-700">{Number(li.shrinkageWeight).toFixed(2)}</TableCell>
+                            <TableCell className="text-right text-xs">{Number(li.shrinkagePct).toFixed(2)}%</TableCell>
+                            <TableCell className="text-right text-xs text-red-600">Rp {Number(li.shrinkageValue).toLocaleString('id-ID')}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+                {r.notes && <div className="text-xs text-muted-foreground italic">Catatan: {r.notes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
