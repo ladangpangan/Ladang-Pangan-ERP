@@ -796,6 +796,21 @@ async function handleRoute(request, { params }) {
       const allowed = PO_FLOW[po.pipelineStatus] || [];
       if (!allowed.includes(target)) return err(`Transisi ${po.pipelineStatus} -> ${target} tidak diizinkan`);
       db.update(s.purchaseOrder).set({ pipelineStatus: target, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      // Auto-create approval concern for PO Cancellation
+      if (target === 'Dibatalkan' || target === 'Cancelled') {
+        createApproval({
+          concernType: 'po_cancel',
+          entityType: 'PO',
+          entityId: id,
+          entityNumber: po.poNumber,
+          title: `Pembatalan PO ${po.poNumber}`,
+          description: `Purchase Order dibatalkan dari status ${po.pipelineStatus}. Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}`,
+          priority: Number(po.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
+          amount: Number(po.totalAmount || 0),
+          metadata: { previousStatus: po.pipelineStatus, poNumber: po.poNumber },
+          createdBy: session.user.email,
+        });
+      }
       const updated = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       return json({ data: updated });
     }
@@ -1178,6 +1193,26 @@ async function handleRoute(request, { params }) {
       }
       recalcSoTotals(id);
       const created = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+
+      // Auto-create approval concern if discount is significant (>10% or > Rp 1jt)
+      const discountTotal = body.items.reduce((a, it) => a + Number(it.discount || 0), 0);
+      const grossTotal = body.items.reduce((a, it) => a + Number(it.unitPrice || 0) * Number(it.weight || it.quantity || 0), 0);
+      const discountPct = grossTotal > 0 ? (discountTotal / grossTotal) * 100 : 0;
+      if (discountTotal > 1_000_000 || discountPct > 10) {
+        createApproval({
+          concernType: 'so_large_discount',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: soNumber,
+          title: `Diskon Besar SO ${soNumber} · Rp ${Math.round(discountTotal).toLocaleString('id-ID')} (${discountPct.toFixed(2)}%)`,
+          description: `Sales Order dengan diskon signifikan. Gross Rp ${Math.round(grossTotal).toLocaleString('id-ID')} · Diskon Rp ${Math.round(discountTotal).toLocaleString('id-ID')} · Net Rp ${Math.round(grossTotal - discountTotal).toLocaleString('id-ID')}`,
+          priority: discountPct > 20 ? 'urgent' : discountPct > 10 ? 'high' : 'normal',
+          amount: discountTotal,
+          metadata: { soNumber, grossTotal, discountTotal, discountPct: Math.round(discountPct * 100) / 100 },
+          createdBy: session.user.email,
+        });
+      }
+
       return json({ data: created }, { status: 201 });
     }
 
@@ -1366,6 +1401,21 @@ async function handleRoute(request, { params }) {
         }
       }
       db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
+      // Auto-create approval concern for SO Cancellation
+      if (target === 'Cancelled') {
+        createApproval({
+          concernType: 'so_cancel',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: so.soNumber,
+          title: `Pembatalan SO ${so.soNumber}`,
+          description: `Sales Order dibatalkan dari status ${so.pipelineStatus}. Total Rp ${Number(so.totalAmount || 0).toLocaleString('id-ID')}`,
+          priority: Number(so.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
+          amount: Number(so.totalAmount || 0),
+          metadata: { previousStatus: so.pipelineStatus, soNumber: so.soNumber },
+          createdBy: session.user.email,
+        });
+      }
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       return json({ data: updated });
     }
@@ -2590,6 +2640,23 @@ async function handleRoute(request, { params }) {
       if (!op) return err('Not found', 404);
       if (op.status !== 'draft') return err('Hanya draft yang bisa submit');
       db.update(s.stockOpname).set({ status: 'submitted', submittedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      // Auto-create approval concern if variance is significant
+      const absVarianceKg = Math.abs(Number(op.totalDeltaWeight || 0));
+      if (absVarianceKg > 0.01) {
+        const sign = Number(op.totalDeltaWeight || 0) > 0 ? '+' : '';
+        createApproval({
+          concernType: 'opname_variance',
+          entityType: 'OPNAME',
+          entityId: id,
+          entityNumber: op.opnameNumber,
+          title: `Stock Opname ${op.opnameNumber} · Variance ${sign}${Number(op.totalDeltaWeight).toFixed(2)} kg`,
+          description: `Selisih fisik vs sistem: ${sign}${Number(op.totalDeltaWeight).toFixed(2)} kg · ${sign}${Number(op.totalDeltaQty || 0)} qty · perlu review sebelum adjustment diterapkan`,
+          priority: absVarianceKg > 100 ? 'urgent' : absVarianceKg > 20 ? 'high' : 'normal',
+          amount: 0,
+          metadata: { opnameNumber: op.opnameNumber, totalDeltaWeight: op.totalDeltaWeight, totalDeltaQty: op.totalDeltaQty },
+          createdBy: session.user.email,
+        });
+      }
       return json({ data: { ok: true, notification: { to: ['supervisor', 'direktur'], subject: `Stock Opname ${op.opnameNumber} menunggu approval` } } });
     }
     // POST /opnames/:id/approve - supervisor/admin approve -> create adjustment tx + update stocks
