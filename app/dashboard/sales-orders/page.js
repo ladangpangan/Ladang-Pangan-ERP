@@ -148,15 +148,16 @@ function CreateSODialog({ onSaved }) {
   const pickStock = (idx, stk) => {
     const product = products.find(p => p.id === stk.productId) || stk.product || {};
     const csZone = [stk.coldStorage?.code, stk.zone?.code].filter(Boolean).join(' / ');
+    const avail = Number(stk.availableWeight !== undefined ? stk.availableWeight : stk.weight || 0);
     updItem(idx, {
       stockId: stk.id,
       productId: stk.productId,
       productName: product.name || '',
       kodeSimpan: stk.kodeSimpan,
       csLabel: csZone,
-      availableWeight: Number(stk.weight || 0),
-      weight: Number(stk.weight || 0), // default: sell all
-      quantity: Number(stk.quantity || 0),
+      availableWeight: avail,
+      weight: avail, // default: sell all available (not reserved)
+      quantity: Number(stk.availableQty !== undefined ? stk.availableQty : stk.quantity || 0),
       unitPrice: Number(product.basePrice || 0),
       expiredDate: stk.expiredDate,
     });
@@ -389,20 +390,33 @@ function StockPicker({ stocks, products, onPick }) {
             const p = productMap[st.productId] || st.product || {};
             const expired = st.expiredDate && new Date(st.expiredDate) < new Date();
             const nearExp = st.expiredDate && (new Date(st.expiredDate) - new Date()) / (1000*60*60*24) < 7;
+            const totalW = Number(st.weight || 0);
+            const availW = Number(st.availableWeight !== undefined ? st.availableWeight : totalW);
+            const reservedW = Number(st.reservedWeight || 0);
+            const fullyReserved = availW <= 0.001;
             return (
               <button
                 key={st.id}
                 type="button"
-                onClick={() => onPick(st)}
-                className="w-full text-left p-3 hover:bg-slate-50 border-b last:border-0 transition-colors"
+                onClick={() => !fullyReserved && onPick(st)}
+                disabled={fullyReserved}
+                className={cn(
+                  "w-full text-left p-3 border-b last:border-0 transition-colors",
+                  fullyReserved ? 'opacity-50 cursor-not-allowed bg-slate-50' : 'hover:bg-slate-50'
+                )}
               >
                 <div className="flex items-start gap-3">
-                  <Package className="w-5 h-5 text-emerald-600 mt-0.5 flex-shrink-0" />
+                  <Package className={cn("w-5 h-5 mt-0.5 flex-shrink-0", fullyReserved ? 'text-slate-400' : 'text-emerald-600')} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant="outline" className="font-mono text-[10px]">{st.kodeSimpan}</Badge>
                       <span className="font-medium text-sm">{p.name || 'Unknown'}</span>
                       {p.sku && <span className="text-[10px] text-muted-foreground font-mono">{p.sku}</span>}
+                      {reservedW > 0 && (
+                        <Badge variant="outline" className="text-[9px] bg-amber-50 border-amber-200 text-amber-700">
+                          🔒 {reservedW.toFixed(1)} kg reserved
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-xs text-muted-foreground mt-1 flex items-center gap-3 flex-wrap">
                       <span>📍 {st.coldStorage?.code}{st.zone?.code ? ` / ${st.zone.code}` : ''}</span>
@@ -415,8 +429,12 @@ function StockPicker({ stocks, products, onPick }) {
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-lg font-bold text-emerald-700">{Number(st.weight || 0).toFixed(1)} kg</div>
-                    <div className="text-[10px] text-muted-foreground uppercase">{st.sourceType || 'stock'}</div>
+                    <div className={cn("text-lg font-bold", fullyReserved ? 'text-slate-400' : 'text-emerald-700')}>
+                      {availW.toFixed(1)} kg
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      dari {totalW.toFixed(1)} kg
+                    </div>
                   </div>
                 </div>
               </button>
