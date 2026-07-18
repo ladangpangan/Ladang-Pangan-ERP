@@ -175,11 +175,21 @@ function ItemsTab({ so }) {
     <Card><CardHeader><CardTitle className="text-base">Items SO</CardTitle></CardHeader>
       <CardContent className="p-0">
         <Table>
-          <TableHeader><TableRow><TableHead>Produk</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">Diskon</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">Diskon</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
           <TableBody>
             {so.items?.map(it => (
               <TableRow key={it.id}>
-                <TableCell><div className="font-medium">{it.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{it.product?.sku}</div></TableCell>
+                <TableCell>
+                  <div className="font-medium">{it.product?.name}</div>
+                  <div className="text-xs text-muted-foreground font-mono">{it.product?.sku}</div>
+                  {it.stock && (
+                    <div className="text-xs mt-1 flex items-center gap-1.5 flex-wrap">
+                      <Badge variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">{it.stock.kodeSimpan}</Badge>
+                      {it.stock.coldStorage?.code && <span className="text-muted-foreground">📍 {it.stock.coldStorage.code}{it.stock.zone?.code ? `/${it.stock.zone.code}` : ''}</span>}
+                      {it.stock.status !== 'active' && <Badge variant="outline" className="text-[10px]">{it.stock.status}</Badge>}
+                    </div>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">{it.quantity} {it.product?.unit}</TableCell>
                 <TableCell className="text-right">{it.weight} kg</TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>

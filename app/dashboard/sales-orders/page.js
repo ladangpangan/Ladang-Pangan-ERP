@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -15,9 +15,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { cn } from '@/lib/utils';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -33,7 +35,7 @@ export const SO_STATUS_COLOR = {
 const PAY_COLOR = { unpaid: 'bg-slate-100 text-slate-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700' };
 const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 
-const emptyItem = () => ({ productId: '', quantity: 0, weight: 0, unitPrice: 0, discount: 0 });
+const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
   orderDate: new Date().toISOString().slice(0,10),
@@ -128,13 +130,42 @@ export default function SOListPage() {
 function CreateSODialog({ onSaved }) {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [stockPickerFor, setStockPickerFor] = useState(null); // index of item currently picking
   const router = useRouter();
   const { data: custData } = useSWR('/api/contacts?type=Customer', fetcher);
+  const { data: stockData, isLoading: stockLoading } = useSWR('/api/inventory/stocks?status=active&sort=FEFO', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const updItem = (i, k, v) => setForm(f => { const items = [...f.items]; items[i] = { ...items[i], [k]: v }; return { ...f, items }; });
+  const updItem = (i, patch) => setForm(f => { const items = [...f.items]; items[i] = { ...items[i], ...patch }; return { ...f, items }; });
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, emptyItem()] }));
   const removeItem = (i) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
+
+  const stocks = stockData?.data || [];
+  const products = prods?.data || [];
+  // Filter out already-picked stocks
+  const usedStockIds = new Set(form.items.map(it => it.stockId).filter(Boolean));
+
+  const pickStock = (idx, stk) => {
+    const product = products.find(p => p.id === stk.productId) || stk.product || {};
+    const csZone = [stk.coldStorage?.code, stk.zone?.code].filter(Boolean).join(' / ');
+    updItem(idx, {
+      stockId: stk.id,
+      productId: stk.productId,
+      productName: product.name || '',
+      kodeSimpan: stk.kodeSimpan,
+      csLabel: csZone,
+      availableWeight: Number(stk.weight || 0),
+      weight: Number(stk.weight || 0), // default: sell all
+      quantity: Number(stk.quantity || 0),
+      unitPrice: Number(product.basePrice || 0),
+      expiredDate: stk.expiredDate,
+    });
+    setStockPickerFor(null);
+  };
+
+  const clearStock = (idx) => {
+    updItem(idx, emptyItem());
+  };
 
   const selectedCust = (custData?.data || []).find(c => c.id === form.customerId);
   const subtotal = form.items.reduce((a, it) => a + (Number(it.unitPrice) * Number(it.weight || it.quantity)), 0);
@@ -143,13 +174,32 @@ function CreateSODialog({ onSaved }) {
 
   const save = async () => {
     if (!form.customerId) return toast.error('Pilih customer');
-    if (form.items.length === 0 || form.items.some(it => !it.productId)) return toast.error('Isi minimal 1 item dengan produk');
+    if (form.items.length === 0 || form.items.some(it => !it.stockId)) return toast.error('Isi minimal 1 item dengan kode simpan');
+    // Validate weights vs availability
+    for (const it of form.items) {
+      if (Number(it.weight) > Number(it.availableWeight) + 0.0001) {
+        return toast.error(`Berat ${it.weight} kg melebihi stok tersedia ${it.availableWeight} kg pada ${it.kodeSimpan}`);
+      }
+      if (Number(it.weight) <= 0) return toast.error(`Berat harus > 0 pada ${it.kodeSimpan}`);
+    }
     setSaving(true);
     try {
-      const res = await fetch('/api/sales-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      const payload = {
+        ...form,
+        items: form.items.map(it => ({
+          stockId: it.stockId,
+          productId: it.productId,
+          quantity: Number(it.quantity || 0),
+          weight: Number(it.weight || 0),
+          unitPrice: Number(it.unitPrice || 0),
+          discount: Number(it.discount || 0),
+        })),
+      };
+      const res = await fetch('/api/sales-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
       toast.success('SO dibuat: ' + j.data.soNumber);
+      setForm(emptyForm);
       onSaved();
       router.push(`/dashboard/sales-orders/${j.data.id}`);
     } catch (e) { toast.error(e.message); }
@@ -157,10 +207,10 @@ function CreateSODialog({ onSaved }) {
   };
 
   return (
-    <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+    <DialogContent className="max-w-5xl max-h-[92vh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle>Buat Sales Order</DialogTitle>
-        <DialogDescription>Status awal <b>Draft</b>. Auto-deduction stok akan berjalan saat status → Confirmed.</DialogDescription>
+        <DialogDescription>Pilih <b>Kode Simpan</b> dari inventory. Stok otomatis dipotong saat status → <b>Confirmed</b>.</DialogDescription>
       </DialogHeader>
       <div className="grid sm:grid-cols-2 gap-4">
         <F label="Customer *" className="sm:col-span-2">
@@ -191,29 +241,89 @@ function CreateSODialog({ onSaved }) {
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <Label>Items *</Label>
+          <Label className="flex items-center gap-2">
+            <Boxes className="w-4 h-4" /> Items (dari Inventory) *
+          </Label>
           <Button size="sm" variant="outline" onClick={addItem}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
         </div>
+
+        {stocks.length === 0 && !stockLoading && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" />
+            Belum ada stok aktif di inventory. Silakan input Inbound dari Tally / GRN Purchase Order terlebih dahulu.
+          </div>
+        )}
+
         <div className="border rounded-lg divide-y">
-          {form.items.map((it, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 p-3 items-center">
-              <div className="col-span-3">
-                <Select value={it.productId} onValueChange={v => {
-                  const p = (prods?.data || []).find(x => x.id === v);
-                  updItem(i, 'productId', v);
-                  if (p && !it.unitPrice) updItem(i, 'unitPrice', Number(p.basePrice || 0));
-                }}>
-                  <SelectTrigger><SelectValue placeholder="Produk" /></SelectTrigger>
-                  <SelectContent>{(prods?.data || []).map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
-                </Select>
+          {form.items.map((it, i) => {
+            const overweight = Number(it.weight) > Number(it.availableWeight) + 0.0001;
+            return (
+              <div key={i} className="p-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  {/* Stock Picker Button */}
+                  <div className="flex-1 min-w-0">
+                    <Label className="text-xs text-muted-foreground">Kode Simpan / Produk</Label>
+                    {it.stockId ? (
+                      <div className="mt-1 border rounded-md p-2 bg-emerald-50 flex items-start gap-2">
+                        <Package className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-semibold truncate">{it.productName}</div>
+                          <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                            <Badge variant="outline" className="font-mono text-[10px]">{it.kodeSimpan}</Badge>
+                            {it.csLabel && <span>{it.csLabel}</span>}
+                            <span>Tersedia: <b className="text-emerald-700">{Number(it.availableWeight).toFixed(1)} kg</b></span>
+                            {it.expiredDate && <span>Exp: {format(new Date(it.expiredDate), 'dd MMM yyyy')}</span>}
+                          </div>
+                        </div>
+                        <Button size="sm" variant="ghost" onClick={() => clearStock(i)} className="h-7 text-xs">Ganti</Button>
+                      </div>
+                    ) : (
+                      <StockPicker
+                        stocks={stocks.filter(st => !usedStockIds.has(st.id))}
+                        products={products}
+                        onPick={(stk) => pickStock(i, stk)}
+                      />
+                    )}
+                  </div>
+                  <Button size="icon" variant="ghost" onClick={() => removeItem(i)} title="Hapus item">
+                    <Trash2 className="w-4 h-4 text-red-500" />
+                  </Button>
+                </div>
+
+                {it.stockId && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pl-6">
+                    <div>
+                      <Label className="text-xs">Berat Dijual (kg) *</Label>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        value={it.weight}
+                        max={it.availableWeight}
+                        onChange={e => updItem(i, { weight: Number(e.target.value) })}
+                        className={cn('font-semibold', overweight && 'border-red-500 text-red-600')}
+                      />
+                      {overweight && <p className="text-[10px] text-red-600 mt-0.5">Melebihi stok!</p>}
+                    </div>
+                    <div>
+                      <Label className="text-xs">Qty (pack)</Label>
+                      <Input type="number" value={it.quantity} onChange={e => updItem(i, { quantity: Number(e.target.value) })} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Harga / kg</Label>
+                      <Input type="number" value={it.unitPrice} onChange={e => updItem(i, { unitPrice: Number(e.target.value) })} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Diskon (Rp)</Label>
+                      <Input type="number" value={it.discount} onChange={e => updItem(i, { discount: Number(e.target.value) })} />
+                    </div>
+                    <div className="col-span-2 md:col-span-4 text-right text-sm text-muted-foreground">
+                      Subtotal: <b className="text-emerald-700">Rp {(Number(it.unitPrice) * Number(it.weight) - Number(it.discount || 0)).toLocaleString('id-ID')}</b>
+                    </div>
+                  </div>
+                )}
               </div>
-              <Input className="col-span-2" type="number" placeholder="Qty" value={it.quantity} onChange={e => updItem(i, 'quantity', Number(e.target.value))} />
-              <Input className="col-span-2" type="number" placeholder="Berat (kg)" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
-              <Input className="col-span-2" type="number" placeholder="Harga/unit" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
-              <Input className="col-span-2" type="number" placeholder="Diskon" value={it.discount} onChange={e => updItem(i, 'discount', Number(e.target.value))} />
-              <Button size="icon" variant="ghost" className="col-span-1" onClick={() => removeItem(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="flex justify-end gap-6 text-sm p-2 bg-slate-50 rounded-lg">
           <div>Subtotal: <b>Rp {subtotal.toLocaleString('id-ID')}</b></div>
@@ -225,6 +335,99 @@ function CreateSODialog({ onSaved }) {
       <F label="Catatan"><Textarea rows={2} value={form.notes} onChange={e => upd('notes', e.target.value)} /></F>
       <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan SO</Button></DialogFooter>
     </DialogContent>
+  );
+}
+
+function StockPicker({ stocks, products, onPick }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+
+  const productMap = useMemo(() => {
+    const m = {};
+    products.forEach(p => { m[p.id] = p; });
+    return m;
+  }, [products]);
+
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    return stocks.filter(st => {
+      if (!q) return true;
+      const p = productMap[st.productId];
+      return (
+        st.kodeSimpan?.toLowerCase().includes(q) ||
+        p?.name?.toLowerCase().includes(q) ||
+        p?.sku?.toLowerCase().includes(q) ||
+        st.coldStorageCode?.toLowerCase().includes(q)
+      );
+    }).slice(0, 100);
+  }, [stocks, query, productMap]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" className="w-full justify-start mt-1 h-10 font-normal text-muted-foreground">
+          <Search className="w-4 h-4 mr-2" /> Pilih Kode Simpan dari Inventory...
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[600px] p-0" align="start">
+        <div className="p-2 border-b">
+          <Input
+            placeholder="Cari kode simpan, produk, SKU, atau CS..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-9"
+            autoFocus
+          />
+        </div>
+        <div className="max-h-[380px] overflow-y-auto">
+          {filtered.length === 0 && (
+            <div className="p-4 text-center text-sm text-muted-foreground">
+              Tidak ada stok cocok.
+            </div>
+          )}
+          {filtered.map(st => {
+            const p = productMap[st.productId] || st.product || {};
+            const expired = st.expiredDate && new Date(st.expiredDate) < new Date();
+            const nearExp = st.expiredDate && (new Date(st.expiredDate) - new Date()) / (1000*60*60*24) < 7;
+            return (
+              <button
+                key={st.id}
+                type="button"
+                onClick={() => onPick(st)}
+                className="w-full text-left p-3 hover:bg-slate-50 border-b last:border-0 transition-colors"
+              >
+                <div className="flex items-start gap-3">
+                  <Package className="w-5 h-5 text-emerald-600 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="font-mono text-[10px]">{st.kodeSimpan}</Badge>
+                      <span className="font-medium text-sm">{p.name || 'Unknown'}</span>
+                      {p.sku && <span className="text-[10px] text-muted-foreground font-mono">{p.sku}</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-3 flex-wrap">
+                      <span>📍 {st.coldStorage?.code}{st.zone?.code ? ` / ${st.zone.code}` : ''}</span>
+                      <span>📦 {st.packagingType || '-'} × {Number(st.quantity || 0)}</span>
+                      {st.expiredDate && (
+                        <span className={cn(expired ? 'text-red-600 font-semibold' : nearExp ? 'text-amber-600 font-semibold' : '')}>
+                          🕒 Exp {format(new Date(st.expiredDate), 'dd MMM yyyy')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-lg font-bold text-emerald-700">{Number(st.weight || 0).toFixed(1)} kg</div>
+                    <div className="text-[10px] text-muted-foreground uppercase">{st.sourceType || 'stock'}</div>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="p-2 border-t text-xs text-muted-foreground bg-slate-50">
+          {filtered.length} dari {stocks.length} stok aktif · Diurut FEFO (paling cepat expired dulu)
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

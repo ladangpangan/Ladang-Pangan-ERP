@@ -993,6 +993,24 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const body = await request.json();
       if (!body.customerId || !Array.isArray(body.items) || body.items.length === 0) return err('customerId and items required');
+
+      // Validate stock-linked items
+      const stockUsage = {}; // {stockId: totalWeightRequested}
+      for (const it of body.items) {
+        if (it.stockId) {
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+          if (!stk) return err(`Stock ${it.stockId} tidak ditemukan`);
+          if (stk.status !== 'active') return err(`Stock ${stk.kodeSimpan} tidak aktif (status=${stk.status})`);
+          stockUsage[it.stockId] = (stockUsage[it.stockId] || 0) + Number(it.weight || 0);
+          if (stockUsage[it.stockId] > Number(stk.weight || 0) + 0.0001) {
+            return err(`Berat ${stockUsage[it.stockId]} kg melebihi stok tersedia ${stk.weight} kg pada ${stk.kodeSimpan}`);
+          }
+          // Auto-set productId from stock
+          it.productId = stk.productId;
+        }
+        if (!it.productId) return err('Setiap item wajib memiliki produk atau kode simpan');
+      }
+
       const now = new Date();
       const id = uuidv4();
       const soNumber = body.soNumber || nextSoNumber();
@@ -1020,6 +1038,7 @@ async function handleRoute(request, { params }) {
           unitPrice: Number(it.unitPrice || 0),
           discount: disc,
           subtotal: line - disc,
+          stockCodeId: it.stockId || null,
         }).run();
       }
       recalcSoTotals(id);
@@ -1035,7 +1054,19 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
-      const enrichedItems = items.map(it => ({ ...it, product: db.select().from(s.products).where(eq(s.products.id, it.productId)).get() }));
+      const enrichedItems = items.map(it => {
+        const product = db.select().from(s.products).where(eq(s.products.id, it.productId)).get();
+        let stock = null;
+        if (it.stockCodeId) {
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockCodeId)).get();
+          if (stk) {
+            const cs = stk.coldStorageId ? db.select().from(s.coldStorages).where(eq(s.coldStorages.id, stk.coldStorageId)).get() : null;
+            const zone = stk.zoneId ? db.select().from(s.zones).where(eq(s.zones.id, stk.zoneId)).get() : null;
+            stock = { id: stk.id, kodeSimpan: stk.kodeSimpan, weight: stk.weight, status: stk.status, expiredDate: stk.expiredDate, coldStorage: cs ? { code: cs.code, name: cs.name } : null, zone: zone ? { code: zone.code, name: zone.name } : null };
+          }
+        }
+        return { ...it, product, stock };
+      });
       const customer = db.select().from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
       const sjRows = db.select().from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, id)).orderBy(desc(s.suratJalan.deliveryDate)).all();
       const payments = db.select().from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).orderBy(desc(s.salesPayments.paymentDate)).all();
@@ -1066,6 +1097,23 @@ async function handleRoute(request, { params }) {
       update.updatedAt = new Date();
       db.update(s.salesOrder).set(update).where(eq(s.salesOrder.id, id)).run();
       if (Array.isArray(body.items)) {
+        // Prevent items edit after Draft (stock already deducted on Confirm)
+        if (existing.pipelineStatus !== 'Draft') return err('Items hanya dapat diubah saat status Draft');
+        // Validate stock linkage
+        const stockUsage = {};
+        for (const it of body.items) {
+          if (it.stockId) {
+            const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+            if (!stk) return err(`Stock ${it.stockId} tidak ditemukan`);
+            if (stk.status !== 'active') return err(`Stock ${stk.kodeSimpan} tidak aktif`);
+            stockUsage[it.stockId] = (stockUsage[it.stockId] || 0) + Number(it.weight || 0);
+            if (stockUsage[it.stockId] > Number(stk.weight || 0) + 0.0001) {
+              return err(`Berat melebihi stok tersedia pada ${stk.kodeSimpan}`);
+            }
+            it.productId = stk.productId;
+          }
+          if (!it.productId) return err('Setiap item wajib memiliki produk atau kode simpan');
+        }
         db.delete(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).run();
         for (const it of body.items) {
           const line = Number(it.unitPrice) * Number(it.quantity || it.weight || 0);
@@ -1078,6 +1126,7 @@ async function handleRoute(request, { params }) {
             unitPrice: Number(it.unitPrice || 0),
             discount: disc,
             subtotal: line - disc,
+            stockCodeId: it.stockId || null,
           }).run();
         }
       }
@@ -1114,13 +1163,31 @@ async function handleRoute(request, { params }) {
       // On Confirmed: auto stock deduction (create inventory_transaction OUT record for audit)
       if (target === 'Confirmed') {
         const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
-        const txId = uuidv4();
+        // Deduct stock rows linked via stockCodeId
+        let totalW = 0, totalQ = 0;
+        for (const it of items) {
+          totalW += Number(it.weight || 0);
+          totalQ += Number(it.quantity || 0);
+          if (!it.stockCodeId) continue;
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockCodeId)).get();
+          if (!stk) continue;
+          const remainingWeight = Math.max(0, Number(stk.weight || 0) - Number(it.weight || 0));
+          const remainingQty = Math.max(0, Number(stk.quantity || 0) - Number(it.quantity || 0));
+          const newStatus = remainingWeight <= 0.001 ? 'used' : stk.status;
+          db.update(s.inventoryStock)
+            .set({ weight: remainingWeight, quantity: remainingQty, status: newStatus, updatedAt: new Date() })
+            .where(eq(s.inventoryStock.id, stk.id))
+            .run();
+        }
+        // Log ONE aggregate transaction for this SO
         db.insert(s.inventoryTransaction).values({
-          id: txId,
+          id: uuidv4(),
           transactionDate: new Date(),
           transactionType: 'OUT',
           referenceId: id,
           referenceType: 'SO',
+          totalWeight: totalW,
+          totalQuantity: totalQ,
           notes: `Auto-deduction on SO confirm: ${so.soNumber}`,
           createdBy: session.user.email,
         }).run();
