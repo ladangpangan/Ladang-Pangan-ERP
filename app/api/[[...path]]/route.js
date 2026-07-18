@@ -2087,6 +2087,168 @@ async function handleRoute(request, { params }) {
       return { totalCost, totalWeight, baseHpp, allocated, delta: totalCost - allocated };
     };
 
+    // ---------- WO STAGES (Master Data) ----------
+    // GET /wo-stages
+    if (route === '/wo-stages' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const url = new URL(request.url);
+      const activeOnly = url.searchParams.get('active') === '1' || url.searchParams.get('activeOnly') === '1';
+      const conds = [];
+      if (activeOnly) conds.push(eq(s.woStages.isActive, true));
+      let q = db.select().from(s.woStages);
+      if (conds.length) q = q.where(and(...conds));
+      const rows = q.orderBy(s.woStages.sequenceOrder, s.woStages.name).all();
+      return json({ data: rows });
+    }
+
+    // GET /wo-stages/:id
+    if (route.startsWith('/wo-stages/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const row = db.select().from(s.woStages).where(eq(s.woStages.id, path[1])).get();
+      if (!row) return err('Stage tidak ditemukan', 404);
+      return json({ data: row });
+    }
+
+    // POST /wo-stages (admin)
+    if (route === '/wo-stages' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.code || !body.name) return err('code dan name wajib', 400);
+      const existing = db.select().from(s.woStages).where(eq(s.woStages.code, body.code)).get();
+      if (existing) return err('Kode stage sudah dipakai', 400);
+      // Validate fieldsSchema is array
+      let fs = body.fieldsSchema || [];
+      if (typeof fs === 'string') { try { fs = JSON.parse(fs); } catch (e) { fs = []; } }
+      if (!Array.isArray(fs)) fs = [];
+      const id = uuidv4();
+      db.insert(s.woStages).values({
+        id,
+        code: body.code,
+        name: body.name,
+        description: body.description || null,
+        sequenceOrder: Number(body.sequenceOrder || 0),
+        fieldsSchema: JSON.stringify(fs),
+        color: body.color || null,
+        isActive: body.isActive !== false,
+        createdBy: session.user.email,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).run();
+      return json({ data: db.select().from(s.woStages).where(eq(s.woStages.id, id)).get() }, { status: 201 });
+    }
+
+    // PUT /wo-stages/:id
+    if (route.startsWith('/wo-stages/') && path.length === 2 && method === 'PUT') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const cur = db.select().from(s.woStages).where(eq(s.woStages.id, id)).get();
+      if (!cur) return err('Stage tidak ditemukan', 404);
+      const body = await request.json();
+      const upd = { updatedAt: new Date() };
+      if (body.code !== undefined && body.code !== cur.code) {
+        const dup = db.select().from(s.woStages).where(and(eq(s.woStages.code, body.code), ne(s.woStages.id, id))).get();
+        if (dup) return err('Kode stage sudah dipakai', 400);
+        upd.code = body.code;
+      }
+      if (body.name !== undefined) upd.name = body.name;
+      if (body.description !== undefined) upd.description = body.description;
+      if (body.sequenceOrder !== undefined) upd.sequenceOrder = Number(body.sequenceOrder || 0);
+      if (body.color !== undefined) upd.color = body.color;
+      if (body.isActive !== undefined) upd.isActive = !!body.isActive;
+      if (body.fieldsSchema !== undefined) {
+        let fs = body.fieldsSchema;
+        if (typeof fs === 'string') { try { fs = JSON.parse(fs); } catch (e) { fs = []; } }
+        if (!Array.isArray(fs)) fs = [];
+        upd.fieldsSchema = JSON.stringify(fs);
+      }
+      db.update(s.woStages).set(upd).where(eq(s.woStages.id, id)).run();
+      return json({ data: db.select().from(s.woStages).where(eq(s.woStages.id, id)).get() });
+    }
+
+    // DELETE /wo-stages/:id
+    if (route.startsWith('/wo-stages/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      const id = path[1];
+      const usedCount = db.select({ c: sql`count(*)` }).from(s.woStageRecords).where(eq(s.woStageRecords.stageId, id)).get()?.c || 0;
+      if (Number(usedCount) > 0) return err(`Stage tidak bisa dihapus, ada ${usedCount} record terpakai. Nonaktifkan saja.`, 400);
+      db.delete(s.woStages).where(eq(s.woStages.id, id)).run();
+      return json({ ok: true });
+    }
+
+    // ---------- WO STAGE RECORDS (Tally per stage) ----------
+    // GET /work-orders/:id/stage-records
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'stage-records' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const woId = path[1];
+      const rows = db.select().from(s.woStageRecords).where(eq(s.woStageRecords.workOrderId, woId)).orderBy(desc(s.woStageRecords.recordedAt)).all();
+      // Enrich with stage details
+      const stageIds = [...new Set(rows.map(r => r.stageId))];
+      const stagesMap = {};
+      if (stageIds.length) {
+        const sts = db.select().from(s.woStages).where(inArray(s.woStages.id, stageIds)).all();
+        sts.forEach(st => { stagesMap[st.id] = st; });
+      }
+      const enriched = rows.map(r => ({
+        ...r,
+        stage: stagesMap[r.stageId] || null,
+        fieldValues: (() => { try { return JSON.parse(r.fieldValues || '{}'); } catch (e) { return {}; } })(),
+      }));
+      return json({ data: enriched });
+    }
+
+    // POST /work-orders/:id/stage-records - bulk create
+    if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'stage-records' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const woId = path[1];
+      const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, woId)).get();
+      if (!wo) return err('Work Order tidak ditemukan', 404);
+      const body = await request.json();
+      const records = Array.isArray(body.records) ? body.records : (Array.isArray(body) ? body : [body]);
+      if (records.length === 0) return err('Tidak ada record', 400);
+      const now = new Date();
+      const inserted = [];
+      for (const r of records) {
+        if (!r.stageId) continue;
+        const stage = db.select().from(s.woStages).where(eq(s.woStages.id, r.stageId)).get();
+        if (!stage) continue;
+        // Validate required fields per stage schema
+        let schema = [];
+        try { schema = JSON.parse(stage.fieldsSchema || '[]'); } catch (e) {}
+        const values = r.values || r.fieldValues || {};
+        for (const f of schema) {
+          if (f.required && (values[f.key] === undefined || values[f.key] === '' || values[f.key] === null)) {
+            return err(`Field wajib '${f.label || f.key}' pada stage ${stage.name} belum diisi`, 400);
+          }
+        }
+        const id = uuidv4();
+        const recordedAt = r.recordedAt ? new Date(r.recordedAt) : now;
+        db.insert(s.woStageRecords).values({
+          id,
+          workOrderId: woId,
+          stageId: r.stageId,
+          recordedAt,
+          recordedBy: session.user.email,
+          fieldValues: JSON.stringify(values),
+          notes: r.notes || null,
+          createdAt: now,
+        }).run();
+        inserted.push(id);
+      }
+      return json({ ok: true, inserted: inserted.length, ids: inserted }, { status: 201 });
+    }
+
+    // DELETE /work-orders/:id/stage-records/:recordId
+    if (route.startsWith('/work-orders/') && path.length === 4 && path[2] === 'stage-records' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const recordId = path[3];
+      db.delete(s.woStageRecords).where(eq(s.woStageRecords.id, recordId)).run();
+      return json({ ok: true });
+    }
+
     // GET /work-orders
     if (route === '/work-orders' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -2109,8 +2271,6 @@ async function handleRoute(request, { params }) {
       });
       return json({ data: enriched });
     }
-
-    // POST /work-orders - create
     if (route === '/work-orders' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
@@ -2144,6 +2304,19 @@ async function handleRoute(request, { params }) {
         linkPath: `/dashboard/work-orders/${id}`,
       });
       return json({ data: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get() }, { status: 201 });
+    }
+
+    // GET /work-orders/pending-storage - list outputs ready to be stored
+    // IMPORTANT: This must come BEFORE the generic GET /work-orders/:id route
+    if (route === '/work-orders/pending-storage' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const rows = db.select().from(s.woOutputs).where(sql`${s.woOutputs.storageStatus} IN ('pending_storage','partial')`).all();
+      const enriched = rows.map(o => {
+        const wo = db.select({ woNumber: s.workOrder.woNumber, mode: s.workOrder.mode, finalizedAt: s.workOrder.finalizedAt }).from(s.workOrder).where(eq(s.workOrder.id, o.workOrderId)).get();
+        const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, o.productId)).get();
+        return { ...o, wo, product: p, remainingWeight: Math.max(0, Number(o.weight || 0) - Number(o.storedWeight || 0)) };
+      }).filter(r => r.remainingWeight > 0.001);
+      return json({ data: enriched });
     }
 
     // GET /work-orders/:id
@@ -2363,7 +2536,7 @@ async function handleRoute(request, { params }) {
       return json({ data: { wo: db.select().from(s.workOrder).where(eq(s.workOrder.id, id)).get(), outputs: outputsEnriched, validation } });
     }
 
-    // POST /work-orders/:id/finalize - move outputs to inventory
+    // POST /work-orders/:id/finalize - mark outputs as pending_storage (Tally Inbound will store to CS)
     if (route.startsWith('/work-orders/') && path.length === 3 && path[2] === 'finalize' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
@@ -2373,33 +2546,16 @@ async function handleRoute(request, { params }) {
       if (wo.pipelineStatus === 'Selesai') return err('WO sudah Selesai');
       const outputs = db.select().from(s.woOutputs).where(eq(s.woOutputs.workOrderId, id)).all();
       if (outputs.length === 0) return err('Belum ada output. Isi outputs dulu.');
-      const body = await request.json().catch(() => ({}));
-      const coldStorageId = body.coldStorageId;
-      const zoneId = body.zoneId || null;
-      if (!coldStorageId) return err('coldStorageId required');
-      // Create inventory transaction
-      const txId = uuidv4();
-      db.insert(s.inventoryTransaction).values({
-        id: txId, transactionDate: new Date(), transactionType: 'IN', referenceId: id, referenceType: 'WO',
-        notes: `Finalize WO ${wo.woNumber} to inventory`, createdBy: session.user.email,
-      }).run();
-      // Insert stock rows
+      // Mark all outputs as pending_storage (do NOT create inventory stock here — anti-dedup)
       for (const o of outputs) {
-        db.insert(s.inventoryStock).values({
-          id: uuidv4(),
-          productId: o.productId,
-          coldStorageId, zoneId,
-          kodeSimpan: nextKodeSimpan(),
-          quantity: Number(o.headCount || 0),
-          weight: Number(o.weight || 0),
-          status: 'active',
-          sourceBatch: id, sourceType: 'WO',
-          transactionId: txId,
-        }).run();
+        db.update(s.woOutputs).set({
+          storageStatus: 'pending_storage',
+          storedWeight: 0,
+        }).where(eq(s.woOutputs.id, o.id)).run();
       }
-      // Transition status
+      // Transition WO status to Selesai
       db.update(s.workOrder).set({ pipelineStatus: 'Selesai', finalizedAt: new Date(), updatedAt: new Date() }).where(eq(s.workOrder.id, id)).run();
-      return json({ data: { ok: true, outputCount: outputs.length, transactionId: txId } });
+      return json({ data: { ok: true, outputCount: outputs.length, message: 'WO diselesaikan. Silakan Tally Inbound (source=WO) untuk menyimpan output ke Cold Storage.' } });
     }
 
     // GET /work-orders/:id/rendemen-report - actual rendemen %
@@ -2595,6 +2751,34 @@ async function handleRoute(request, { params }) {
       }).run();
       const createdStocks = [];
       for (const it of body.items) {
+        // Anti-dedup for WO source: validate & deduct from WO output remaining
+        if (body.referenceType === 'WO' && body.referenceId) {
+          const outputs = db.select().from(s.woOutputs)
+            .where(and(eq(s.woOutputs.workOrderId, body.referenceId), eq(s.woOutputs.productId, it.productId)))
+            .all();
+          const totalRemaining = outputs.reduce((a, o) => a + Math.max(0, Number(o.weight || 0) - Number(o.storedWeight || 0)), 0);
+          if (totalRemaining <= 0) {
+            return err(`Produk ini sudah selesai disimpan dari WO tersebut (tidak ada sisa)`, 400);
+          }
+          if (Number(it.weight || 0) - totalRemaining > 0.01) {
+            return err(`Berat ${it.weight}kg melebihi sisa output WO (${totalRemaining.toFixed(2)}kg tersisa)`, 400);
+          }
+          // Deduct across matching outputs (FIFO by created_at)
+          let remainingToDeduct = Number(it.weight || 0);
+          for (const o of outputs.sort((a, b) => Number(a.createdAt) - Number(b.createdAt))) {
+            if (remainingToDeduct <= 0) break;
+            const oRem = Math.max(0, Number(o.weight || 0) - Number(o.storedWeight || 0));
+            if (oRem <= 0) continue;
+            const take = Math.min(oRem, remainingToDeduct);
+            const newStored = Number(o.storedWeight || 0) + take;
+            const fullyStored = newStored >= Number(o.weight || 0) - 0.001;
+            db.update(s.woOutputs).set({
+              storedWeight: newStored,
+              storageStatus: fullyStored ? 'stored' : 'partial',
+            }).where(eq(s.woOutputs.id, o.id)).run();
+            remainingToDeduct -= take;
+          }
+        }
         const stkId = uuidv4();
         const kodeSimpan = nextKodeSimpan();
         db.insert(s.inventoryStock).values({

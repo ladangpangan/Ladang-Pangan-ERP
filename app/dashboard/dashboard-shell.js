@@ -13,7 +13,7 @@ import {
 import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
-  FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck
+  FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -27,6 +27,7 @@ const NAV = [
       { href: '/dashboard/contacts', label: 'Contacts', icon: Users, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/products', label: 'Products', icon: Package, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/cold-storage', label: 'Cold Storage & Zones', icon: Warehouse, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/masters/wo-stages', label: 'WO Stages', icon: Layers, roles: ['admin','supervisor','direktur'] },
     ],
   },
   {

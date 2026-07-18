@@ -47,7 +47,7 @@ export default function TallyHomePage() {
       <Card className="mb-4 border-emerald-200 bg-gradient-to-br from-emerald-50 to-white">
         <CardContent className="pt-4">
           <div className="flex items-center gap-2 mb-2"><Smartphone className="w-5 h-5 text-emerald-600" /><span className="font-bold">Mode Produksi</span></div>
-          <p className="text-sm text-muted-foreground">Pilih Work Order aktif untuk mulai input per stage. Data akan disimpan saat online.</p>
+          <p className="text-sm text-muted-foreground">Pilih Work Order aktif → pilih Stage → catat data via <b>Catat / Daftar / Simpan</b>. Data akan disimpan saat online.</p>
           {!online && <div className="mt-2 text-xs bg-red-100 text-red-700 p-2 rounded">Offline: input akan dicache dan disync saat kembali online</div>}
         </CardContent>
       </Card>
