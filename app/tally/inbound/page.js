@@ -105,8 +105,14 @@ export default function TallyInboundPage() {
       });
       const json = await res.json();
       if (res.ok) {
+        const created = json.data?.stocks || [];
         toast.success(`Inbound tersimpan (${validItems.length} item, ${totalWeight} kg)`);
-        setLastSaved({ time: new Date(), items: validItems.length, weight: totalWeight });
+        setLastSaved({
+          time: new Date(),
+          items: validItems.length,
+          weight: totalWeight,
+          stocks: created,
+        });
         resetForm();
       } else {
         toast.error(json.error || 'Gagal simpan');
@@ -207,12 +213,25 @@ export default function TallyInboundPage() {
       {/* Last saved */}
       {lastSaved && (
         <Card className="mb-3 border-emerald-200 bg-emerald-50">
-          <CardContent className="pt-3 pb-3 flex items-center gap-2 text-sm text-emerald-800">
-            <CheckCircle2 className="w-5 h-5" />
-            <div>
-              <div className="font-semibold">Sukses tersimpan</div>
-              <div className="text-xs">{lastSaved.items} item · {lastSaved.weight} kg · {format(lastSaved.time, 'HH:mm')}</div>
+          <CardContent className="pt-3 pb-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm text-emerald-800">
+              <CheckCircle2 className="w-5 h-5" />
+              <div className="flex-1">
+                <div className="font-semibold">Sukses tersimpan → siap dijual di SO</div>
+                <div className="text-xs">{lastSaved.items} item · {lastSaved.weight} kg · {format(lastSaved.time, 'HH:mm')}</div>
+              </div>
             </div>
+            {lastSaved.stocks?.length > 0 && (
+              <div className="pt-2 border-t border-emerald-200 space-y-1">
+                <div className="text-[10px] uppercase text-emerald-700 font-semibold tracking-wider">Kode Simpan Terbentuk:</div>
+                {lastSaved.stocks.map((st) => (
+                  <div key={st.id} className="flex items-center justify-between text-xs bg-white rounded px-2 py-1">
+                    <Badge variant="outline" className="font-mono text-[10px] bg-emerald-100 border-emerald-300">{st.kodeSimpan}</Badge>
+                    <span className="font-semibold text-emerald-700">{Number(st.weight).toFixed(1)} kg</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

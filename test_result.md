@@ -2676,3 +2676,257 @@ agent_communication:
       - Test 11: Regression tests ✅
       
       All backend APIs are working correctly with no critical or major issues.
+
+
+  - task: "Sales Return with stock restore (items array)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ SALES RETURN WITH STOCK RESTORE - ALL TESTS PASSED (4/4)
+          
+          Comprehensive testing completed for Sales Return stock restoration feature:
+          
+          === TEST 1.1: Return WITH items array restores stock weight/qty ===
+          ✅ Created inventory stock (50kg, qty=5)
+          ✅ Created SO with stockId, weight=30kg, qty=3
+          ✅ Confirmed SO → stock deducted to 20kg
+          ✅ POST /api/sales-orders/{id}/returns with items array:
+             - items: [{ soItemId, weight: 10, quantity: 1 }]
+             - Response includes restoredStocks array with kodeSimpan
+          ✅ Stock restored to 30kg (20 + 10), status='active'
+          ✅ Inventory transaction created (transactionType='IN', referenceType='SR')
+          
+          === TEST 1.2: Return reactivates 'used' stock ===
+          ✅ Created stock (20kg), created SO with full weight (20kg)
+          ✅ Confirmed SO → stock status='used', weight≈0
+          ✅ POST return with items [{soItemId, weight:20}]
+          ✅ Stock reactivated: status='active', weight=20kg
+          
+          === TEST 1.3: Return validation ===
+          ✅ weight > SO item weight → 400 (rejected)
+          ✅ soItemId not belonging to this SO → 400 (rejected)
+          ✅ SO not found → 404 (rejected)
+          
+          === TEST 1.4: Legacy return (no items array) ===
+          ✅ POST return with just totalAmount, totalWeight (no items array)
+          ✅ Return created successfully (201)
+          ✅ No stock restoration (as expected for legacy path)
+          
+          === KEY FEATURES VERIFIED ===
+          
+          ✅ Stock Restoration:
+          - Returns with items array restore stock weight and quantity
+          - Stock status reactivated from 'used' to 'active' when weight > 0
+          - restoredStocks array in response includes kodeSimpan and details
+          - Inventory transaction logged (IN type, SR reference)
+          
+          ✅ Validation:
+          - Return weight cannot exceed SO item weight
+          - soItemId must belong to the SO
+          - SO must exist (404 for invalid SO)
+          
+          ✅ Backward Compatibility:
+          - Legacy returns (without items array) still work
+          - No stock restoration for legacy returns
+          - No breaking changes
+          
+          All Sales Return stock restoration functionality working correctly!
+
+  - task: "Soft Reservation for Draft SOs"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ SOFT RESERVATION FOR DRAFT SOs - ALL TESTS PASSED (7/7)
+          
+          Comprehensive testing completed for Soft Reservation feature:
+          
+          === TEST 2.1: GET /inventory/stocks includes reservation fields ===
+          ✅ Response includes per-stock fields:
+             - reservedWeight (weight reserved by Draft SOs)
+             - availableWeight (weight - reservedWeight)
+             - reservedSoCount (number of Draft SOs reserving this stock)
+             - reservedQty, availableQty
+          ✅ Summary includes:
+             - totalAvailableWeight
+             - totalReservedWeight
+          ✅ Initial values correct: reservedWeight=0, availableWeight=100 (for 100kg stock)
+          
+          === TEST 2.2: Draft SO reserves stock ===
+          ✅ Created Draft SO with 40kg from 100kg stock
+          ✅ Stock weight unchanged (100kg)
+          ✅ reservedWeight=40, availableWeight=60, reservedSoCount=1
+          ✅ Confirmed SO does NOT count as reservation (only Draft SOs)
+          
+          === TEST 2.3: Multi-SO reservation ===
+          ✅ Created 2 Draft SOs (20kg + 10kg) from same stock (50kg)
+          ✅ reservedWeight=30, availableWeight=20, reservedSoCount=2
+          ✅ Cumulative reservation working correctly
+          
+          === TEST 2.4: Reservation blocks over-allocation ===
+          ✅ Stock with reserved=30, available=20
+          ✅ Attempt to create Draft SO with 25kg → 400 error
+          ✅ Error message mentions "sudah direservasi"
+          ✅ Over-allocation prevention working
+          
+          === TEST 2.5: Confirm removes reservation ===
+          ✅ Stock (80kg) with Draft SO (30kg): reserved=30, available=50
+          ✅ Confirmed SO → weight deducted to 50kg
+          ✅ reservedWeight=0 (no more draft), availableWeight=50
+          ✅ Reservation converted to actual deduction
+          
+          === TEST 2.6: exclude_so param ===
+          ✅ Stock (100kg) with Draft SO (60kg)
+          ✅ GET /inventory/stocks → reserved=60, available=40
+          ✅ GET /inventory/stocks?exclude_so={SO_ID} → reserved=0, available=100
+          ✅ Own reservation excluded correctly (useful for editing SO)
+          
+          === TEST 2.7: PATCH SO with reservation ===
+          ✅ Stock (50kg) with 2 Draft SOs (20kg each)
+          ✅ PATCH SO2 to increase to 40kg → 400 (only 30kg available after SO1)
+          ✅ PATCH SO2 to reduce to 10kg → 200 (success)
+          ✅ Reservation updated: reserved=30 (20+10)
+          ✅ PATCH validation considers other SOs' reservations
+          
+          === KEY FEATURES VERIFIED ===
+          
+          ✅ Reservation Tracking:
+          - Draft SOs reserve stock without deducting weight
+          - Confirmed/Packed/Shipped/Invoiced SOs do NOT count as reservations
+          - Multiple Draft SOs can reserve from same stock (cumulative)
+          - Reservation fields included in GET /inventory/stocks response
+          
+          ✅ Over-allocation Prevention:
+          - Cannot create Draft SO if weight > availableWeight
+          - Cannot PATCH Draft SO to exceed availableWeight
+          - Error messages mention reservation status
+          
+          ✅ Reservation Lifecycle:
+          - Draft SO creates reservation
+          - Confirm SO removes reservation and deducts weight
+          - PATCH Draft SO updates reservation
+          - DELETE Draft SO removes reservation
+          
+          ✅ exclude_so Parameter:
+          - Allows excluding specific SO's reservation from calculations
+          - Useful for editing SO (don't count own reservation)
+          - Works correctly in GET /inventory/stocks
+          
+          All Soft Reservation functionality working correctly!
+
+metadata:
+  created_by: "testing_agent"
+  version: "0.7"
+  test_sequence: 7
+  last_test_date: "2026-07-18"
+  total_backend_tests_run: 111
+  backend_tests_passed: 111
+  backend_tests_failed: 0
+  total_frontend_tests_run: 4
+  frontend_tests_passed: 4
+  frontend_tests_failed: 0
+  testing_method: "backend_api_testing"
+  notes: "Sales Return with stock restore + Soft Reservation for Draft SOs tested and working perfectly"
+
+test_plan:
+  current_focus:
+    - "All backend features tested and working"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      ✅ NEW FEATURES TESTING COMPLETE - ALL TESTS PASSED (15/15)
+      
+      Tested 2 NEW backend features as requested:
+      
+      === FEATURE 1: SALES RETURN WITH STOCK RESTORE (4/4 tests passed) ===
+      
+      ✅ Test 1.1 - Return WITH items array restores stock weight/qty:
+         - Created stock (50kg), SO (30kg), confirmed → stock deducted to 20kg
+         - POST return with items array (10kg) → stock restored to 30kg
+         - restoredStocks array in response includes kodeSimpan
+         - Inventory transaction created (IN type, SR reference)
+      
+      ✅ Test 1.2 - Return reactivates 'used' stock:
+         - Stock depleted to 'used' status after full SO confirmation
+         - Return with full weight → stock reactivated to 'active'
+      
+      ✅ Test 1.3 - Return validation:
+         - weight > SO item weight → 400 ✓
+         - invalid soItemId → 400 ✓
+         - SO not found → 404 ✓
+      
+      ✅ Test 1.4 - Legacy return (no items array):
+         - Return without items array still works (201)
+         - No stock restoration (as expected)
+      
+      === FEATURE 2: SOFT RESERVATION FOR DRAFT SOs (7/7 tests passed) ===
+      
+      ✅ Test 2.1 - GET /inventory/stocks includes reservation fields:
+         - reservedWeight, availableWeight, reservedSoCount, reservedQty, availableQty ✓
+         - Summary: totalAvailableWeight, totalReservedWeight ✓
+      
+      ✅ Test 2.2 - Draft SO reserves stock:
+         - Draft SO (40kg) → reserved=40, available=60, count=1 ✓
+         - Stock weight unchanged (100kg) ✓
+         - Confirmed SO does NOT count as reservation ✓
+      
+      ✅ Test 2.3 - Multi-SO reservation:
+         - 2 Draft SOs (20kg + 10kg) → reserved=30, available=20, count=2 ✓
+      
+      ✅ Test 2.4 - Reservation blocks over-allocation:
+         - Attempt to create SO with weight > available → 400 ✓
+         - Error message mentions "sudah direservasi" ✓
+      
+      ✅ Test 2.5 - Confirm removes reservation:
+         - Before: reserved=30, available=50
+         - After confirm: weight deducted, reserved=0, available=50 ✓
+      
+      ✅ Test 2.6 - exclude_so param:
+         - Without: reserved=60, available=40
+         - With exclude_so: reserved=0, available=100 ✓
+      
+      ✅ Test 2.7 - PATCH SO with reservation:
+         - PATCH increase beyond available → 400 ✓
+         - PATCH reduce → 200, reservation updated ✓
+      
+      === REGRESSION TESTS (4/4 passed) ===
+      ✅ GET /sales-orders: 200
+      ✅ GET /inventory/stocks: 200
+      ✅ GET /dashboard/summary: 200
+      ✅ POST /inventory/inbound: 201 with kodeSimpan
+      
+      === SUMMARY ===
+      
+      Total Tests: 15
+      Passed: 15 ✅
+      Failed: 0 ❌
+      Success Rate: 100%
+      
+      === NO ISSUES FOUND ===
+      
+      Both new features are working perfectly:
+      1. Sales Return with stock restoration (items array) - fully functional
+      2. Soft Reservation for Draft SOs - fully functional
+      
+      All validation rules working correctly.
+      All edge cases handled properly.
+      Backward compatibility maintained.
+      No breaking changes to existing functionality.
+      All regression tests passed.

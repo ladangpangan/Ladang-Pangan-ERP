@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, like, or, desc, sql } from 'drizzle-orm';
+import { eq, and, like, or, desc, sql, inArray, isNotNull } from 'drizzle-orm';
 import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
@@ -994,16 +994,27 @@ async function handleRoute(request, { params }) {
       const body = await request.json();
       if (!body.customerId || !Array.isArray(body.items) || body.items.length === 0) return err('customerId and items required');
 
-      // Validate stock-linked items
+      // Validate stock-linked items (considering reservations from other Draft SOs)
       const stockUsage = {}; // {stockId: totalWeightRequested}
       for (const it of body.items) {
         if (it.stockId) {
           const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
           if (!stk) return err(`Stock ${it.stockId} tidak ditemukan`);
           if (stk.status !== 'active') return err(`Stock ${stk.kodeSimpan} tidak aktif (status=${stk.status})`);
+          // Compute existing reservations from OTHER draft SOs for this stock
+          const otherReserved = db.select({
+            w: sql`coalesce(sum(${s.salesOrderItems.weight}), 0)`,
+          }).from(s.salesOrderItems)
+            .innerJoin(s.salesOrder, eq(s.salesOrder.id, s.salesOrderItems.salesOrderId))
+            .where(and(
+              eq(s.salesOrderItems.stockCodeId, it.stockId),
+              eq(s.salesOrder.pipelineStatus, 'Draft'),
+            )).get();
+          const reserved = Number(otherReserved?.w || 0);
           stockUsage[it.stockId] = (stockUsage[it.stockId] || 0) + Number(it.weight || 0);
-          if (stockUsage[it.stockId] > Number(stk.weight || 0) + 0.0001) {
-            return err(`Berat ${stockUsage[it.stockId]} kg melebihi stok tersedia ${stk.weight} kg pada ${stk.kodeSimpan}`);
+          const available = Number(stk.weight || 0) - reserved;
+          if (stockUsage[it.stockId] > available + 0.0001) {
+            return err(`Berat ${stockUsage[it.stockId]} kg melebihi stok tersedia ${available.toFixed(2)} kg pada ${stk.kodeSimpan} (${reserved.toFixed(2)} kg sudah direservasi Draft SO lain)`);
           }
           // Auto-set productId from stock
           it.productId = stk.productId;
@@ -1099,16 +1110,28 @@ async function handleRoute(request, { params }) {
       if (Array.isArray(body.items)) {
         // Prevent items edit after Draft (stock already deducted on Confirm)
         if (existing.pipelineStatus !== 'Draft') return err('Items hanya dapat diubah saat status Draft');
-        // Validate stock linkage
+        // Validate stock linkage (excluding this SO's current reservations)
         const stockUsage = {};
         for (const it of body.items) {
           if (it.stockId) {
             const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
             if (!stk) return err(`Stock ${it.stockId} tidak ditemukan`);
             if (stk.status !== 'active') return err(`Stock ${stk.kodeSimpan} tidak aktif`);
+            // Reservations from OTHER draft SOs (exclude this SO)
+            const otherReserved = db.select({
+              w: sql`coalesce(sum(${s.salesOrderItems.weight}), 0)`,
+            }).from(s.salesOrderItems)
+              .innerJoin(s.salesOrder, eq(s.salesOrder.id, s.salesOrderItems.salesOrderId))
+              .where(and(
+                eq(s.salesOrderItems.stockCodeId, it.stockId),
+                eq(s.salesOrder.pipelineStatus, 'Draft'),
+                sql`${s.salesOrder.id} != ${id}`,
+              )).get();
+            const reserved = Number(otherReserved?.w || 0);
             stockUsage[it.stockId] = (stockUsage[it.stockId] || 0) + Number(it.weight || 0);
-            if (stockUsage[it.stockId] > Number(stk.weight || 0) + 0.0001) {
-              return err(`Berat melebihi stok tersedia pada ${stk.kodeSimpan}`);
+            const available = Number(stk.weight || 0) - reserved;
+            if (stockUsage[it.stockId] > available + 0.0001) {
+              return err(`Berat melebihi stok tersedia ${available.toFixed(2)} kg pada ${stk.kodeSimpan}`);
             }
             it.productId = stk.productId;
           }
@@ -1266,7 +1289,7 @@ async function handleRoute(request, { params }) {
       return json({ data: p, info }, { status: 201 });
     }
 
-    // POST /sales-orders/:id/returns - retur penjualan (notif supervisor + direktur)
+    // POST /sales-orders/:id/returns - retur penjualan (kembalikan stok ke inventory)
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'returns' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
@@ -1274,6 +1297,46 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       const body = await request.json();
+
+      // Get all SO items (for lookup by soItemId → stockCodeId)
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      const soItemsMap = {};
+      for (const it of soItems) soItemsMap[it.id] = it;
+
+      // Optional line-items in body: [{ soItemId, weight, quantity }]
+      // If provided, restore stock; sum totalWeight & totalAmount if not given
+      let restoredCount = 0;
+      let sumWeight = 0;
+      let sumAmount = 0;
+      const restoreLogs = [];
+      if (Array.isArray(body.items) && body.items.length > 0) {
+        for (const ri of body.items) {
+          const soIt = soItemsMap[ri.soItemId];
+          if (!soIt) return err(`SO item ${ri.soItemId} tidak ditemukan pada SO ini`);
+          const w = Number(ri.weight || 0);
+          const q = Number(ri.quantity || 0);
+          if (w <= 0 && q <= 0) continue;
+          if (w > Number(soIt.weight || 0) + 0.0001) return err(`Berat retur ${w} kg melebihi berat item asal ${soIt.weight} kg`);
+          sumWeight += w;
+          sumAmount += Number(soIt.unitPrice || 0) * w;
+          // Restore stock if item linked to stockCodeId
+          if (soIt.stockCodeId) {
+            const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, soIt.stockCodeId)).get();
+            if (stk) {
+              const newWeight = Number(stk.weight || 0) + w;
+              const newQty = Number(stk.quantity || 0) + q;
+              const newStatus = (stk.status === 'used' && newWeight > 0.0001) ? 'active' : stk.status;
+              db.update(s.inventoryStock)
+                .set({ weight: newWeight, quantity: newQty, status: newStatus, updatedAt: new Date() })
+                .where(eq(s.inventoryStock.id, stk.id))
+                .run();
+              restoredCount++;
+              restoreLogs.push({ kodeSimpan: stk.kodeSimpan, weightAdded: w, newWeight, statusChanged: stk.status !== newStatus ? `${stk.status}→${newStatus}` : null });
+            }
+          }
+        }
+      }
+
       const r = {
         id: uuidv4(),
         returnNumber: nextSalesReturnNumber(),
@@ -1281,16 +1344,38 @@ async function handleRoute(request, { params }) {
         returnDate: body.returnDate ? new Date(body.returnDate) : new Date(),
         reason: body.reason || null,
         resolution: body.resolution || 'potong_invoice',
-        totalAmount: Number(body.totalAmount || 0),
-        totalWeight: Number(body.totalWeight || 0),
+        totalAmount: Number(body.totalAmount || sumAmount || 0),
+        totalWeight: Number(body.totalWeight || sumWeight || 0),
         status: 'open',
         notes: body.notes || null,
         createdBy: session.user.email,
         createdAt: new Date(),
       };
       db.insert(s.salesReturns).values(r).run();
+
+      // Log aggregate inventory_transaction IN
+      if (r.totalWeight > 0 || restoredCount > 0) {
+        db.insert(s.inventoryTransaction).values({
+          id: uuidv4(),
+          transactionDate: new Date(),
+          transactionType: 'IN',
+          referenceId: r.id,
+          referenceType: 'SR', // Sales Return
+          totalWeight: r.totalWeight,
+          totalQuantity: 0,
+          notes: `Retur Penjualan ${r.returnNumber} (SO ${so.soNumber}) - ${restoredCount} stock rows restored`,
+          createdBy: session.user.email,
+        }).run();
+      }
+
       recomputeSoPaymentStatus(id);
-      return json({ data: { ...r, notification: { to: ['supervisor', 'direktur'], subject: `Retur Penjualan SO ${so.soNumber}` } } }, { status: 201 });
+      return json({
+        data: {
+          ...r,
+          restoredStocks: restoreLogs,
+          notification: { to: ['supervisor', 'direktur'], subject: `Retur Penjualan SO ${so.soNumber}` },
+        },
+      }, { status: 201 });
     }
 
     // =====================================================================
@@ -1806,17 +1891,74 @@ async function handleRoute(request, { params }) {
       if (sort === 'FIFO') query = query.orderBy(s.inventoryStock.createdAt);
       else query = query.orderBy(sql`case when ${s.inventoryStock.expiredDate} is null then 1 else 0 end`, s.inventoryStock.expiredDate);
       const rows = query.all();
+      // Compute reserved weights (from Draft SO items) in one pass
+      const draftSoIds = db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.pipelineStatus, 'Draft')).all().map(r => r.id);
+      const reservedMap = {};
+      if (draftSoIds.length > 0) {
+        const draftItems = db.select({
+          stockId: s.salesOrderItems.stockCodeId,
+          weight: s.salesOrderItems.weight,
+          quantity: s.salesOrderItems.quantity,
+          salesOrderId: s.salesOrderItems.salesOrderId,
+        }).from(s.salesOrderItems).where(and(
+          inArray(s.salesOrderItems.salesOrderId, draftSoIds),
+          isNotNull(s.salesOrderItems.stockCodeId),
+        )).all();
+        for (const di of draftItems) {
+          if (!reservedMap[di.stockId]) reservedMap[di.stockId] = { weight: 0, quantity: 0, sos: new Set() };
+          reservedMap[di.stockId].weight += Number(di.weight || 0);
+          reservedMap[di.stockId].quantity += Number(di.quantity || 0);
+          reservedMap[di.stockId].sos.add(di.salesOrderId);
+        }
+      }
+      // Optional: exclude a specific SO's own reservation (when editing that SO)
+      const excludeSoId = url.searchParams.get('exclude_so');
+      let excludeReserved = null;
+      if (excludeSoId) {
+        const ownItems = db.select({
+          stockId: s.salesOrderItems.stockCodeId,
+          weight: s.salesOrderItems.weight,
+          quantity: s.salesOrderItems.quantity,
+        }).from(s.salesOrderItems).where(and(
+          eq(s.salesOrderItems.salesOrderId, excludeSoId),
+          isNotNull(s.salesOrderItems.stockCodeId),
+        )).all();
+        excludeReserved = {};
+        for (const oi of ownItems) {
+          if (!excludeReserved[oi.stockId]) excludeReserved[oi.stockId] = { weight: 0, quantity: 0 };
+          excludeReserved[oi.stockId].weight += Number(oi.weight || 0);
+          excludeReserved[oi.stockId].quantity += Number(oi.quantity || 0);
+        }
+      }
       const enriched = rows.map(r => {
         const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).where(eq(s.products.id, r.productId)).get();
         const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
         const zone = r.zoneId ? db.select({ code: s.zones.code, name: s.zones.name }).from(s.zones).where(eq(s.zones.id, r.zoneId)).get() : null;
         const daysToExpire = r.expiredDate ? Math.floor((new Date(r.expiredDate).getTime() - Date.now()) / (24*60*60*1000)) : null;
-        return { ...r, product: p, coldStorage: cs, zone, daysToExpire };
+        const reserved = reservedMap[r.id] || { weight: 0, quantity: 0, sos: new Set() };
+        let reservedWeight = reserved.weight;
+        let reservedQty = reserved.quantity;
+        if (excludeReserved && excludeReserved[r.id]) {
+          reservedWeight -= excludeReserved[r.id].weight;
+          reservedQty -= excludeReserved[r.id].quantity;
+        }
+        reservedWeight = Math.max(0, reservedWeight);
+        reservedQty = Math.max(0, reservedQty);
+        const availableWeight = Math.max(0, Number(r.weight || 0) - reservedWeight);
+        const availableQty = Math.max(0, Number(r.quantity || 0) - reservedQty);
+        return {
+          ...r, product: p, coldStorage: cs, zone, daysToExpire,
+          reservedWeight, reservedQty,
+          reservedSoCount: reserved.sos ? reserved.sos.size : 0,
+          availableWeight, availableQty,
+        };
       });
       // Summary
       const summary = {
         totalRows: enriched.length,
         totalWeight: enriched.reduce((a, b) => a + Number(b.weight || 0), 0),
+        totalAvailableWeight: enriched.reduce((a, b) => a + Number(b.availableWeight || 0), 0),
+        totalReservedWeight: enriched.reduce((a, b) => a + Number(b.reservedWeight || 0), 0),
         totalQty: enriched.reduce((a, b) => a + Number(b.quantity || 0), 0),
         nearExpiry: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire <= 7 && r.daysToExpire >= 0).length,
         expired: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire < 0).length,
@@ -1868,10 +2010,11 @@ async function handleRoute(request, { params }) {
       const createdStocks = [];
       for (const it of body.items) {
         const stkId = uuidv4();
+        const kodeSimpan = nextKodeSimpan();
         db.insert(s.inventoryStock).values({
           id: stkId, productId: it.productId,
           coldStorageId: body.coldStorageId, zoneId: body.zoneId || null,
-          kodeSimpan: nextKodeSimpan(),
+          kodeSimpan,
           packagingType: it.packagingType || 'karung',
           quantity: Number(it.quantity || 0),
           weight: Number(it.weight || 0),
@@ -1880,9 +2023,9 @@ async function handleRoute(request, { params }) {
           sourceBatch: body.referenceId || null, sourceType: body.referenceType || null,
           transactionId: txId,
         }).run();
-        createdStocks.push(stkId);
+        createdStocks.push({ id: stkId, kodeSimpan, weight: Number(it.weight || 0), quantity: Number(it.quantity || 0), productId: it.productId });
       }
-      return json({ data: { transactionId: txId, stockIds: createdStocks } }, { status: 201 });
+      return json({ data: { transactionId: txId, stocks: createdStocks, stockIds: createdStocks.map(s => s.id) } }, { status: 201 });
     }
 
     // POST /inventory/outbound - non-sales (sample) or damage
