@@ -59,8 +59,8 @@ const NAV = [
     section: 'Sistem',
     items: [
       { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur'] },
-      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['admin', 'supervisor', 'direktur'] },
-      { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['admin','direktur'] },
+      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur'] },
+      { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['supervisor', 'direktur'] },
     ],
   },
 ];

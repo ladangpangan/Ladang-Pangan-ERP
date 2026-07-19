@@ -287,7 +287,7 @@ async function handleRoute(request, { params }) {
     if (route === '/approvals' && method === 'GET') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const status = url.searchParams.get('status'); // pending | approved | rejected | all
       const concernType = url.searchParams.get('type');
@@ -317,7 +317,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth();
       if (error) return error;
       const userRole = session.user.role;
-      if (!['admin', 'supervisor', 'direktur'].includes(userRole)) return err('Forbidden', 403);
+      if (!['supervisor', 'direktur'].includes(userRole)) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const { action, note } = body || {};
@@ -327,8 +327,8 @@ async function handleRoute(request, { params }) {
       const now = new Date();
       const upd = { updatedAt: now };
 
-      if (userRole === 'supervisor' || userRole === 'admin') {
-        // Supervisor / admin can approve or reject (drives status)
+      if (userRole === 'supervisor') {
+        // Supervisor can approve or reject (drives status)
         if (!['approved', 'rejected'].includes(action)) return err('action harus approved atau rejected untuk supervisor');
         if (ap.status !== 'pending') return err(`Concern ini sudah ${ap.status}, tidak bisa diubah`);
         upd.supervisorAction = action;
@@ -351,20 +351,20 @@ async function handleRoute(request, { params }) {
     }
 
     // ---------- USERS ----------
-    // GET /users - list users (admin/direktur)
+    // GET /users - list users (supervisor/direktur)
     if (route === '/users' && method === 'GET') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const rows = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).orderBy(desc(s.user.createdAt)).all();
       return json({ data: rows });
     }
 
-    // POST /users - create new user (admin only)
+    // POST /users - create new user (supervisor/direktur only)
     if (route === '/users' && method === 'POST') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const body = await request.json();
       const { name, email, password, role, status = 'active' } = body || {};
       if (!name || !email || !password || !role) return err('name, email, password, role required');
@@ -384,11 +384,11 @@ async function handleRoute(request, { params }) {
       }
     }
 
-    // PATCH /users/:id - update user profile (name, role, status) - admin only
+    // PATCH /users/:id - update user profile (name, role, status) - supervisor/direktur
     if (route.startsWith('/users/') && path.length === 2 && method === 'PATCH') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
@@ -414,11 +414,11 @@ async function handleRoute(request, { params }) {
       return json({ data: updated[0] });
     }
 
-    // POST /users/:id/reset-password - reset password (admin only)
+    // POST /users/:id/reset-password - reset password (supervisor/direktur)
     if (route.startsWith('/users/') && path.length === 3 && path[2] === 'reset-password' && method === 'POST') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const { newPassword } = body || {};
@@ -442,11 +442,11 @@ async function handleRoute(request, { params }) {
       }
     }
 
-    // DELETE /users/:id - delete user (admin only, cannot delete self)
+    // DELETE /users/:id - delete user (supervisor/direktur, cannot delete self)
     if (route.startsWith('/users/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       if (id === session.user.id) return err('Tidak bisa menghapus akun sendiri', 400);
       const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
