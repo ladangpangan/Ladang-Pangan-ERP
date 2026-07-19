@@ -155,95 +155,233 @@ function ArrivalTab({ wo, onSaved, canOperate }) {
   );
 }
 
-const STAGE_DEFS = {
-  pemotongan: { label: 'Stage 1 - Pemotongan', fields: ['inputHeadCount', 'outputHeadCount'], desc: 'Ekor dipotong vs diterima' },
-  eviscerasi: { label: 'Stage 2 - Eviscerasi', fields: ['beratBrangkas', 'ekorBrangkas', 'beratHJA', 'beratUsus', 'beratTembolok'], desc: 'Berat brangkas, HJA, usus, tembolok' },
-  karkas: { label: 'Stage 3 - Karkas', fields: ['beratKarkas', 'ekorKarkas', 'beratKepalaLeher', 'beratCeker'], desc: 'Berat karkas + by-product' },
-  boneless_parting: { label: 'Stage 4 - Boneless/Parting', fields: ['bonelessDada', 'bonelessPaha', 'kerongkong', 'kulitDada', 'kulitPaha', 'sayap', 'tulangPaha', 'tunggir'], desc: 'Detail output boneless & parting' },
-  packing_plastik: { label: 'Packing Plastik', fields: ['weight', 'quantity'], desc: 'Packing per plastik' },
-  abf: { label: 'ABF', fields: ['weight', 'quantity'], desc: 'Air Blast Freezing' },
-  panen_abf: { label: 'Panen ABF', fields: ['weight', 'quantity'], desc: 'Panen dari ABF' },
-  packing_karung: { label: 'Packing Karung (25 pack/karung)', fields: ['weight', 'quantity', 'karungCount'], desc: 'Packing final ke karung' },
-};
+const STAGE_DEFS_LEGACY_REMOVED = true; // Stages now driven by master data (wo_stages) via StagesTab
 
 function StagesTab({ wo, onSaved, canOperate }) {
+  const { data: stagesData } = useSWR('/api/wo-stages?active=1', fetcher);
+  const stages = stagesData?.data || [];
+  const { data: recordsData, mutate: refetchRecords } = useSWR(`/api/work-orders/${wo.id}/stage-records`, fetcher);
+  const records = recordsData?.data || [];
+
   const [open, setOpen] = useState(false);
-  const [type, setType] = useState('pemotongan');
-  const [data, setData] = useState({});
+  const [stageId, setStageId] = useState('');
+  const [values, setValues] = useState({});
+  const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
-  const [outputWeight, setOutputWeight] = useState(0);
-  const [headCount, setHeadCount] = useState(0);
+  const { data: sessionData } = useSession();
+  const canDelete = ['admin', 'supervisor'].includes(sessionData?.user?.role);
+
+  const selectedStage = stages.find(s => s.id === stageId);
+  const fieldsSchema = (() => {
+    if (!selectedStage) return [];
+    try {
+      const arr = JSON.parse(selectedStage.fieldsSchema || '[]');
+      return Array.isArray(arr) ? arr.sort((a, b) => (a.order || 0) - (b.order || 0)) : [];
+    } catch (e) { return []; }
+  })();
+
+  const resetForm = () => {
+    const obj = {};
+    fieldsSchema.forEach(f => { obj[f.key] = f.default !== undefined ? String(f.default) : ''; });
+    setValues(obj);
+    setNotes('');
+  };
+
+  const openDialog = () => {
+    setStageId('');
+    setValues({});
+    setNotes('');
+    setOpen(true);
+  };
+
+  const onStageChange = (v) => {
+    setStageId(v);
+    // Reset values based on new stage schema
+    const st = stages.find(x => x.id === v);
+    let schema = [];
+    try { schema = JSON.parse(st?.fieldsSchema || '[]'); } catch (e) {}
+    const obj = {};
+    schema.forEach(f => { obj[f.key] = f.default !== undefined ? String(f.default) : ''; });
+    setValues(obj);
+  };
 
   const save = async () => {
+    if (!stageId) { toast.error('Pilih stage dulu'); return; }
+    // Validate required
+    for (const f of fieldsSchema) {
+      if (f.required && (values[f.key] === undefined || values[f.key] === '' || values[f.key] === null)) {
+        toast.error(`Field wajib: ${f.label}`); return;
+      }
+    }
     setSaving(true);
     try {
-      const res = await fetch(`/api/work-orders/${wo.id}/stage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, outputWeight: Number(outputWeight), headCount: Number(headCount), rendemenData: data }) });
+      const payload = { records: [{ stageId, fieldValues: values, notes, recordedAt: new Date().toISOString() }] };
+      const res = await fetch(`/api/work-orders/${wo.id}/stage-records`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify(payload),
+      });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success(STAGE_DEFS[type].label + ' tercatat');
-      setOpen(false); setData({}); setOutputWeight(0); setHeadCount(0);
-      onSaved();
+      toast.success(`${selectedStage.name} tercatat`);
+      setOpen(false);
+      refetchRecords();
+      if (onSaved) onSaved();
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
+  };
+
+  const removeRecord = async (recId) => {
+    if (!confirm('Hapus record ini?')) return;
+    try {
+      const res = await fetch(`/api/work-orders/${wo.id}/stage-records/${recId}`, { method: 'DELETE', credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Record dihapus');
+      refetchRecords();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const renderFieldInput = (f) => {
+    const v = values[f.key] ?? '';
+    const set = (val) => setValues(prev => ({ ...prev, [f.key]: val }));
+    if (f.type === 'textarea') return <Textarea value={v} onChange={(e) => set(e.target.value)} rows={2} />;
+    if (f.type === 'select') {
+      const opts = Array.isArray(f.options) ? f.options : (typeof f.options === 'string' ? f.options.split(',').map(s => s.trim()).filter(Boolean) : []);
+      return (
+        <Select value={v} onValueChange={set}>
+          <SelectTrigger><SelectValue placeholder="Pilih" /></SelectTrigger>
+          <SelectContent>{opts.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+        </Select>
+      );
+    }
+    if (f.type === 'boolean') return (
+      <div className="flex items-center gap-2 pt-2">
+        <Switch checked={v === true || v === 'true'} onCheckedChange={(b) => set(b)} />
+        <span className="text-sm text-muted-foreground">{(v === true || v === 'true') ? 'Ya' : 'Tidak'}</span>
+      </div>
+    );
+    if (f.type === 'date') return <Input type="date" value={v} onChange={(e) => set(e.target.value)} />;
+    if (f.type === 'datetime') return <Input type="datetime-local" value={v} onChange={(e) => set(e.target.value)} />;
+    if (f.type === 'number') return (
+      <div className="relative">
+        <Input type="number" step="any" value={v} onChange={(e) => set(e.target.value)} />
+        {f.unit && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{f.unit}</span>}
+      </div>
+    );
+    return <Input value={v} onChange={(e) => set(e.target.value)} />;
   };
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <div><CardTitle className="text-base">Stages Produksi</CardTitle><CardDescription>Lairage → Pemotongan → Eviscerasi → Karkas → Boneless/Parting → Packing → ABF → Panen → Karung</CardDescription></div>
+        <div>
+          <CardTitle className="text-base">Log Stage Produksi</CardTitle>
+          <CardDescription>
+            Field dinamis mengikuti master WO Stages · <Link href="/dashboard/masters/wo-stages" className="text-emerald-700 hover:underline">Kelola master</Link>
+          </CardDescription>
+        </div>
         {canOperate && (
           <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button size="sm"><Plus className="w-4 h-4 mr-1" />Catat Stage</Button></DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogTrigger asChild><Button size="sm" onClick={openDialog}><Plus className="w-4 h-4 mr-1" />Catat Stage</Button></DialogTrigger>
+            <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Catat Stage Produksi</DialogTitle></DialogHeader>
-              <div className="space-y-4">
-                <F label="Jenis Stage">
-                  <Select value={type} onValueChange={(v) => { setType(v); setData({}); }}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{Object.entries(STAGE_DEFS).map(([k, v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                  <div className="text-xs text-muted-foreground mt-1">{STAGE_DEFS[type].desc}</div>
-                </F>
-                <div className="grid grid-cols-2 gap-3">
-                  <F label="Output Weight (kg)"><Input type="number" value={outputWeight} onChange={e => setOutputWeight(e.target.value)} /></F>
-                  <F label="Head Count"><Input type="number" value={headCount} onChange={e => setHeadCount(e.target.value)} /></F>
-                </div>
+              <div className="space-y-3">
                 <div>
-                  <Label className="text-xs mb-2 block">Rendemen Data (temp)</Label>
-                  <div className="grid grid-cols-2 gap-3 p-3 border rounded-lg bg-slate-50">
-                    {STAGE_DEFS[type].fields.map(f => (
-                      <F key={f} label={f}><Input type="number" value={data[f] || 0} onChange={e => setData({ ...data, [f]: Number(e.target.value) })} /></F>
-                    ))}
-                  </div>
+                  <Label className="text-xs">Stage *</Label>
+                  <Select value={stageId} onValueChange={onStageChange}>
+                    <SelectTrigger><SelectValue placeholder="Pilih stage..." /></SelectTrigger>
+                    <SelectContent>
+                      {stages.length === 0 && <div className="p-3 text-xs text-muted-foreground">Belum ada stage aktif. Buat di master.</div>}
+                      {stages.map(st => (
+                        <SelectItem key={st.id} value={st.id}>
+                          <span className="flex items-center gap-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: st.color || '#3b82f6' }}></span>
+                            <span className="font-medium">{st.name}</span>
+                            <span className="text-xs text-muted-foreground font-mono">· {st.code}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedStage?.description && <p className="text-xs text-muted-foreground mt-1">{selectedStage.description}</p>}
                 </div>
+                {selectedStage && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      {fieldsSchema.length === 0 && (
+                        <div className="col-span-2 text-xs text-muted-foreground text-center py-2 border border-dashed rounded">Stage ini belum punya field. Tambahkan via master.</div>
+                      )}
+                      {fieldsSchema.map(f => (
+                        <div key={f.key} className={f.type === 'textarea' ? 'col-span-2' : ''}>
+                          <Label className="text-xs">
+                            {f.label}
+                            {f.required && <span className="text-red-500 ml-1">*</span>}
+                            {f.unit ? <span className="text-muted-foreground ml-1">({f.unit})</span> : null}
+                          </Label>
+                          {renderFieldInput(f)}
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <Label className="text-xs">Catatan</Label>
+                      <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                    </div>
+                  </>
+                )}
               </div>
-              <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Batal</Button>
+                <Button onClick={save} disabled={saving || !stageId}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
         )}
       </CardHeader>
       <CardContent>
-        {(wo.stages || []).length === 0 ? <div className="text-center py-8 text-muted-foreground text-sm">Belum ada stage tercatat</div> :
+        {records.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground text-sm">Belum ada stage tercatat</div>
+        ) : (
           <div className="space-y-2">
-            {wo.stages.map(st => (
-              <div key={st.id} className="p-3 border rounded-lg bg-slate-50">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-sm">{st.stageName}</div>
-                  <div className="text-xs text-muted-foreground">{format(new Date(st.recordedAt), 'dd MMM HH:mm')} · {st.recordedBy}</div>
-                </div>
-                <div className="grid grid-cols-3 gap-2 mt-2 text-sm">
-                  {st.outputWeight > 0 && <div>Berat: <b>{st.outputWeight} kg</b></div>}
-                  {st.headCount > 0 && <div>Ekor: <b>{st.headCount}</b></div>}
-                  {st.bwAvg > 0 && <div>BW: <b>{Number(st.bwAvg).toFixed(2)}</b></div>}
-                </div>
-                {st.rendemenData && Object.keys(st.rendemenData).filter(k => st.rendemenData[k]).length > 0 && (
-                  <div className="mt-2 pt-2 border-t text-xs grid grid-cols-2 gap-1">
-                    {Object.entries(st.rendemenData).map(([k, v]) => v ? <div key={k}><span className="text-muted-foreground">{k}:</span> {v}</div> : null)}
+            {records.map(r => {
+              const fv = r.fieldValues || {};
+              let ts = '';
+              try {
+                const t = r.recordedAt;
+                const d = typeof t === 'string' ? new Date(t) : new Date(Number(t) * 1000);
+                if (!isNaN(d.getTime())) ts = format(d, 'dd MMM yyyy HH:mm');
+              } catch (e) {}
+              return (
+                <div key={r.id} className="p-3 border rounded-lg bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-3 h-3 rounded-full" style={{ background: r.stage?.color || '#3b82f6' }}></span>
+                      <div className="font-semibold text-sm">{r.stage?.name || 'Stage'}</div>
+                      <Badge variant="outline" className="text-[10px] font-mono">{r.stage?.code}</Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs text-muted-foreground">{ts} · {r.recordedBy}</div>
+                      {canDelete && (
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => removeRecord(r.id)}>
+                          <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
-          </div>}
+                  {Object.keys(fv).length > 0 && (
+                    <div className="mt-2 pt-2 border-t grid grid-cols-2 md:grid-cols-3 gap-x-3 gap-y-1 text-xs">
+                      {Object.entries(fv).map(([k, v]) => (
+                        <div key={k} className="truncate">
+                          <span className="text-muted-foreground">{k}:</span> <b>{String(v ?? '')}</b>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {r.notes && <div className="mt-1 text-xs italic text-muted-foreground">"{r.notes}"</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
