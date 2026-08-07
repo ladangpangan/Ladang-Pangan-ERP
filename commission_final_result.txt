@@ -7,9 +7,9 @@ COMMISSION & END-CUSTOMERS - COMPREHENSIVE TEST
 [TEST A] Contact Types - Agen & Dropshipper
 --------------------------------------------------------------------------------
 ✅ A.1 POST Dropshipper
-   ID=29382dfe-f332-4e75-880e-57b8a81990c7, commissionType=per_kg, value=150
+   ID=resume-project-90, commissionType=per_kg, value=150
 ✅ A.2 POST Agen
-   ID=f7b1281d-9689-4b3b-bf20-8461775cd42c, agentDiscountPct=5
+   ID=resume-project-90, agentDiscountPct=5
 ✅ A.3 GET ?type=Dropshipper
    Found 4 Dropshipper(s)
 ✅ A.3 GET ?type=Agen
@@ -18,7 +18,7 @@ COMMISSION & END-CUSTOMERS - COMPREHENSIVE TEST
 [TEST B] End-Customers
 --------------------------------------------------------------------------------
 ✅ B.1 POST end-customer
-   ID=59d20514-59e7-4137-8e0c-0b24855a1914, name=End Customer Test
+   ID=resume-project-90, name=End Customer Test
 ✅ B.2 GET end-customers
    Found 1 customer(s)
 ✅ B.3 PATCH end-customer

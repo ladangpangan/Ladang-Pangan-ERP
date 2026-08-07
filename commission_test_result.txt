@@ -53,7 +53,7 @@ Status: 200
 [Setup] Creating Product
 ✅ Product created: 6be814a6-be55-4046-94e7-e89f1b221314
 
-[C.1] POST /api/sales-orders with dropshipperId=ed3c38e5-9988-40df-a259-eb5661240637
+[C.1] POST /api/sales-orders with dropshipperId=resume-project-90
 Status: 201
 ✅ SO created: SO/202608/0001
    ⚠️  No commission object in response

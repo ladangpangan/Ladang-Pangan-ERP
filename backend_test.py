@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta
 
 # Configuration
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
+BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 
