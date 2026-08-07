@@ -1022,6 +1022,197 @@ backend:
           All Sales Order ↔ Inventory linkage functionality working correctly!
 
 frontend:
+  - task: "Dropship SO UI + SJ shipped weight + Invoice weight basis"
+    implemented: true
+    working: false
+    file: "/app/app/dashboard/sales-orders/page.js, /app/app/dashboard/sales-orders/[id]/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW UI for dropship SO feature (backend already tested and working).
+          - SO create dialog: Mode Pemenuhan dropdown with "Dropship (langsung dari supplier, tanpa stok)" option
+          - When dropship selected: shows Supplier Asal dropdown + blue note about auto-PO Draft
+          - Item entry: product dropdown (not stock picker) for dropship items
+          - SJ dialog: "Berat Kirim RIIL per item (hari-H)" section with per-item weight inputs
+          - SJ dialog: "Tampilkan kolom Berat Diterima" switch
+          - Invoiced transition: confirm dialog for weight basis (OK=received, Batal=shipped)
+      
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ DROPSHIP SO UI - CRITICAL BUG FOUND (BLOCKS ALL SCENARIOS)
+          
+          Tested NEW dropship SO + SJ shipped weight + invoice basis UI features.
+          Backend already tested and working (100% pass rate, see backend task lines 112-262).
+          
+          === TEST ENVIRONMENT ===
+          - Login: admin@lpi.co.id / admin123 ✓
+          - Created test data via UI:
+            * Supplier: SUP-T1 (Sup T1) ✓
+            * Customer: CUST-T1 (Cust T1) ✓
+            * Product: PRD-T1 (Prod T1, unit=kg, basePrice=40000) ✓
+          
+          === SCENARIO 1: DROPSHIP SO (no stock, auto-PO) - ❌ BLOCKED ===
+          
+          ✅ PASSED TESTS (8/9):
+          1. Navigate to /dashboard/sales-orders → page loaded ✓
+          2. Click "SO Baru" → dialog opened ✓
+          3. Mode Pemenuhan dropdown → "Dropship (langsung dari supplier, tanpa stok)" option visible and selectable ✓
+          4. Supplier Asal dropdown appears when dropship selected ✓
+          5. Blue note visible: "PO Draft (Produk Jadi) otomatis dibuat ke supplier ini. Tidak memotong stok. Berat riil dicatat saat Surat Jalan." ✓
+          6. Select Pembeli = CUST-T1 ✓
+          7. Select Supplier Asal = SUP-T1 ✓
+          8. Item row shows PRODUCT dropdown (not stock picker) ✓
+          9. Select product PRD-T1 → product selected, unitPrice auto-filled 40000 ✓
+          
+          ❌ CRITICAL BUG (Test 10):
+          **Weight input field does NOT render for dropship items**
+          
+          === ROOT CAUSE ANALYSIS ===
+          
+          File: /app/app/dashboard/sales-orders/page.js
+          
+          Problem: Weight input section (lines 390-421) is conditional on `it.stockId`:
+          ```javascript
+          {it.stockId && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pl-6">
+              <div>
+                <Label className="text-xs">Berat Dijual (kg) *</Label>
+                <Input type="number" ... />
+              </div>
+              ...
+            </div>
+          )}
+          ```
+          
+          For dropship items (lines 358-362):
+          - Only product select is shown (no stock picker)
+          - stockId is NOT set (line 221: `stockId: isDropship ? undefined : it.stockId`)
+          - Result: Weight input section never renders
+          
+          Backend validation (lines 204-205):
+          ```javascript
+          if (form.items.some(it => Number(it.weight) <= 0)) 
+            return toast.error('Berat harus > 0');
+          ```
+          - Backend REQUIRES weight > 0 for dropship items
+          - UI doesn't provide weight input
+          - Cannot create dropship SO via UI
+          
+          === IMPACT ===
+          
+          ❌ BLOCKING: Cannot complete dropship SO creation
+          ❌ BLOCKING: Cannot test auto-PO creation (requires completed SO)
+          ❌ BLOCKING: Cannot test Scenario 2 (SJ shipped weight)
+          ❌ BLOCKING: Cannot test Scenario 3 (Invoice weight basis)
+          
+          === OBSERVED BEHAVIOR ===
+          
+          After selecting product PRD-T1 in dropship mode:
+          - Product name displayed: "Prod T1" ✓
+          - Unit price auto-filled: 40000 ✓
+          - Weight input: NOT VISIBLE ❌
+          - Quantity input: NOT VISIBLE ❌
+          - Discount input: NOT VISIBLE ❌
+          - Subtotal: Shows Rp 0 (because weight = 0)
+          
+          Attempting to save SO without weight:
+          - Expected: Error "Berat harus > 0"
+          - Actual: Cannot test due to session timeout issues
+          
+          === SCREENSHOTS ===
+          
+          - scenario1_dropship_ui.png: Mode Pemenuhan dropdown, Supplier Asal, blue note
+          - scenario1_product_selected.png: After selecting PRD-T1, no weight input visible
+          
+          === SCENARIOS NOT TESTED ===
+          
+          ⏸️ Scenario 1 (continued):
+          - Set weight = 100 kg (BLOCKED: no input field)
+          - Verify subtotal = Rp 4.000.000 (40000 × 100)
+          - Save SO
+          - Verify auto-PO created in /dashboard/purchase-orders
+          - Verify PO type = "Produk Jadi", status = "Draft"
+          
+          ⏸️ Scenario 2: SJ shipped weight + received column
+          - Advance SO: Draft → Confirmed → Packed
+          - Open "Surat Jalan" tab → "Buat Surat Jalan"
+          - Verify "Berat Kirim RIIL per item (hari-H)" section
+          - Change weight from 100 to 95
+          - Verify "Tampilkan kolom Berat Diterima..." switch
+          - Toggle switch ON
+          - Save SJ
+          - Verify success toast, SJ row appears, status → Shipped
+          
+          ⏸️ Scenario 3: Invoice basis selection
+          - Click "Invoiced" status button
+          - Verify confirm dialog: "OK = Berat Diterima, Batal = Berat Kirim"
+          - Choose "Batal" (shipped weight)
+          - Verify success toast mentions basis
+          - Verify invoice number badge appears
+          - Verify SO total reflects shipped weight 95 (Rp 3.800.000)
+          
+          === RECOMMENDATION ===
+          
+          **FIX REQUIRED:** Modify /app/app/dashboard/sales-orders/page.js
+          
+          Option 1: Show weight input for dropship items
+          ```javascript
+          {(it.stockId || isDropship) && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pl-6">
+              <div>
+                <Label className="text-xs">Berat (kg) *</Label>
+                <Input type="number" ... />
+              </div>
+              ...
+            </div>
+          )}
+          ```
+          
+          Option 2: Separate weight input for dropship items
+          ```javascript
+          {isDropship && it.productId && (
+            <div className="grid grid-cols-2 gap-2 pl-6">
+              <div>
+                <Label className="text-xs">Berat (kg) *</Label>
+                <Input type="number" value={it.weight} onChange={...} />
+              </div>
+              <div>
+                <Label className="text-xs">Harga / kg</Label>
+                <Input type="number" value={it.unitPrice} onChange={...} />
+              </div>
+            </div>
+          )}
+          ```
+          
+          After fix, retest all 3 scenarios.
+          
+          === TEST SUMMARY ===
+          
+          ✅ UI Elements Present: 8/8
+          - Mode Pemenuhan dropdown ✓
+          - Dropship option ✓
+          - Supplier Asal dropdown ✓
+          - Blue note about auto-PO ✓
+          - Product dropdown (not stock picker) ✓
+          - Product selection working ✓
+          - Price auto-fill working ✓
+          
+          ❌ Critical Bug: 1/1
+          - Weight input missing for dropship items ❌
+          
+          ⏸️ Scenarios Blocked: 3/3
+          - Scenario 1: Auto-PO creation ⏸️
+          - Scenario 2: SJ shipped weight ⏸️
+          - Scenario 3: Invoice basis ⏸️
+          
+          Test Coverage: 8/9 UI elements verified, 0/3 scenarios completed
+          Blocking Issue: Weight input field missing for dropship items
+
   - task: "Dual-role UI (Agen+Dropshipper switches, combined badge, SO dropshipper excludes buyer)"
     implemented: true
     working: true
@@ -5603,8 +5794,9 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Agen & Dropshipper contacts + Commission + End-Customers (NEW FEATURE)"
-  stuck_tasks: []
+    - "Dropship SO UI + SJ shipped weight + Invoice weight basis (BLOCKED BY BUG)"
+  stuck_tasks:
+    - "Dropship SO UI - weight input missing for dropship items"
   test_all: false
   test_priority: "high_first"
   _archived_focus:
@@ -5879,4 +6071,88 @@ agent_communication:
           - Agen discount (bug scenario): ✓
           - Commission integration: ✓
           - PATCH recompute: ✓
+
+  - agent: "main"
+    message: |
+      NEW UI TESTING REQUEST: Dropship SO + SJ shipped weight + Invoice weight basis
+      
+      Test the NEW dropship SO UI feature. Backend already tested and working (100% pass).
+      
+      Login: admin@lpi.co.id / admin123
+      DB is EMPTY - create test data via UI with unique codes.
+      
+      PRE-REQ DATA (create via UI):
+      - Contacts: Supplier (Kode=SUP-T1, Nama="Sup T1") and Customer (Kode=CUST-T1, Nama="Cust T1")
+      - Product: SKU=PRD-T1, Name="Prod T1", unit=kg, basePrice=40000
+      
+      SCENARIO 1 — Dropship SO (no stock, auto-PO):
+      1. /dashboard/sales-orders → "SO Baru"
+      2. Find "Mode Pemenuhan" select → choose "Dropship (langsung dari supplier, tanpa stok)"
+      3. Verify "Supplier Asal" dropdown appears with blue note about auto-PO Draft
+      4. Select buyer = Cust T1, Supplier Asal = Sup T1
+      5. In item row, verify PRODUCT dropdown (NOT stock picker) → select "PRD-T1 - Prod T1"
+      6. Set weight=100, verify Harga/kg auto-fills 40000, subtotal shows Rp 4.000.000
+      7. Click "Simpan SO", expect success toast and redirect to SO detail
+      8. Go to /dashboard/purchase-orders → verify new PO with type "Produk Jadi" and status "Draft"
+      
+      SCENARIO 2 — Surat Jalan real shipped weight + received column:
+      Using the dropship SO: advance Draft→Confirmed→Packed
+      1. Open "Surat Jalan" tab → "Buat Surat Jalan"
+      2. Verify "Berat Kirim RIIL per item (hari-H)" section with kg input (showing SO weight 100)
+      3. Change to 95
+      4. Verify switch "Tampilkan kolom Berat Diterima..." → toggle ON
+      5. Click Simpan, verify success toast and SJ row appears, status → Shipped
+      
+      SCENARIO 3 — Invoice basis selection:
+      1. On the SO (now Shipped), click "Invoiced" status button
+      2. Confirm dialog appears: OK = Berat Diterima, Batal = Berat Kirim
+      3. Choose "Batal" (shipped weight)
+      4. Verify success toast mentions basis, invoice number badge appears, total reflects 95kg (Rp 3.800.000)
+      
+      Report pass/fail per scenario with screenshots and console errors.
+
+  - agent: "testing"
+    message: |
+      ❌ DROPSHIP SO UI TESTING - CRITICAL BUG FOUND (BLOCKS ALL SCENARIOS)
+      
+      **SUMMARY:**
+      ❌ Dropship SO UI has critical bug: weight input field missing for dropship items
+      ✅ Backend already tested and working (100% pass rate)
+      ⏸️ All 3 scenarios blocked by weight input bug
+      
+      **CRITICAL BUG:**
+      - File: /app/app/dashboard/sales-orders/page.js
+      - Issue: Weight input section (lines 390-421) conditional on `it.stockId`
+      - For dropship items, stockId is undefined (line 221)
+      - Result: Weight input never renders for dropship items
+      - Backend requires weight > 0 (line 204-205)
+      - Impact: Cannot create dropship SO via UI
+      
+      **TESTS COMPLETED:**
+      ✅ Login successful
+      ✅ Test data created (SUP-T1, CUST-T1, PRD-T1)
+      ✅ Mode Pemenuhan dropdown works
+      ✅ Dropship option selectable
+      ✅ Supplier Asal dropdown appears
+      ✅ Blue note about auto-PO visible
+      ✅ Product dropdown appears (not stock picker)
+      ✅ Product PRD-T1 selectable
+      ✅ Price auto-fills 40000
+      ❌ Weight input NOT visible (CRITICAL BUG)
+      
+      **SCENARIOS BLOCKED:**
+      ⏸️ Scenario 1: Auto-PO creation (cannot complete SO without weight)
+      ⏸️ Scenario 2: SJ shipped weight (requires completed SO)
+      ⏸️ Scenario 3: Invoice basis (requires completed SO)
+      
+      **RECOMMENDATION:**
+      Fix weight input rendering for dropship items in /app/app/dashboard/sales-orders/page.js
+      
+      Option 1: Change condition from `{it.stockId && (` to `{(it.stockId || isDropship) && (`
+      Option 2: Add separate weight input section for dropship items
+      
+      After fix, retest all 3 scenarios.
+      
+      Test Coverage: 8/9 UI elements verified, 0/3 scenarios completed
+      Blocking Issue: Weight input field missing for dropship items
 
