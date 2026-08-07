@@ -241,10 +241,18 @@ function SjTab({ so, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ deliveryDate: new Date().toISOString().slice(0,10), driverName: '', vehicleNumber: '', notes: '' });
   const [saving, setSaving] = useState(false);
+  const [shipMode, setShipMode] = useState('default'); // default | <endCustomerId> | manual
+  const [shipManual, setShipManual] = useState({ shipToName: '', shipToPhone: '', shipToAddress: '' });
+  // Pelanggan akhir milik pembeli (Agen/Dropshipper) untuk tujuan pengiriman
+  const { data: ccData } = useSWR(so.customerId ? `/api/contacts/${so.customerId}/customers` : null, fetcher);
+  const endCustomers = ccData?.data || [];
   const create = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`/api/sales-orders/${so.id}/surat-jalan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      let payload = { ...form };
+      if (shipMode === 'manual') payload = { ...payload, ...shipManual };
+      else if (shipMode !== 'default') payload = { ...payload, shipToCustomerId: shipMode };
+      const res = await fetch(`/api/sales-orders/${so.id}/surat-jalan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
       toast.success('Surat Jalan ' + j.data.sjNumber + ' dibuat');
@@ -265,6 +273,26 @@ function SjTab({ so, onSaved, canOperate }) {
                 <F label="Tanggal Kirim"><Input type="date" value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
                 <F label="Nama Sopir"><Input value={form.driverName} onChange={e => setForm({ ...form, driverName: e.target.value })} /></F>
                 <F label="No Kendaraan" className="col-span-2"><Input value={form.vehicleNumber} onChange={e => setForm({ ...form, vehicleNumber: e.target.value })} placeholder="B 1234 XYZ" /></F>
+                <F label="Tujuan Pengiriman" className="col-span-2">
+                  <Select value={shipMode} onValueChange={setShipMode}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Alamat {so.customer?.displayName || 'Pembeli'} (default)</SelectItem>
+                      {endCustomers.map(cc => <SelectItem key={cc.id} value={cc.id}>{cc.name}{cc.city ? ` · ${cc.city}` : ''}</SelectItem>)}
+                      <SelectItem value="manual">Alamat manual…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {endCustomers.length === 0 && so.customer && (
+                    <p className="text-[11px] text-muted-foreground mt-1">Tip: tambahkan pelanggan akhir di kontak {so.customer.displayName} (tab Pelanggan) untuk dipilih di sini.</p>
+                  )}
+                </F>
+                {shipMode === 'manual' && (
+                  <>
+                    <F label="Nama Penerima"><Input value={shipManual.shipToName} onChange={e => setShipManual({ ...shipManual, shipToName: e.target.value })} /></F>
+                    <F label="Telepon"><Input value={shipManual.shipToPhone} onChange={e => setShipManual({ ...shipManual, shipToPhone: e.target.value })} /></F>
+                    <F label="Alamat" className="col-span-2"><Textarea rows={2} value={shipManual.shipToAddress} onChange={e => setShipManual({ ...shipManual, shipToAddress: e.target.value })} /></F>
+                  </>
+                )}
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
@@ -280,6 +308,7 @@ function SjTab({ so, onSaved, canOperate }) {
                 <div className="flex-1 min-w-0">
                   <div className="font-mono font-semibold">{sj.sjNumber}</div>
                   <div className="text-xs text-muted-foreground">{format(new Date(sj.deliveryDate), 'dd MMM yyyy')} · {sj.driverName || '-'} · {sj.vehicleNumber || '-'}</div>
+                  {sj.shipToName && <div className="text-xs text-teal-700 mt-0.5">Kirim ke: {sj.shipToName}{sj.shipToAddress ? ` · ${sj.shipToAddress}` : ''}</div>}
                 </div>
                 <Badge>{sj.status}</Badge>
                 <Button

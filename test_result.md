@@ -722,6 +722,26 @@ backend:
           All Sales Order ↔ Inventory linkage functionality working correctly!
 
 frontend:
+  - task: "Agen & Dropshipper UI (contacts form + end-customers tab + commission tab + SO integration + SJ ship-to)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/dashboard/contacts/page.js, /app/app/dashboard/sales-orders/page.js, /app/app/dashboard/sales-orders/[id]/page.js, /app/lib/pdf/invoice.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE UI (not yet tested by user):
+          - Contacts: added Agen & Dropshipper types (+badges). Form shows agentDiscountPct (Agen) / commissionType+commissionValue (Dropshipper).
+          - Contact detail sheet: dynamic tabs — "Pelanggan" (end-customers CRUD for Agen/Dropshipper) + "Komisi" (Dropshipper: summary cards, records list, pay one/pay all, add commission dialog with live preview via /api/commissions/preview).
+          - SO create dialog: buyer dropdown now includes Customer+Agen (auto agent discount % applied read-only per item); optional Dropshipper dropdown with commission type/value + estimate.
+          - SO detail SjTab: "Tujuan Pengiriman" select (default buyer / end-customer of buyer / manual) → sends shipTo to backend.
+          - Surat Jalan PDF shows ship-to name/address/phone ("via <buyer>").
+          Verified visually via screenshots (Dropshipper form, SO dialog dropdowns). Lint clean.
+
+
   - task: "Login page & dashboard shell"
     implemented: true
     working: true

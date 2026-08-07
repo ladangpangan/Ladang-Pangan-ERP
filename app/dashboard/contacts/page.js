@@ -15,19 +15,27 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
-const TYPES = ['Supplier', 'Customer', 'RPH', 'Karyawan', 'Mitra'];
+const TYPES = ['Supplier', 'Customer', 'Agen', 'Dropshipper', 'RPH', 'Karyawan', 'Mitra'];
 const TYPE_COLOR = {
   Supplier: 'bg-blue-100 text-blue-700',
   Customer: 'bg-emerald-100 text-emerald-700',
+  Agen: 'bg-teal-100 text-teal-700',
+  Dropshipper: 'bg-pink-100 text-pink-700',
   RPH: 'bg-amber-100 text-amber-700',
   Karyawan: 'bg-slate-100 text-slate-700',
   Mitra: 'bg-purple-100 text-purple-700',
+};
+
+const COMMISSION_TYPE_LABEL = {
+  per_kg: 'Per Kg',
+  fixed: 'Nominal Tetap',
+  percent_profit: '% Profit Bersih',
 };
 
 const STATUS_COLOR = {
@@ -41,6 +49,7 @@ const STATUS_COLOR = {
 const emptyForm = {
   contactType: 'Supplier', code: '', displayName: '', companyName: '',
   isSubscriber: false, creditLimit: 0, prepaidBalance: 0, taxStatus: '',
+  agentDiscountPct: 0, commissionType: 'per_kg', commissionValue: 0,
   npwp: '', address: '', city: '', province: '', postalCode: '',
   phone: '', email: '', picName: '', picPhone: '',
   bankName: '', bankAccount: '', bankHolder: '', notes: '', status: 'active'
@@ -111,7 +120,7 @@ export default function ContactsPage() {
             <Users className="w-8 h-8 text-emerald-600" /> Contacts
           </h1>
           <p className="text-muted-foreground mt-1">
-            Kelola Supplier, Customer, RPH, Karyawan, dan Mitra
+            Kelola Supplier, Customer, Agen, Dropshipper, RPH, Karyawan, dan Mitra
             <span className="ml-2 text-xs">
               · Role Anda: <Badge variant="outline" className="ml-1">{role}</Badge>
               {role === 'direktur' && <span className="ml-2 text-amber-600">(view only)</span>}
@@ -191,8 +200,15 @@ export default function ContactsPage() {
 }
 
 function ContactDetailSheet({ id, onClose }) {
+  const { data: session } = useSession();
+  const role = session?.user?.role || 'operator';
+  const canManage = ['admin', 'supervisor'].includes(role);
   const { data, isLoading } = useSWR(id ? `/api/contacts/${id}/history` : null, fetcher);
   const d = data?.data;
+  const ct = d?.contact?.contactType;
+  const isAgentOrDs = ct === 'Agen' || ct === 'Dropshipper';
+  const isDropshipper = ct === 'Dropshipper';
+  const tabCount = 2 + (isAgentOrDs ? 1 : 0) + (isDropshipper ? 1 : 0);
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -211,12 +227,25 @@ function ContactDetailSheet({ id, onClose }) {
 
             <div className="mt-6">
               <Tabs defaultValue="info">
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="info"><Info className="w-4 h-4 mr-1" /> Informasi</TabsTrigger>
-                  <TabsTrigger value="history"><ClipboardList className="w-4 h-4 mr-1" /> Riwayat Transaksi</TabsTrigger>
+                <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${tabCount}, minmax(0, 1fr))` }}>
+                  <TabsTrigger value="info"><Info className="w-4 h-4 mr-1" /> Info</TabsTrigger>
+                  <TabsTrigger value="history"><ClipboardList className="w-4 h-4 mr-1" /> Riwayat</TabsTrigger>
+                  {isAgentOrDs && <TabsTrigger value="customers"><Contact2 className="w-4 h-4 mr-1" /> Pelanggan</TabsTrigger>}
+                  {isDropshipper && <TabsTrigger value="commission"><Wallet className="w-4 h-4 mr-1" /> Komisi</TabsTrigger>}
                 </TabsList>
 
                 <TabsContent value="info" className="mt-4 space-y-4">
+                  {ct === 'Agen' && (
+                    <InfoGroup title="Keagenan">
+                      <InfoRow label="Diskon Khusus" value={<span className="text-teal-600 font-semibold">{Number(d.contact.agentDiscountPct || 0)}%</span>} />
+                    </InfoGroup>
+                  )}
+                  {ct === 'Dropshipper' && (
+                    <InfoGroup title="Skema Komisi">
+                      <InfoRow label="Tipe Komisi" value={COMMISSION_TYPE_LABEL[d.contact.commissionType] || d.contact.commissionType || '-'} />
+                      <InfoRow label="Nilai Default" value={d.contact.commissionType === 'percent_profit' ? `${Number(d.contact.commissionValue || 0)}%` : `Rp ${Number(d.contact.commissionValue || 0).toLocaleString('id-ID')}`} />
+                    </InfoGroup>
+                  )}
                   <InfoGroup title="Data Perusahaan">
                     <InfoRow label="Nama Perusahaan" value={d.contact.companyName} />
                     <InfoRow label="Status Pajak" value={d.contact.taxStatus} />
@@ -253,7 +282,6 @@ function ContactDetailSheet({ id, onClose }) {
                 </TabsContent>
 
                 <TabsContent value="history" className="mt-4 space-y-4">
-                  {/* Summary stats */}
                   <div className="grid grid-cols-3 gap-3">
                     <StatCard label="Sales Order" value={d.summary.salesCount} icon={TrendingUp} color="from-emerald-500 to-emerald-600" />
                     <StatCard label="Purchase Order" value={d.summary.purchaseCount} icon={ShoppingCart} color="from-blue-500 to-blue-600" />
@@ -269,31 +297,282 @@ function ContactDetailSheet({ id, onClose }) {
                       <div className="text-lg font-bold mt-1">Rp {Number(d.summary.totalPurchaseAmount).toLocaleString('id-ID')}</div>
                     </div>
                   </div>
-
-                  {/* Sales Orders */}
-                  {['Customer'].includes(d.contact.contactType) && (
+                  {['Customer', 'Agen'].includes(d.contact.contactType) && (
                     <TransactionList title="Sales Orders" items={d.salesOrders} emptyMsg="Belum ada Sales Order" numberKey="soNumber" dateKey="orderDate" />
                   )}
-                  {/* Purchase Orders */}
                   {['Supplier', 'RPH'].includes(d.contact.contactType) && (
                     <TransactionList title="Purchase Orders" items={d.purchaseOrders} emptyMsg="Belum ada Purchase Order" numberKey="poNumber" dateKey="orderDate" />
                   )}
-                  {/* Work Orders (if any) */}
                   {d.workOrders.length > 0 && (
                     <TransactionList title="Work Orders (dari PO)" items={d.workOrders} emptyMsg="" numberKey="woNumber" dateKey="startDate" />
                   )}
-
-                  <div className="text-xs text-muted-foreground text-center pt-2 border-t">
-                    <Info className="w-3 h-3 inline mr-1" />
-                    Riwayat akan terisi otomatis saat modul PO / SO / WO dibangun.
-                  </div>
                 </TabsContent>
+
+                {isAgentOrDs && (
+                  <TabsContent value="customers" className="mt-4">
+                    <EndCustomersTab contactId={id} canManage={canManage} />
+                  </TabsContent>
+                )}
+                {isDropshipper && (
+                  <TabsContent value="commission" className="mt-4">
+                    <CommissionTab contactId={id} contact={d.contact} canManage={canManage} />
+                  </TabsContent>
+                )}
               </Tabs>
             </div>
           </>
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+const emptyCust = { name: '', phone: '', address: '', city: '', picName: '', notes: '' };
+function EndCustomersTab({ contactId, canManage }) {
+  const { data, mutate, isLoading } = useSWR(contactId ? `/api/contacts/${contactId}/customers` : null, fetcher);
+  const rows = data?.data || [];
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(emptyCust);
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const openCreate = () => { setEditing(null); setForm(emptyCust); setOpen(true); };
+  const openEdit = (r) => { setEditing(r); setForm({ ...emptyCust, ...r }); setOpen(true); };
+  const save = async () => {
+    if (!form.name) { toast.error('Nama wajib diisi'); return; }
+    setSaving(true);
+    try {
+      const url = editing ? `/api/contacts/${contactId}/customers/${editing.id}` : `/api/contacts/${contactId}/customers`;
+      const res = await fetch(url, { method: editing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success(editing ? 'Pelanggan diperbarui' : 'Pelanggan ditambahkan');
+      setOpen(false); mutate();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  const remove = async (cid) => {
+    if (!confirm('Hapus pelanggan ini?')) return;
+    const res = await fetch(`/api/contacts/${contactId}/customers/${cid}`, { method: 'DELETE' });
+    if (res.ok) { toast.success('Terhapus'); mutate(); } else { toast.error('Gagal menghapus'); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Pelanggan akhir milik kontak ini — untuk komunikasi & tujuan pengiriman.</p>
+        {canManage && <Button size="sm" onClick={openCreate}><Plus className="w-4 h-4 mr-1" /> Tambah</Button>}
+      </div>
+      {isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> :
+        rows.length === 0 ? <div className="text-sm text-muted-foreground p-6 rounded-lg bg-slate-50 border border-dashed text-center">Belum ada pelanggan</div> :
+          <div className="border rounded-lg divide-y">
+            {rows.map(r => (
+              <div key={r.id} className="p-3 flex items-start justify-between gap-2 hover:bg-slate-50">
+                <div className="text-sm">
+                  <div className="font-medium">{r.name}</div>
+                  <div className="text-xs text-muted-foreground">{r.phone || '-'} {r.picName ? `· PIC: ${r.picName}` : ''}</div>
+                  {r.address && <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" />{r.address}{r.city ? `, ${r.city}` : ''}</div>}
+                </div>
+                {canManage && (
+                  <div className="whitespace-nowrap">
+                    <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="w-4 h-4" /></Button>
+                    <Button size="icon" variant="ghost" onClick={() => remove(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{editing ? 'Edit Pelanggan' : 'Tambah Pelanggan'}</DialogTitle>
+            <DialogDescription>Data pelanggan akhir untuk komunikasi & pengiriman.</DialogDescription></DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nama *" className="col-span-2"><Input value={form.name} onChange={e => set('name', e.target.value)} /></Field>
+            <Field label="Telepon"><Input value={form.phone || ''} onChange={e => set('phone', e.target.value)} /></Field>
+            <Field label="PIC"><Input value={form.picName || ''} onChange={e => set('picName', e.target.value)} /></Field>
+            <Field label="Alamat" className="col-span-2"><Textarea rows={2} value={form.address || ''} onChange={e => set('address', e.target.value)} /></Field>
+            <Field label="Kota"><Input value={form.city || ''} onChange={e => set('city', e.target.value)} /></Field>
+            <Field label="Catatan"><Input value={form.notes || ''} onChange={e => set('notes', e.target.value)} /></Field>
+          </div>
+          <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function CommissionTab({ contactId, contact, canManage }) {
+  const { data, mutate, isLoading } = useSWR(contactId ? `/api/contacts/${contactId}/commissions` : null, fetcher);
+  const { data: soData } = useSWR('/api/sales-orders', fetcher);
+  const d = data?.data;
+  const summary = d?.summary || { totalCommission: 0, totalPaid: 0, outstanding: 0, unpaidAmount: 0 };
+  const records = d?.records || [];
+  const payments = d?.payments || [];
+  const sos = soData?.data || [];
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ salesOrderId: '', commissionType: contact?.commissionType || 'per_kg', commissionValue: contact?.commissionValue || 0, costAmount: '' });
+  const [preview, setPreview] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const doPreview = async (f) => {
+    if (!f.salesOrderId) { setPreview(null); return; }
+    try {
+      const res = await fetch('/api/commissions/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ salesOrderId: f.salesOrderId, commissionType: f.commissionType, commissionValue: Number(f.commissionValue || 0), costAmount: f.costAmount === '' ? undefined : Number(f.costAmount) }) });
+      const j = await res.json();
+      if (res.ok) setPreview(j.data);
+    } catch { /* ignore */ }
+  };
+  const openCreate = () => { const f = { salesOrderId: '', commissionType: contact?.commissionType || 'per_kg', commissionValue: contact?.commissionValue || 0, costAmount: '' }; setForm(f); setPreview(null); setOpen(true); };
+  const updateForm = (k, v) => { const f = { ...form, [k]: v }; setForm(f); doPreview(f); };
+
+  const save = async () => {
+    if (!form.salesOrderId) { toast.error('Pilih Sales Order'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/contacts/${contactId}/commissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ salesOrderId: form.salesOrderId, commissionType: form.commissionType, commissionValue: Number(form.commissionValue || 0), costAmount: form.costAmount === '' ? undefined : Number(form.costAmount) }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Komisi ditambahkan'); setOpen(false); mutate();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  const payOne = async (rid) => {
+    if (!confirm('Bayar (lunasi) komisi ini?')) return;
+    const res = await fetch(`/api/contacts/${contactId}/commission-payments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commissionRecordId: rid }) });
+    if (res.ok) { toast.success('Komisi dibayar'); mutate(); } else { const j = await res.json(); toast.error(j.error); }
+  };
+  const payAll = async () => {
+    if (!confirm('Lunasi SEMUA komisi outstanding?')) return;
+    const res = await fetch(`/api/contacts/${contactId}/commission-payments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    if (res.ok) { const j = await res.json(); toast.success(`Dibayar Rp ${Number(j.data.amount).toLocaleString('id-ID')}`); mutate(); } else { const j = await res.json(); toast.error(j.error); }
+  };
+  const removeRec = async (rid) => {
+    if (!confirm('Hapus record komisi ini?')) return;
+    const res = await fetch(`/api/contacts/${contactId}/commissions/${rid}`, { method: 'DELETE' });
+    if (res.ok) { toast.success('Terhapus'); mutate(); } else { const j = await res.json(); toast.error(j.error); }
+  };
+
+  if (isLoading) return <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="p-3 rounded-lg bg-slate-50 border">
+          <div className="text-xs text-muted-foreground">Total Komisi</div>
+          <div className="text-lg font-bold">Rp {Number(summary.totalCommission).toLocaleString('id-ID')}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
+          <div className="text-xs text-emerald-700">Sudah Dibayar</div>
+          <div className="text-lg font-bold text-emerald-700">Rp {Number(summary.totalPaid).toLocaleString('id-ID')}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-amber-50 border border-amber-100">
+          <div className="text-xs text-amber-700">Outstanding</div>
+          <div className="text-lg font-bold text-amber-700">Rp {Number(summary.outstanding).toLocaleString('id-ID')}</div>
+        </div>
+      </div>
+
+      {canManage && (
+        <div className="flex gap-2">
+          <Button size="sm" onClick={openCreate}><Plus className="w-4 h-4 mr-1" /> Tambah Komisi</Button>
+          {summary.unpaidAmount > 0 && <Button size="sm" variant="outline" onClick={payAll}><CheckCircle2 className="w-4 h-4 mr-1" /> Lunasi Semua</Button>}
+        </div>
+      )}
+
+      <div>
+        <div className="text-sm font-semibold mb-2">Record Komisi ({records.length})</div>
+        {records.length === 0 ? <div className="text-sm text-muted-foreground p-6 rounded-lg bg-slate-50 border border-dashed text-center">Belum ada komisi</div> :
+          <div className="border rounded-lg divide-y">
+            {records.map(r => (
+              <div key={r.id} className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50">
+                <div className="text-sm">
+                  <div className="font-mono font-medium">{r.soNumber || '(SO dihapus)'}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {COMMISSION_TYPE_LABEL[r.commissionType]} · {r.commissionType === 'percent_profit' ? `${r.commissionValue}% × profit` : r.commissionType === 'per_kg' ? `Rp ${Number(r.commissionValue).toLocaleString('id-ID')}/kg × ${r.basisAmount}kg` : 'nominal tetap'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <div className="font-semibold">Rp {Number(r.commissionAmount).toLocaleString('id-ID')}</div>
+                    <Badge variant="secondary" className={r.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{r.status === 'paid' ? 'Lunas' : 'Belum'}</Badge>
+                  </div>
+                  {canManage && r.status !== 'paid' && (
+                    <div className="whitespace-nowrap">
+                      <Button size="icon" variant="ghost" title="Bayar" onClick={() => payOne(r.id)}><Wallet className="w-4 h-4 text-emerald-600" /></Button>
+                      <Button size="icon" variant="ghost" title="Hapus" onClick={() => removeRec(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>}
+      </div>
+
+      {payments.length > 0 && (
+        <div>
+          <div className="text-sm font-semibold mb-2">Riwayat Pembayaran ({payments.length})</div>
+          <div className="border rounded-lg divide-y">
+            {payments.map(p => (
+              <div key={p.id} className="p-3 flex items-center justify-between text-sm hover:bg-slate-50">
+                <div>
+                  <div className="font-medium">Rp {Number(p.amount).toLocaleString('id-ID')}</div>
+                  <div className="text-xs text-muted-foreground">{p.method} · {p.paymentDate ? format(new Date(p.paymentDate), 'dd MMM yyyy') : '-'}</div>
+                </div>
+                {p.reference && <div className="text-xs text-muted-foreground">{p.reference}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Tambah Komisi</DialogTitle><DialogDescription>Pilih Sales Order untuk menghitung komisi.</DialogDescription></DialogHeader>
+          <div className="space-y-3">
+            <Field label="Sales Order *">
+              <Select value={form.salesOrderId} onValueChange={v => updateForm('salesOrderId', v)}>
+                <SelectTrigger><SelectValue placeholder="Pilih SO" /></SelectTrigger>
+                <SelectContent>
+                  {sos.map(so => <SelectItem key={so.id} value={so.id}>{so.soNumber} · {so.customer?.name || '-'} · Rp {Number(so.totalAmount || 0).toLocaleString('id-ID')}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Tipe Komisi">
+                <Select value={form.commissionType} onValueChange={v => updateForm('commissionType', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_kg">Per Kg</SelectItem>
+                    <SelectItem value="fixed">Nominal Tetap</SelectItem>
+                    <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label={form.commissionType === 'percent_profit' ? 'Nilai (%)' : 'Nilai (Rp)'}>
+                <Input type="number" value={form.commissionValue} onChange={e => updateForm('commissionValue', e.target.value)} />
+              </Field>
+            </div>
+            {form.commissionType === 'percent_profit' && (
+              <Field label="Modal/HPP Manual (Rp) — kosongkan untuk auto dari stok">
+                <Input type="number" value={form.costAmount} onChange={e => updateForm('costAmount', e.target.value)} placeholder="auto" />
+              </Field>
+            )}
+            {preview && (
+              <div className="p-3 rounded-lg bg-slate-50 border text-sm space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">Omzet (SO)</span><span>Rp {Number(preview.revenue).toLocaleString('id-ID')}</span></div>
+                {form.commissionType === 'percent_profit' && <>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Modal (HPP)</span><span>Rp {Number(preview.cost).toLocaleString('id-ID')}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Profit Bersih</span><span>Rp {Number(preview.profit).toLocaleString('id-ID')}</span></div>
+                </>}
+                {form.commissionType === 'per_kg' && <div className="flex justify-between"><span className="text-muted-foreground">Total Berat</span><span>{Number(preview.totalWeight)} kg</span></div>}
+                <div className="flex justify-between font-bold text-emerald-700 border-t pt-1"><span>Komisi</span><span>Rp {Number(preview.amount).toLocaleString('id-ID')}</span></div>
+              </div>
+            )}
+          </div>
+          <DialogFooter><Button onClick={save} disabled={saving || !form.salesOrderId}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
@@ -383,6 +662,30 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
             ) : (
               <Field label="Credit Limit (Rp)"><Input type="number" value={form.creditLimit} onChange={e => set('creditLimit', Number(e.target.value))} /></Field>
             )}
+          </>
+        )}
+        {form.contactType === 'Agen' && (
+          <Field label="Diskon Khusus Agen (%)" className="sm:col-span-2">
+            <Input type="number" step="0.1" value={form.agentDiscountPct || 0} onChange={e => set('agentDiscountPct', Number(e.target.value))} placeholder="mis. 5" />
+            <p className="text-xs text-muted-foreground">Diskon otomatis diterapkan sebagai default saat Agen ini dipilih sebagai pembeli di Sales Order.</p>
+          </Field>
+        )}
+        {form.contactType === 'Dropshipper' && (
+          <>
+            <Field label="Tipe Komisi">
+              <Select value={form.commissionType || 'per_kg'} onValueChange={v => set('commissionType', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="per_kg">Per Kg (Rp/kg)</SelectItem>
+                  <SelectItem value="fixed">Nominal Tetap (Rp/transaksi)</SelectItem>
+                  <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={form.commissionType === 'percent_profit' ? 'Nilai Komisi (%)' : 'Nilai Komisi (Rp)'}>
+              <Input type="number" step="0.01" value={form.commissionValue || 0} onChange={e => set('commissionValue', Number(e.target.value))} placeholder={form.commissionType === 'per_kg' ? '150' : form.commissionType === 'percent_profit' ? '5' : '100000'} />
+              <p className="text-xs text-muted-foreground">Nilai default; bisa di-override per transaksi.</p>
+            </Field>
           </>
         )}
         <Field label="Status Pajak">
