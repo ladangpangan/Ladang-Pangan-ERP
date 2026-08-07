@@ -350,6 +350,17 @@ function EndCustomersTab({ contactId, canManage }) {
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // "Pilih dari Kontak" picker state
+  const [pickOpen, setPickOpen] = useState(false);
+  const [pickSearch, setPickSearch] = useState('');
+  const [linking, setLinking] = useState(false);
+  const { data: custData, isLoading: custLoading } = useSWR(
+    pickOpen ? `/api/contacts?type=Customer${pickSearch ? `&q=${encodeURIComponent(pickSearch)}` : ''}` : null,
+    fetcher
+  );
+  const linkedIds = new Set(rows.filter(r => r.linkedContactId).map(r => r.linkedContactId));
+  const custOptions = (custData?.data || []).filter(c => c.id !== contactId);
+
   const openCreate = () => { setEditing(null); setForm(emptyCust); setOpen(true); };
   const openEdit = (r) => { setEditing(r); setForm({ ...emptyCust, ...r }); setOpen(true); };
   const save = async () => {
@@ -364,6 +375,19 @@ function EndCustomersTab({ contactId, canManage }) {
       setOpen(false); mutate();
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
+  const linkContact = async (c) => {
+    setLinking(true);
+    try {
+      const res = await fetch(`/api/contacts/${contactId}/customers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ linkedContactId: c.id }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menautkan');
+      toast.success(`Ditautkan ke ${c.displayName}`);
+      mutate();
+    } catch (e) { toast.error(e.message); } finally { setLinking(false); }
+  };
   const remove = async (cid) => {
     if (!confirm('Hapus pelanggan ini?')) return;
     const res = await fetch(`/api/contacts/${contactId}/customers/${cid}`, { method: 'DELETE' });
@@ -372,9 +396,16 @@ function EndCustomersTab({ contactId, canManage }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-sm text-muted-foreground">Pelanggan akhir milik kontak ini — untuk komunikasi & tujuan pengiriman.</p>
-        {canManage && <Button size="sm" onClick={openCreate}><Plus className="w-4 h-4 mr-1" /> Tambah</Button>}
+        {canManage && (
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => { setPickSearch(''); setPickOpen(true); }}>
+              <Contact2 className="w-4 h-4 mr-1" /> Pilih dari Kontak
+            </Button>
+            <Button size="sm" onClick={openCreate}><Plus className="w-4 h-4 mr-1" /> Tambah</Button>
+          </div>
+        )}
       </div>
       {isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> :
         rows.length === 0 ? <div className="text-sm text-muted-foreground p-6 rounded-lg bg-slate-50 border border-dashed text-center">Belum ada pelanggan</div> :
@@ -382,13 +413,23 @@ function EndCustomersTab({ contactId, canManage }) {
             {rows.map(r => (
               <div key={r.id} className="p-3 flex items-start justify-between gap-2 hover:bg-slate-50">
                 <div className="text-sm">
-                  <div className="font-medium">{r.name}</div>
+                  <div className="font-medium flex items-center gap-2 flex-wrap">
+                    {r.name}
+                    {r.linkedContactId && !r.linkedMissing && (
+                      <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">
+                        <Contact2 className="w-3 h-3 mr-0.5" /> Tertaut{r.linkedContact?.code ? ` · ${r.linkedContact.code}` : ''}
+                      </Badge>
+                    )}
+                    {r.linkedMissing && (
+                      <Badge variant="outline" className="text-[10px] bg-red-50 text-red-600 border-red-200">Tautan hilang</Badge>
+                    )}
+                  </div>
                   <div className="text-xs text-muted-foreground">{r.phone || '-'} {r.picName ? `· PIC: ${r.picName}` : ''}</div>
                   {r.address && <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" />{r.address}{r.city ? `, ${r.city}` : ''}</div>}
                 </div>
                 {canManage && (
                   <div className="whitespace-nowrap">
-                    <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="w-4 h-4" /></Button>
+                    {!r.linkedContactId && <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="w-4 h-4" /></Button>}
                     <Button size="icon" variant="ghost" onClick={() => remove(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
                   </div>
                 )}
@@ -396,6 +437,7 @@ function EndCustomersTab({ contactId, canManage }) {
             ))}
           </div>}
 
+      {/* Manual create/edit dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>{editing ? 'Edit Pelanggan' : 'Tambah Pelanggan'}</DialogTitle>
@@ -409,6 +451,45 @@ function EndCustomersTab({ contactId, canManage }) {
             <Field label="Catatan"><Input value={form.notes || ''} onChange={e => set('notes', e.target.value)} /></Field>
           </div>
           <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pilih dari Kontak (link, not copy) */}
+      <Dialog open={pickOpen} onOpenChange={setPickOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Pilih dari Kontak</DialogTitle>
+            <DialogDescription>Tautkan pelanggan akhir ke kontak <b>Customer</b> yang sudah ada. Data akan mengikuti kontak sumber (bukan salinan).</DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input className="pl-9" placeholder="Cari nama / kode / telepon..." value={pickSearch} onChange={e => setPickSearch(e.target.value)} />
+          </div>
+          <div className="max-h-80 overflow-y-auto border rounded-lg divide-y">
+            {custLoading ? (
+              <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>
+            ) : custOptions.length === 0 ? (
+              <div className="text-sm text-muted-foreground p-6 text-center">Tidak ada kontak Customer{pickSearch ? ' yang cocok' : ''}.</div>
+            ) : custOptions.map(c => {
+              const already = linkedIds.has(c.id);
+              return (
+                <div key={c.id} className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50">
+                  <div className="text-sm">
+                    <div className="font-medium">{c.displayName} <span className="text-xs text-muted-foreground">· {c.code}</span></div>
+                    <div className="text-xs text-muted-foreground">{c.phone || '-'}{c.city ? ` · ${c.city}` : ''}</div>
+                  </div>
+                  {already ? (
+                    <Badge variant="outline" className="text-[10px] bg-slate-100 text-slate-500">Sudah tertaut</Badge>
+                  ) : (
+                    <Button size="sm" variant="outline" disabled={linking} onClick={() => linkContact(c)}>
+                      {linking ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Plus className="w-3 h-3 mr-1" />Tautkan</>}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setPickOpen(false)}>Tutup</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
