@@ -387,7 +387,7 @@ function CreateSODialog({ onSaved }) {
                   </Button>
                 </div>
 
-                {it.stockId && (
+                {(it.stockId || (isDropship && it.productId)) && (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pl-6">
                     <div>
                       <Label className="text-xs">Berat Dijual (kg) *</Label>
@@ -395,7 +395,7 @@ function CreateSODialog({ onSaved }) {
                         type="number"
                         step="0.1"
                         value={it.weight}
-                        max={it.availableWeight}
+                        max={isDropship ? undefined : it.availableWeight}
                         onChange={e => updItem(i, { weight: Number(e.target.value) })}
                         className={cn('font-semibold', overweight && 'border-red-500 text-red-600')}
                       />
