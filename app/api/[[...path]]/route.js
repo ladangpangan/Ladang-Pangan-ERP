@@ -143,6 +143,44 @@ async function handleRoute(request, { params }) {
       return 0;
     };
 
+    // ---- Komisi Dropshipper helpers ----
+    // Hitung komisi untuk sebuah SO berdasarkan tipe & nilai. costOverride opsional (manual).
+    const computeSoCommission = (soId, type, value, costOverride) => {
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return null;
+      const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+      const totalWeight = items.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const revenue = Number(so.totalAmount || 0);
+      // auto cost dari HPP stok yg dijual, fallback ke HPP produk
+      let autoCost = 0;
+      for (const it of items) {
+        let hpp = 0;
+        if (it.stockCodeId) {
+          const stk = db.select({ hpp: s.inventoryStock.hppPerKg }).from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockCodeId)).get();
+          hpp = Number(stk?.hpp || 0);
+        }
+        if (!hpp) hpp = getProductHpp(it.productId);
+        autoCost += hpp * Number(it.weight || 0);
+      }
+      const hasOverride = costOverride !== undefined && costOverride !== null && costOverride !== '';
+      const cost = hasOverride ? Number(costOverride) : autoCost;
+      const profit = Math.max(0, revenue - cost);
+      let basis = 0, amount = 0;
+      if (type === 'per_kg') { basis = totalWeight; amount = Number(value || 0) * totalWeight; }
+      else if (type === 'fixed') { basis = 0; amount = Number(value || 0); }
+      else if (type === 'percent_profit') { basis = profit; amount = profit * Number(value || 0) / 100; }
+      return { totalWeight, revenue, autoCost, cost, profit, basis, amount: Math.max(0, Math.round(amount)) };
+    };
+
+    const getCommissionSummary = (dropshipperId) => {
+      const records = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.dropshipperId, dropshipperId)).orderBy(desc(s.commissionRecords.createdAt)).all();
+      const payments = db.select().from(s.commissionPayments).where(eq(s.commissionPayments.dropshipperId, dropshipperId)).orderBy(desc(s.commissionPayments.paymentDate)).all();
+      const totalCommission = records.reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
+      const totalPaid = payments.reduce((a, b) => a + Number(b.amount || 0), 0);
+      const unpaidAmount = records.filter(r => r.status === 'unpaid').reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
+      return { records, payments, summary: { totalCommission, totalPaid, outstanding: Math.round(totalCommission - totalPaid), unpaidAmount: Math.round(unpaidAmount), recordCount: records.length } };
+    };
+
     // ---------- SEED (idempotent) ----------
     if (route === '/seed' && method === 'POST') {
       const auth = getAuth();
@@ -550,6 +588,153 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       db.delete(s.contacts).where(eq(s.contacts.id, id)).run();
       return json({ ok: true });
+    }
+
+    // ---------- CONTACT CUSTOMERS (pelanggan akhir Agen/Dropshipper) ----------
+    // GET /contacts/:id/customers
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'customers' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const rows = db.select().from(s.contactCustomers).where(eq(s.contactCustomers.parentContactId, id)).orderBy(desc(s.contactCustomers.createdAt)).all();
+      return json({ data: rows });
+    }
+    // POST /contacts/:id/customers
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'customers' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const id = path[1];
+      const parent = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!parent) return err('Kontak tidak ditemukan', 404);
+      const body = await request.json();
+      if (!body.name) return err('name required');
+      const now = new Date();
+      const row = {
+        id: uuidv4(), parentContactId: id,
+        name: body.name, phone: body.phone || null, address: body.address || null,
+        city: body.city || null, picName: body.picName || null, notes: body.notes || null,
+        status: 'active', createdAt: now, updatedAt: now,
+      };
+      db.insert(s.contactCustomers).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+    // PATCH /contacts/:id/customers/:cid
+    if (route.startsWith('/contacts/') && path.length === 4 && path[2] === 'customers' && (method === 'PATCH' || method === 'PUT')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const cid = path[3];
+      const body = await request.json();
+      delete body.id; delete body.parentContactId; delete body.createdAt;
+      db.update(s.contactCustomers).set({ ...body, updatedAt: new Date() }).where(eq(s.contactCustomers.id, cid)).run();
+      const row = db.select().from(s.contactCustomers).where(eq(s.contactCustomers.id, cid)).get();
+      return json({ data: row });
+    }
+    // DELETE /contacts/:id/customers/:cid
+    if (route.startsWith('/contacts/') && path.length === 4 && path[2] === 'customers' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const cid = path[3];
+      db.delete(s.contactCustomers).where(eq(s.contactCustomers.id, cid)).run();
+      return json({ ok: true });
+    }
+
+    // ---------- DROPSHIPPER COMMISSIONS ----------
+    // GET /contacts/:id/commissions - list records + payments + summary
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'commissions' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const contact = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!contact) return err('Kontak tidak ditemukan', 404);
+      const { records, payments, summary } = getCommissionSummary(id);
+      return json({ data: { contact, records, payments, summary } });
+    }
+    // POST /contacts/:id/commissions - create commission record from an SO
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'commissions' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const id = path[1];
+      const ds = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!ds) return err('Dropshipper tidak ditemukan', 404);
+      const body = await request.json();
+      if (!body.salesOrderId) return err('salesOrderId required');
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, body.salesOrderId)).get();
+      if (!so) return err('Sales Order tidak ditemukan', 404);
+      // Cegah duplikasi komisi untuk SO yang sama pada dropshipper yang sama
+      const dup = db.select().from(s.commissionRecords).where(and(eq(s.commissionRecords.dropshipperId, id), eq(s.commissionRecords.salesOrderId, body.salesOrderId))).get();
+      if (dup) return err(`Komisi untuk ${so.soNumber} sudah tercatat pada dropshipper ini`);
+      const type = body.commissionType || ds.commissionType || 'per_kg';
+      const value = body.commissionValue !== undefined && body.commissionValue !== null && body.commissionValue !== ''
+        ? Number(body.commissionValue) : Number(ds.commissionValue || 0);
+      const calc = computeSoCommission(body.salesOrderId, type, value, body.costAmount);
+      if (!calc) return err('Gagal menghitung komisi');
+      const now = new Date();
+      const row = {
+        id: uuidv4(), dropshipperId: id, salesOrderId: body.salesOrderId, soNumber: so.soNumber,
+        commissionType: type, commissionValue: value,
+        basisAmount: calc.basis, revenueAmount: calc.revenue, costAmount: calc.cost,
+        commissionAmount: calc.amount, status: 'unpaid',
+        notes: body.notes || null, createdBy: session.user.email, createdAt: now,
+      };
+      db.insert(s.commissionRecords).values(row).run();
+      return json({ data: { ...row, calc } }, { status: 201 });
+    }
+    // DELETE /contacts/:id/commissions/:rid - delete a commission record (only unpaid)
+    if (route.startsWith('/contacts/') && path.length === 4 && path[2] === 'commissions' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const rid = path[3];
+      const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, rid)).get();
+      if (!rec) return err('Record komisi tidak ditemukan', 404);
+      if (rec.status === 'paid') return err('Komisi yang sudah dibayar tidak dapat dihapus');
+      db.delete(s.commissionRecords).where(eq(s.commissionRecords.id, rid)).run();
+      return json({ ok: true });
+    }
+    // POST /contacts/:id/commission-payments - pay commission (per SO record or lunasi semua)
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'commission-payments' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const id = path[1];
+      const ds = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!ds) return err('Dropshipper tidak ditemukan', 404);
+      const body = await request.json();
+      // Tentukan record yang akan dilunasi
+      let targets = [];
+      if (body.commissionRecordId) {
+        const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, body.commissionRecordId)).get();
+        if (!rec) return err('Record komisi tidak ditemukan', 404);
+        if (rec.status === 'paid') return err('Komisi ini sudah dibayar');
+        targets = [rec];
+      } else {
+        // Lunasi semua yang unpaid (per total saldo)
+        targets = db.select().from(s.commissionRecords).where(and(eq(s.commissionRecords.dropshipperId, id), eq(s.commissionRecords.status, 'unpaid'))).all();
+      }
+      if (targets.length === 0) return err('Tidak ada komisi yang perlu dibayar');
+      const totalAmount = targets.reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
+      const now = new Date();
+      const payId = uuidv4();
+      db.insert(s.commissionPayments).values({
+        id: payId, dropshipperId: id,
+        paymentDate: body.paymentDate ? new Date(body.paymentDate) : now,
+        amount: totalAmount, method: body.method || 'Transfer',
+        reference: body.reference || null, notes: body.notes || null,
+        createdBy: session.user.email, createdAt: now,
+      }).run();
+      for (const t of targets) {
+        db.update(s.commissionRecords).set({ status: 'paid', paymentId: payId, paidAt: now }).where(eq(s.commissionRecords.id, t.id)).run();
+      }
+      return json({ data: { paymentId: payId, amount: totalAmount, recordsPaid: targets.length } }, { status: 201 });
+    }
+
+    // POST /commissions/preview - hitung komisi tanpa menyimpan (untuk form)
+    if (route === '/commissions/preview' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.salesOrderId) return err('salesOrderId required');
+      const calc = computeSoCommission(body.salesOrderId, body.commissionType || 'per_kg', Number(body.commissionValue || 0), body.costAmount);
+      if (!calc) return err('SO tidak ditemukan', 404);
+      return json({ data: calc });
     }
 
     // ---------- PRODUCTS ----------
@@ -1393,7 +1578,32 @@ async function handleRoute(request, { params }) {
         linkPath: `/dashboard/sales-orders/${id}`,
       });
 
-      return json({ data: created }, { status: 201 });
+      // Dropshipper: auto-buat catatan komisi (tersimpan terpisah, SO tidak diubah)
+      let commissionResult = null;
+      if (body.dropshipperId) {
+        try {
+          const ds = db.select().from(s.contacts).where(eq(s.contacts.id, body.dropshipperId)).get();
+          if (ds && ds.contactType === 'Dropshipper') {
+            const type = body.commissionType || ds.commissionType || 'per_kg';
+            const value = body.commissionValue !== undefined && body.commissionValue !== null && body.commissionValue !== ''
+              ? Number(body.commissionValue) : Number(ds.commissionValue || 0);
+            const calc = computeSoCommission(id, type, value, body.commissionCost);
+            if (calc) {
+              const recId = uuidv4();
+              db.insert(s.commissionRecords).values({
+                id: recId, dropshipperId: body.dropshipperId, salesOrderId: id, soNumber,
+                commissionType: type, commissionValue: value,
+                basisAmount: calc.basis, revenueAmount: calc.revenue, costAmount: calc.cost,
+                commissionAmount: calc.amount, status: 'unpaid',
+                notes: `Auto dari pembuatan SO ${soNumber}`, createdBy: session.user.email, createdAt: now,
+              }).run();
+              commissionResult = { id: recId, dropshipperId: body.dropshipperId, ...calc };
+            }
+          }
+        } catch (e) { console.error('commission auto-create failed:', e?.message || e); }
+      }
+
+      return json({ data: created, commission: commissionResult }, { status: 201 });
     }
 
     // GET /sales-orders/:id
@@ -1623,6 +1833,16 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       const body = await request.json();
+      // Tujuan pengiriman: bisa ke pelanggan akhir milik Agen/Dropshipper
+      let shipTo = { shipToCustomerId: null, shipToName: null, shipToPhone: null, shipToAddress: null };
+      if (body.shipToCustomerId) {
+        const cc = db.select().from(s.contactCustomers).where(eq(s.contactCustomers.id, body.shipToCustomerId)).get();
+        if (cc) {
+          shipTo = { shipToCustomerId: cc.id, shipToName: cc.name, shipToPhone: cc.phone || null, shipToAddress: cc.address || null };
+        }
+      } else if (body.shipToName || body.shipToAddress) {
+        shipTo = { shipToCustomerId: null, shipToName: body.shipToName || null, shipToPhone: body.shipToPhone || null, shipToAddress: body.shipToAddress || null };
+      }
       const sj = {
         id: uuidv4(),
         sjNumber: nextSjNumber(),
@@ -1630,6 +1850,7 @@ async function handleRoute(request, { params }) {
         deliveryDate: body.deliveryDate ? new Date(body.deliveryDate) : new Date(),
         driverName: body.driverName || null,
         vehicleNumber: body.vehicleNumber || null,
+        ...shipTo,
         notes: body.notes || null,
         status: 'confirmed',
         createdBy: session.user.email,
@@ -2781,6 +3002,19 @@ async function handleRoute(request, { params }) {
         }
         const stkId = uuidv4();
         const kodeSimpan = nextKodeSimpan();
+        // Tentukan HPP/kg stok dari sumber (PO item / WO output) atau fallback HPP produk
+        let hppPerKg = Number(it.hppPerKg || 0);
+        if (!hppPerKg && body.referenceType === 'WO' && body.referenceId) {
+          const o = db.select({ hpp: s.woOutputs.hppPerKg }).from(s.woOutputs)
+            .where(and(eq(s.woOutputs.workOrderId, body.referenceId), eq(s.woOutputs.productId, it.productId), sql`${s.woOutputs.hppPerKg} > 0`)).get();
+          if (o?.hpp) hppPerKg = Number(o.hpp);
+        }
+        if (!hppPerKg && body.referenceType === 'PO' && body.referenceId) {
+          const pi = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+            .where(and(eq(s.purchaseOrderItems.purchaseOrderId, body.referenceId), eq(s.purchaseOrderItems.productId, it.productId), sql`${s.purchaseOrderItems.hppPerKg} > 0`)).get();
+          if (pi?.hpp) hppPerKg = Number(pi.hpp);
+        }
+        if (!hppPerKg) hppPerKg = getProductHpp(it.productId);
         db.insert(s.inventoryStock).values({
           id: stkId, productId: it.productId,
           coldStorageId: body.coldStorageId, zoneId: body.zoneId || null,
@@ -2791,6 +3025,7 @@ async function handleRoute(request, { params }) {
           expiredDate: it.expiredDate ? new Date(it.expiredDate) : null,
           status: 'active',
           sourceBatch: body.referenceId || null, sourceType: body.referenceType || null,
+          hppPerKg,
           transactionId: txId,
         }).run();
         createdStocks.push({ id: stkId, kodeSimpan, weight: Number(it.weight || 0), quantity: Number(it.quantity || 0), productId: it.productId });
