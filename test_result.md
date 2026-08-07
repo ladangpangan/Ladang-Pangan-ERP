@@ -109,6 +109,137 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "Dual-role contacts (Agen + Dropshipper simultaneously) + rule buyer!=dropshipper in one SO"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js, /app/lib/db/schema.js, /app/lib/db/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          ENHANCEMENT: a single contact can now be BOTH Agen and Dropshipper.
+          Schema: contacts +is_agent, +is_dropshipper (booleans). Backfill on startup: contact_type='Agen'→is_agent=1, 'Dropshipper'→is_dropshipper=1 (idempotent).
+          Role logic now flag-based (flag OR legacy contactType):
+          - Auto-commission on SO POST triggers when dropshipper contact has isDropshipper OR contactType==='Dropshipper'.
+          - POST /contacts/:id/commissions rejects (400) if contact is not a dropshipper (neither flag nor type).
+          - RULE 2b enforced: SO POST returns 400 "Kontak yang sama tidak boleh menjadi pembeli sekaligus dropshipper dalam 1 SO" when dropshipperId === customerId.
+          Frontend: contact form has 2 role switches (Agen/Dropshipper, both can be on); fields show per effective role; badge shows "Agen + Dropshipper"; SO buyer dropdown includes Customer+anyAgentRole; dropshipper dropdown = anyDropshipperRole EXCLUDING the selected buyer; selecting buyer clears dropshipper if same.
+          NEEDS BACKEND RETEST.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ DUAL-ROLE CONTACTS + BUYER!=DROPSHIPPER RULE - ALL TESTS PASSED (6/6)
+          
+          Comprehensive backend testing completed for the NEW dual-role contacts feature.
+          
+          === TEST 1: Backfill flags verification ===
+          ✅ AG-100: isAgent=true, isDropshipper=false, agentDiscountPct=5
+          ✅ DS-100: isAgent=false, isDropshipper=true, commissionType=per_kg, commissionValue=150
+          ✅ CUST-100: isAgent=false, isDropshipper=false
+          ✅ Backfill migration correctly set flags based on legacy contactType
+          
+          === TEST 2: Create dual-role contact ===
+          ✅ Created DUAL-1 with contactType='Agen'
+          ✅ isAgent=true AND isDropshipper=true (both flags set)
+          ✅ agentDiscountPct=5 persisted correctly
+          ✅ commissionType='per_kg', commissionValue=150 persisted correctly
+          ✅ Both role fields coexist on same contact
+          
+          === TEST 3: Dual-role acts as Dropshipper (flag-based auto-commission) ===
+          ✅ Created SO with DUAL-1 as dropshipper, CUST-100 as buyer
+          ✅ SO items: 1 item, 40kg, unitPrice=40000
+          ✅ Commission auto-created via isDropshipper flag (not legacy contactType)
+          ✅ Commission amount: 6000 (150 per_kg × 40kg) - correct calculation
+          ✅ Commission record created in database with status='unpaid'
+          ✅ GET /api/contacts/:id/commissions returns commission record correctly
+          ✅ Proves flag-based commission logic works (isDropshipper OR contactType)
+          
+          === TEST 4: Rule buyer!=dropshipper enforced ===
+          ✅ Attempted to create SO with DUAL-1 as BOTH buyer AND dropshipper
+          ✅ Backend rejected with 400 error
+          ✅ Error message: "Kontak yang sama tidak boleh menjadi pembeli sekaligus dropshipper dalam 1 SO"
+          ✅ Rule validation working correctly at SO creation
+          
+          === TEST 5: Manual commission endpoint role check ===
+          ✅ Test 5a: POST /api/contacts/:id/commissions for CUST-100 (not dropshipper)
+             - Rejected with 400 error
+             - Error message: "Kontak ini bukan Dropshipper"
+             - Non-dropshipper correctly rejected
+          
+          ✅ Test 5b: POST /api/contacts/:id/commissions for DUAL-1 (dual-role)
+             - Accepted with 201 status
+             - Manual commission created successfully
+             - Dual-role contact accepted as dropshipper for manual commission
+             - Proves role check uses flag-based logic (isDropshipper OR contactType)
+          
+          === TEST 6: Regression tests ===
+          ✅ Test 6a: SO total calculation
+             - SO with 40kg × 40000 = 1,600,000
+             - totalAmount verified correct (weight-based calculation working)
+             - No negative totals (previous bug fixed)
+          
+          ✅ Test 6b: Commission pay-all
+             - POST /api/contacts/:id/commission-payments {} (no commissionRecordId)
+             - All unpaid commissions paid in bulk
+             - Outstanding balance: 0 after pay-all
+             - Summary updated correctly: totalPaid = totalCommission
+          
+          === KEY FINDINGS ===
+          
+          ✅ Dual-role functionality:
+          - A single contact can have BOTH isAgent=true AND isDropshipper=true
+          - Both role-specific fields persist correctly (agentDiscountPct + commissionType/Value)
+          - Flag-based logic works: isDropshipper OR contactType==='Dropshipper'
+          - Backfill migration correctly set flags from legacy contactType
+          
+          ✅ Auto-commission on SO creation:
+          - Triggers when dropshipperId is set AND contact has isDropshipper=true
+          - Works via flag, not just legacy contactType
+          - Commission calculation correct (per_kg: value × totalWeight)
+          - Commission record auto-created with correct amount
+          
+          ✅ Rule buyer!=dropshipper:
+          - Enforced at SO POST endpoint
+          - Returns 400 with clear Indonesian error message
+          - Prevents same contact from being both buyer and dropshipper in one SO
+          
+          ✅ Manual commission endpoint:
+          - Role check uses flag-based logic (isDropshipper OR contactType)
+          - Non-dropshipper contacts rejected with 400
+          - Dual-role contacts accepted as dropshipper
+          - Duplicate SO validation working (cannot create commission for same SO twice)
+          
+          ✅ Regression:
+          - SO total calculation correct (weight-based)
+          - Commission pay-all working (bulk payment of all unpaid records)
+          - Outstanding balance correctly updated to 0
+          
+          === ACTUAL VALUES OBSERVED ===
+          - AG-100: isAgent=true (1), isDropshipper=false (0), agentDiscountPct=5
+          - DS-100: isAgent=false (0), isDropshipper=true (1), commissionType='per_kg', commissionValue=150
+          - CUST-100: isAgent=false (0), isDropshipper=false (0)
+          - DUAL-1: isAgent=true (1), isDropshipper=true (1), agentDiscountPct=5, commissionType='per_kg', commissionValue=150
+          - Commission amount for 40kg @ 150/kg: 6000 (correct)
+          - SO total for 40kg @ 40000/kg: 1,600,000 (correct)
+          
+          === NO ISSUES FOUND ===
+          All dual-role contact features working correctly.
+          All validation rules enforced.
+          All calculations accurate.
+          Flag-based logic working as designed.
+          
+          Test Coverage: 6/6 tests passed (100%)
+          - Backfill flags: ✓
+          - Dual-role creation: ✓
+          - Auto-commission via flag: ✓
+          - Rule buyer!=dropshipper: ✓
+          - Manual commission role check: ✓
+          - Regression (SO total, pay-all): ✓
+
   - task: "BUGFIX: SO subtotal used quantity-first causing wrong/negative total with weight-based items"
     implemented: true
     working: true

@@ -38,6 +38,17 @@ const COMMISSION_TYPE_LABEL = {
   percent_profit: '% Profit Bersih',
 };
 
+// Peran efektif (flag baru ATAU tipe lama)
+const isAgentRole = (c) => !!(c?.isAgent || c?.contactType === 'Agen');
+const isDsRole = (c) => !!(c?.isDropshipper || c?.contactType === 'Dropshipper');
+const roleLabel = (c) => {
+  const a = isAgentRole(c), d = isDsRole(c);
+  if (a && d) return 'Agen + Dropshipper';
+  if (a) return 'Agen';
+  if (d) return 'Dropshipper';
+  return c?.contactType;
+};
+
 const STATUS_COLOR = {
   Draft: 'bg-slate-100 text-slate-700',
   Diproses: 'bg-blue-100 text-blue-700',
@@ -49,6 +60,7 @@ const STATUS_COLOR = {
 const emptyForm = {
   contactType: 'Supplier', code: '', displayName: '', companyName: '',
   isSubscriber: false, creditLimit: 0, prepaidBalance: 0, taxStatus: '',
+  isAgent: false, isDropshipper: false,
   agentDiscountPct: 0, commissionType: 'per_kg', commissionValue: 0,
   npwp: '', address: '', city: '', province: '', postalCode: '',
   phone: '', email: '', picName: '', picPhone: '',
@@ -164,7 +176,7 @@ export default function ContactsPage() {
               {!isLoading && !error && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Belum ada data</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
-                  <TableCell><Badge variant="secondary" className={TYPE_COLOR[r.contactType]}>{r.contactType}</Badge></TableCell>
+                  <TableCell><Badge variant="secondary" className={TYPE_COLOR[r.contactType]}>{roleLabel(r)}</Badge></TableCell>
                   <TableCell className="font-mono text-xs">{r.code}</TableCell>
                   <TableCell>
                     <div className="font-medium">{r.displayName}</div>
@@ -206,8 +218,9 @@ function ContactDetailSheet({ id, onClose }) {
   const { data, isLoading } = useSWR(id ? `/api/contacts/${id}/history` : null, fetcher);
   const d = data?.data;
   const ct = d?.contact?.contactType;
-  const isAgentOrDs = ct === 'Agen' || ct === 'Dropshipper';
-  const isDropshipper = ct === 'Dropshipper';
+  const isAgentOrDs = d ? (isAgentRole(d.contact) || isDsRole(d.contact)) : false;
+  const isDropshipper = d ? isDsRole(d.contact) : false;
+  const isAgent = d ? isAgentRole(d.contact) : false;
   const tabCount = 2 + (isAgentOrDs ? 1 : 0) + (isDropshipper ? 1 : 0);
 
   return (
@@ -219,7 +232,7 @@ function ContactDetailSheet({ id, onClose }) {
           <>
             <SheetHeader>
               <div className="flex items-center gap-3">
-                <Badge variant="secondary" className={TYPE_COLOR[d.contact.contactType]}>{d.contact.contactType}</Badge>
+                <Badge variant="secondary" className={TYPE_COLOR[d.contact.contactType]}>{roleLabel(d.contact)}</Badge>
                 <SheetTitle className="text-2xl">{d.contact.displayName}</SheetTitle>
               </div>
               <SheetDescription className="font-mono text-xs">{d.contact.code}</SheetDescription>
@@ -235,12 +248,12 @@ function ContactDetailSheet({ id, onClose }) {
                 </TabsList>
 
                 <TabsContent value="info" className="mt-4 space-y-4">
-                  {ct === 'Agen' && (
+                  {isAgent && (
                     <InfoGroup title="Keagenan">
                       <InfoRow label="Diskon Khusus" value={<span className="text-teal-600 font-semibold">{Number(d.contact.agentDiscountPct || 0)}%</span>} />
                     </InfoGroup>
                   )}
-                  {ct === 'Dropshipper' && (
+                  {isDropshipper && (
                     <InfoGroup title="Skema Komisi">
                       <InfoRow label="Tipe Komisi" value={COMMISSION_TYPE_LABEL[d.contact.commissionType] || d.contact.commissionType || '-'} />
                       <InfoRow label="Nilai Default" value={d.contact.commissionType === 'percent_profit' ? `${Number(d.contact.commissionValue || 0)}%` : `Rp ${Number(d.contact.commissionValue || 0).toLocaleString('id-ID')}`} />
@@ -297,7 +310,7 @@ function ContactDetailSheet({ id, onClose }) {
                       <div className="text-lg font-bold mt-1">Rp {Number(d.summary.totalPurchaseAmount).toLocaleString('id-ID')}</div>
                     </div>
                   </div>
-                  {['Customer', 'Agen'].includes(d.contact.contactType) && (
+                  {(d.contact.contactType === 'Customer' || isAgent) && (
                     <TransactionList title="Sales Orders" items={d.salesOrders} emptyMsg="Belum ada Sales Order" numberKey="soNumber" dateKey="orderDate" />
                   )}
                   {['Supplier', 'RPH'].includes(d.contact.contactType) && (
@@ -664,29 +677,46 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
             )}
           </>
         )}
-        {form.contactType === 'Agen' && (
-          <Field label="Diskon Khusus Agen (%)" className="sm:col-span-2">
-            <Input type="number" step="0.1" value={form.agentDiscountPct || 0} onChange={e => set('agentDiscountPct', Number(e.target.value))} placeholder="mis. 5" />
-            <p className="text-xs text-muted-foreground">Diskon otomatis diterapkan sebagai default saat Agen ini dipilih sebagai pembeli di Sales Order.</p>
-          </Field>
-        )}
-        {form.contactType === 'Dropshipper' && (
-          <>
-            <Field label="Tipe Komisi">
-              <Select value={form.commissionType || 'per_kg'} onValueChange={v => set('commissionType', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="per_kg">Per Kg (Rp/kg)</SelectItem>
-                  <SelectItem value="fixed">Nominal Tetap (Rp/transaksi)</SelectItem>
-                  <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label={form.commissionType === 'percent_profit' ? 'Nilai Komisi (%)' : 'Nilai Komisi (Rp)'}>
-              <Input type="number" step="0.01" value={form.commissionValue || 0} onChange={e => set('commissionValue', Number(e.target.value))} placeholder={form.commissionType === 'per_kg' ? '150' : form.commissionType === 'percent_profit' ? '5' : '100000'} />
-              <p className="text-xs text-muted-foreground">Nilai default; bisa di-override per transaksi.</p>
-            </Field>
-          </>
+        {form.contactType !== 'Customer' && (
+          <div className="sm:col-span-2 p-3 rounded-lg border bg-slate-50 space-y-3">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Peran (bisa lebih dari satu)</div>
+            <div className="flex flex-wrap gap-6">
+              <div className="flex items-center gap-2">
+                <Switch checked={isAgentRole(form)} onCheckedChange={v => set('isAgent', v)} disabled={form.contactType === 'Agen'} />
+                <span className="text-sm">Agen <span className="text-xs text-muted-foreground">(harga khusus)</span></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch checked={isDsRole(form)} onCheckedChange={v => set('isDropshipper', v)} disabled={form.contactType === 'Dropshipper'} />
+                <span className="text-sm">Dropshipper <span className="text-xs text-muted-foreground">(komisi)</span></span>
+              </div>
+            </div>
+            {isAgentRole(form) && (
+              <div>
+                <Label className="text-xs">Diskon Khusus Agen (%)</Label>
+                <Input type="number" step="0.1" value={form.agentDiscountPct || 0} onChange={e => set('agentDiscountPct', Number(e.target.value))} placeholder="mis. 5" />
+                <p className="text-xs text-muted-foreground">Diskon otomatis diterapkan saat kontak ini jadi pembeli di Sales Order.</p>
+              </div>
+            )}
+            {isDsRole(form) && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Tipe Komisi</Label>
+                  <Select value={form.commissionType || 'per_kg'} onValueChange={v => set('commissionType', v)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="per_kg">Per Kg (Rp/kg)</SelectItem>
+                      <SelectItem value="fixed">Nominal Tetap (Rp/transaksi)</SelectItem>
+                      <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">{form.commissionType === 'percent_profit' ? 'Nilai Komisi (%)' : 'Nilai Komisi (Rp)'}</Label>
+                  <Input type="number" step="0.01" value={form.commissionValue || 0} onChange={e => set('commissionValue', Number(e.target.value))} placeholder={form.commissionType === 'per_kg' ? '150' : form.commissionType === 'percent_profit' ? '5' : '100000'} />
+                </div>
+              </div>
+            )}
+          </div>
         )}
         <Field label="Status Pajak">
           <Select value={form.taxStatus || 'none'} onValueChange={v => set('taxStatus', v === 'none' ? '' : v)}>
