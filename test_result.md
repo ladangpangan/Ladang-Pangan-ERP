@@ -109,6 +109,159 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "Dropship SO (no stock, auto-PO) + SJ real shipped weight/received column + Invoice weight basis"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js, /app/lib/db/schema.js, /app/lib/db/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW: (1) Dropship SO: sales_order +fulfillment_type('stock'|'dropship'), +supplier_id, +auto_po_id, +invoice_weight_basis. SO POST with fulfillmentType='dropship'+supplierId → stores type, does NOT deduct stock on Confirm (items have no stockCodeId), and AUTO-CREATES a PO (Draft, poType 'Produk Jadi', isDropship, dropshipCustomerId=customer) mirroring items; SO.autoPoId set.
+          (2) surat_jalan +show_received_column; SJ POST accepts items:[{itemId,shippedWeight}] → writes sales_order_items.shipped_weight; and showReceivedColumn flag.
+          (3) sales_order_items +shipped_weight,+received_weight. Invoiced transition accepts body.invoiceWeightBasis ('shipped'|'received') → recomputes item subtotals & totalAmount using chosen weight (shipped: shipped_weight||weight; received: item.received_weight else auto-sum from Receipts per product else fallback), then generates invoice number/date/due.
+          NEEDS BACKEND RETEST.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ DROPSHIP SO + SJ SHIPPED WEIGHT + INVOICE WEIGHT BASIS - ALL TESTS PASSED (100%)
+          
+          Comprehensive backend testing completed for NEW Sales Order features.
+          
+          === A. DROPSHIP SO (no stock, auto-PO) - 5/5 TESTS PASSED ===
+          
+          ✅ A.1: Create Dropship SO
+             - Created SO with fulfillmentType='dropship', supplierId set
+             - SO number: SO/202608/0001
+             - fulfillmentType == 'dropship' ✓
+             - supplierId set correctly ✓
+             - autoPoId is non-null: 60aa92a9-36f0-4c1b-b12e-a4c2c907dc3a ✓
+             - totalAmount == 4,000,000 (40000 × 100kg, weight-based) ✓
+          
+          ✅ A.2: Verify Auto-Created PO
+             - Auto-PO found: PO/202608/0001
+             - poType == 'Produk Jadi' ✓
+             - pipelineStatus == 'Draft' ✓
+             - isDropship == true ✓
+             - PO has 1 item matching SO item (productId, weight=100) ✓
+          
+          ✅ A.3: Confirm Dropship SO (no stock deduction)
+             - Inventory stock count before confirm: 0
+             - SO confirmed successfully (status 200, no stock error) ✓
+             - pipelineStatus == 'Confirmed' ✓
+             - Inventory stock count after confirm: 0 (NO deduction) ✓
+             - Dropship SO does NOT require inventory stock ✓
+             - Dropship SO does NOT deduct inventory on Confirm ✓
+          
+          === B. SJ REAL SHIPPED WEIGHT + RECEIVED COLUMN - 5/5 TESTS PASSED ===
+          
+          ✅ B.4: Advance SO to Packed
+             - SO advanced from Confirmed → Packed successfully ✓
+          
+          ✅ B.5: Create Surat Jalan with shipped weight
+             - SJ created: SJ/202608/0001
+             - SJ POST with items:[{itemId, shippedWeight:95}] ✓
+             - showReceivedColumn: true ✓
+             - item.shippedWeight == 95 (less than ordered 100) ✓
+             - suratJalan[0].showReceivedColumn == true ✓
+             - Pipeline auto-moved Packed → Shipped ✓
+          
+          === C. INVOICE WEIGHT BASIS - 8/8 TESTS PASSED ===
+          
+          ✅ C.6: Invoice with SHIPPED weight basis
+             - SO transitioned to Invoiced with invoiceWeightBasis='shipped' ✓
+             - invoiceWeightBasis == 'shipped' ✓
+             - totalAmount recomputed: 3,800,000 (40000 × 95kg shipped) ✓
+             - Original ordered: 100kg, shipped: 95kg, invoiced: 95kg ✓
+             - invoiceNumber generated: INV/202608/0001 ✓
+          
+          ✅ C.7: Invoice with RECEIVED weight basis
+             - Second SO created: SO/202608/0002
+             - Advanced Draft → Confirmed → Packed → Shipped ✓
+             - SJ created with shippedWeight=100 ✓
+             - Receipt created: RCP/202608/0001 with receivedWeight=90 ✓
+             - SO transitioned to Invoiced with invoiceWeightBasis='received' ✓
+             - invoiceWeightBasis == 'received' ✓
+             - totalAmount recomputed: 3,600,000 (40000 × 90kg received) ✓
+             - Ordered: 100kg, shipped: 100kg, received: 90kg, invoiced: 90kg ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ Dropship SO functionality:
+          - fulfillmentType field working correctly ('stock' | 'dropship')
+          - supplierId stored when fulfillmentType='dropship'
+          - Auto-PO creation working (Draft, Produk Jadi, isDropship=true)
+          - autoPoId linked back to SO correctly
+          - Dropship SO does NOT require inventory stock
+          - Confirm transition does NOT deduct inventory for dropship SO
+          - Items without stockCodeId are allowed for dropship
+          
+          ✅ Surat Jalan shipped weight:
+          - SJ POST accepts items:[{itemId, shippedWeight}]
+          - shippedWeight written to sales_order_items.shipped_weight
+          - showReceivedColumn flag stored in surat_jalan table
+          - Pipeline auto-transition Packed → Shipped working
+          - Real shipped weight can differ from ordered weight
+          
+          ✅ Invoice weight basis:
+          - invoiceWeightBasis field working ('shipped' | 'received')
+          - SHIPPED basis: uses shipped_weight || weight for calculation
+          - RECEIVED basis: uses received_weight from receipts for calculation
+          - totalAmount recomputed correctly based on chosen basis
+          - Invoice number auto-generated (INV/YYYYMM/NNNN)
+          - Weight-based pricing working correctly (unitPrice × weight)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Dropship SO (SO/202608/0001):
+          - fulfillmentType: 'dropship'
+          - supplierId: f81bd2a7-846e-4c4a-8770-ecf8346b65d2
+          - autoPoId: 60aa92a9-36f0-4c1b-b12e-a4c2c907dc3a
+          - totalAmount (initial): 4,000,000 (40000 × 100kg)
+          - totalAmount (after invoice shipped): 3,800,000 (40000 × 95kg)
+          
+          Auto-PO (PO/202608/0001):
+          - poType: 'Produk Jadi'
+          - pipelineStatus: 'Draft'
+          - isDropship: true
+          - items: 1 item (productId, weight=100)
+          
+          Surat Jalan (SJ/202608/0001):
+          - sjNumber: SJ/202608/0001
+          - showReceivedColumn: true
+          - item.shippedWeight: 95
+          
+          Invoice (shipped basis):
+          - invoiceWeightBasis: 'shipped'
+          - invoiceNumber: INV/202608/0001
+          - totalAmount: 3,800,000 (40000 × 95)
+          
+          Second SO (SO/202608/0002):
+          - shippedWeight: 100
+          - receivedWeight: 90 (from receipt RCP/202608/0001)
+          - invoiceWeightBasis: 'received'
+          - totalAmount: 3,600,000 (40000 × 90)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All dropship SO, SJ shipped weight, and invoice weight basis features working correctly.
+          Auto-PO creation working as designed.
+          Weight-based calculations accurate.
+          Pipeline transitions working correctly.
+          
+          Test Coverage: 18/18 tests passed (100%)
+          - Dropship SO creation: ✓
+          - Auto-PO verification: ✓
+          - Dropship SO confirmation (no stock): ✓
+          - SJ shipped weight: ✓
+          - Invoice shipped basis: ✓
+          - Invoice received basis: ✓
+
+
   - task: "Dual-role contacts (Agen + Dropshipper simultaneously) + rule buyer!=dropshipper in one SO"
     implemented: true
     working: true
@@ -5546,6 +5699,52 @@ agent_communication:
       - Test script had connection pooling issues (fixed by using requests.Session())
       
       **RECOMMENDATION:**
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE FOR DROPSHIP SO + SJ SHIPPED WEIGHT + INVOICE WEIGHT BASIS
+      
+      **SUMMARY:**
+      ✅ Dropship SO (no stock, auto-PO) - ALL WORKING (5/5 tests)
+      ✅ SJ real shipped weight + received column - ALL WORKING (5/5 tests)
+      ✅ Invoice weight basis (shipped/received) - ALL WORKING (8/8 tests)
+      
+      **DETAILED TEST RESULTS:**
+      
+      A. Dropship SO (5/5 tests passed):
+         ✅ Create dropship SO with fulfillmentType='dropship' + supplierId
+         ✅ Verify autoPoId is non-null and links to auto-created PO
+         ✅ Verify auto-PO: poType='Produk Jadi', pipelineStatus='Draft', isDropship=true, 1 item
+         ✅ Confirm dropship SO: NO stock error, NO inventory deduction (0→0)
+         ✅ Verify pipelineStatus='Confirmed'
+      
+      B. SJ shipped weight + received column (5/5 tests passed):
+         ✅ Advance SO to Packed
+         ✅ Create SJ with items:[{itemId, shippedWeight:95}] and showReceivedColumn:true
+         ✅ Verify item.shippedWeight == 95 (written to sales_order_items)
+         ✅ Verify suratJalan[0].showReceivedColumn == true
+         ✅ Verify pipeline auto-moved Packed → Shipped
+      
+      C. Invoice weight basis (8/8 tests passed):
+         ✅ Transition to Invoiced with invoiceWeightBasis='shipped'
+         ✅ Verify totalAmount recomputed: 3,800,000 (40000 × 95kg shipped)
+         ✅ Verify invoiceWeightBasis='shipped', invoiceNumber generated
+         ✅ Create second SO, advance to Shipped with shippedWeight=100
+         ✅ Create receipt with receivedWeight=90
+         ✅ Transition to Invoiced with invoiceWeightBasis='received'
+         ✅ Verify totalAmount recomputed: 3,600,000 (40000 × 90kg received)
+         ✅ Verify invoiceWeightBasis='received'
+      
+      **ACTUAL VALUES OBSERVED:**
+      - Dropship SO: fulfillmentType='dropship', supplierId set, autoPoId non-null
+      - Auto-PO: poType='Produk Jadi', pipelineStatus='Draft', isDropship=true
+      - SJ: shippedWeight=95, showReceivedColumn=true
+      - Invoice (shipped): totalAmount=3,800,000 (40000×95)
+      - Invoice (received): totalAmount=3,600,000 (40000×90)
+      
+      **NO CRITICAL ISSUES FOUND**
+      All features working correctly. Test coverage: 18/18 (100%)
+
       All core functionality is working correctly. The critical route ordering bug has been fixed.
       Backend APIs are ready for production use.
 

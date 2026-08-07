@@ -14,6 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera } from 'lucide-react';
@@ -48,10 +49,16 @@ export default function SODetailPage() {
   const allowedNext = SO_FLOW[so.pipelineStatus] || [];
 
   const transitionStatus = async (target) => {
-    if (!confirm(`Ubah status ke "${target}"?${target === 'Confirmed' ? '\n\nStok akan otomatis dikurangi + prepaid balance (jika subscriber) akan dipotong.' : ''}`)) return;
-    const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: target }) });
+    const body = { status: target };
+    if (target === 'Invoiced') {
+      const useReceived = confirm('Basis perhitungan invoice:\n\nOK = BERAT DITERIMA (dari Penerimaan)\nBatal = BERAT KIRIM (riil dari Surat Jalan)');
+      body.invoiceWeightBasis = useReceived ? 'received' : 'shipped';
+    } else if (!confirm(`Ubah status ke "${target}"?${target === 'Confirmed' ? '\n\nStok akan otomatis dikurangi + prepaid balance (jika subscriber) akan dipotong.' : ''}`)) {
+      return;
+    }
+    const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await res.json();
-    if (res.ok) { toast.success('Status: ' + target); mutate(); } else toast.error(j.error);
+    if (res.ok) { toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : 'berat kirim'})` : '')); mutate(); } else toast.error(j.error);
   };
 
   return (
@@ -241,15 +248,23 @@ function SjTab({ so, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ deliveryDate: new Date().toISOString().slice(0,10), driverName: '', vehicleNumber: '', notes: '' });
   const [saving, setSaving] = useState(false);
-  const [shipMode, setShipMode] = useState('default'); // default | <endCustomerId> | manual
+  const [shipMode, setShipMode] = useState('default');
   const [shipManual, setShipManual] = useState({ shipToName: '', shipToPhone: '', shipToAddress: '' });
-  // Pelanggan akhir milik pembeli (Agen/Dropshipper) untuk tujuan pengiriman
+  const [showReceived, setShowReceived] = useState(false);
+  const [itemWeights, setItemWeights] = useState({}); // itemId -> berat kirim riil
   const { data: ccData } = useSWR(so.customerId ? `/api/contacts/${so.customerId}/customers` : null, fetcher);
   const endCustomers = ccData?.data || [];
+  const openDialog = (o) => {
+    if (o) {
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      setItemWeights(init);
+    }
+    setOpen(o);
+  };
   const create = async () => {
     setSaving(true);
     try {
-      let payload = { ...form };
+      let payload = { ...form, showReceivedColumn: showReceived, items: (so.items || []).map(it => ({ itemId: it.id, shippedWeight: Number(itemWeights[it.id] || 0) })) };
       if (shipMode === 'manual') payload = { ...payload, ...shipManual };
       else if (shipMode !== 'default') payload = { ...payload, shipToCustomerId: shipMode };
       const res = await fetch(`/api/sales-orders/${so.id}/surat-jalan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -265,9 +280,9 @@ function SjTab({ so, onSaved, canOperate }) {
       <CardHeader className="flex flex-row items-center justify-between">
         <div><CardTitle className="text-base">Surat Jalan (Delivery Order)</CardTitle><CardDescription>Dokumen pengiriman barang ke customer</CardDescription></div>
         {canOperate && ['Packed', 'Shipped', 'Invoiced'].includes(so.pipelineStatus) && (
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={openDialog}>
             <DialogTrigger asChild><Button size="sm"><Truck className="w-4 h-4 mr-1" />Buat Surat Jalan</Button></DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Buat Surat Jalan</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
                 <F label="Tanggal Kirim"><Input type="date" value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
@@ -282,9 +297,6 @@ function SjTab({ so, onSaved, canOperate }) {
                       <SelectItem value="manual">Alamat manual…</SelectItem>
                     </SelectContent>
                   </Select>
-                  {endCustomers.length === 0 && so.customer && (
-                    <p className="text-[11px] text-muted-foreground mt-1">Tip: tambahkan pelanggan akhir di kontak {so.customer.displayName} (tab Pelanggan) untuk dipilih di sini.</p>
-                  )}
                 </F>
                 {shipMode === 'manual' && (
                   <>
@@ -293,6 +305,21 @@ function SjTab({ so, onSaved, canOperate }) {
                     <F label="Alamat" className="col-span-2"><Textarea rows={2} value={shipManual.shipToAddress} onChange={e => setShipManual({ ...shipManual, shipToAddress: e.target.value })} /></F>
                   </>
                 )}
+                <div className="col-span-2 border rounded-lg p-2">
+                  <div className="text-xs font-semibold mb-1">Berat Kirim RIIL per item (hari-H)</div>
+                  <div className="space-y-1">
+                    {(so.items || []).map(it => (
+                      <div key={it.id} className="flex items-center gap-2 text-sm">
+                        <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                        <Input type="number" className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={e => setItemWeights(w => ({ ...w, [it.id]: e.target.value }))} placeholder="kg riil" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="col-span-2 flex items-center gap-2">
+                  <Switch checked={showReceived} onCheckedChange={setShowReceived} />
+                  <span className="text-sm">Tampilkan kolom "Berat Diterima" di Surat Jalan (kosong untuk ttd penerima)</span>
+                </div>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>

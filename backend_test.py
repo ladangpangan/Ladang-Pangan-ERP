@@ -1,615 +1,678 @@
 #!/usr/bin/env python3
 """
-Backend Test: Dual-role contacts (Agen + Dropshipper simultaneously) + rule buyer!=dropshipper in one SO
+Backend Test Script for Dropship SO + SJ Shipped Weight + Invoice Weight Basis
+Tests NEW features:
+- A. Dropship SO (no stock, auto-PO)
+- B. SJ real shipped weight + received column
+- C. Invoice weight basis (shipped vs received)
 """
 
 import requests
 import json
-import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Base URL from environment
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com"
-API_URL = f"{BASE_URL}/api"
-
-# Test credentials
+# Configuration
+BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 
-# Session for maintaining cookies
+# Create session for cookie persistence
 session = requests.Session()
 
-def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+def print_test(msg):
+    print(f"\n{'='*80}")
+    print(f"TEST: {msg}")
+    print('='*80)
+
+def print_result(success, msg, data=None):
+    status = "✅ PASS" if success else "❌ FAIL"
+    print(f"{status}: {msg}")
+    if data:
+        print(f"Data: {json.dumps(data, indent=2, default=str)}")
 
 def login():
-    """Login as admin and persist session cookie"""
-    log("Logging in as admin...")
-    resp = session.post(f"{BASE_URL}/api/auth/sign-in/email", json={
-        "email": ADMIN_EMAIL,
-        "password": ADMIN_PASSWORD
-    })
-    if resp.status_code != 200:
-        log(f"❌ Login failed: {resp.status_code} {resp.text}")
-        sys.exit(1)
-    log("✅ Login successful")
-    return resp.json()
-
-def test_backfill_flags():
-    """TEST 1: Backfill flags - verify existing contacts have correct isAgent/isDropshipper flags"""
-    log("\n=== TEST 1: Backfill flags verification ===")
-    
-    resp = session.get(f"{API_URL}/contacts")
-    if resp.status_code != 200:
-        log(f"❌ GET /contacts failed: {resp.status_code}")
-        return False
-    
-    contacts_data = resp.json()
-    # Handle both array and object responses
-    if isinstance(contacts_data, dict):
-        contacts = contacts_data.get('data', contacts_data.get('contacts', []))
-    else:
-        contacts = contacts_data
-    
-    log(f"Found {len(contacts)} contacts")
-    
-    # Find AG-100, DS-100, CUST-100
-    ag_100 = next((c for c in contacts if c['code'] == 'AG-100'), None)
-    ds_100 = next((c for c in contacts if c['code'] == 'DS-100'), None)
-    cust_100 = next((c for c in contacts if c['code'] == 'CUST-100'), None)
-    
-    if not ag_100:
-        log("⚠️  AG-100 not found")
-        return False
-    if not ds_100:
-        log("⚠️  DS-100 not found")
-        return False
-    if not cust_100:
-        log("⚠️  CUST-100 not found")
-        return False
-    
-    # Verify AG-100: isAgent=true, isDropshipper=false
-    ag_is_agent = ag_100.get('isAgent') == True or ag_100.get('isAgent') == 1
-    ag_is_dropshipper = ag_100.get('isDropshipper') == True or ag_100.get('isDropshipper') == 1
-    
-    log(f"AG-100: isAgent={ag_100.get('isAgent')}, isDropshipper={ag_100.get('isDropshipper')}, agentDiscountPct={ag_100.get('agentDiscountPct')}")
-    
-    if not ag_is_agent:
-        log(f"❌ AG-100 should have isAgent=true, got {ag_100.get('isAgent')}")
-        return False
-    if ag_is_dropshipper:
-        log(f"❌ AG-100 should have isDropshipper=false, got {ag_100.get('isDropshipper')}")
-        return False
-    
-    # Verify DS-100: isDropshipper=true, isAgent=false
-    ds_is_agent = ds_100.get('isAgent') == True or ds_100.get('isAgent') == 1
-    ds_is_dropshipper = ds_100.get('isDropshipper') == True or ds_100.get('isDropshipper') == 1
-    
-    log(f"DS-100: isAgent={ds_100.get('isAgent')}, isDropshipper={ds_100.get('isDropshipper')}, commissionType={ds_100.get('commissionType')}, commissionValue={ds_100.get('commissionValue')}")
-    
-    if ds_is_agent:
-        log(f"❌ DS-100 should have isAgent=false, got {ds_100.get('isAgent')}")
-        return False
-    if not ds_is_dropshipper:
-        log(f"❌ DS-100 should have isDropshipper=true, got {ds_100.get('isDropshipper')}")
-        return False
-    
-    # Verify CUST-100: both false
-    cust_is_agent = cust_100.get('isAgent') == True or cust_100.get('isAgent') == 1
-    cust_is_dropshipper = cust_100.get('isDropshipper') == True or cust_100.get('isDropshipper') == 1
-    
-    log(f"CUST-100: isAgent={cust_100.get('isAgent')}, isDropshipper={cust_100.get('isDropshipper')}")
-    
-    if cust_is_agent:
-        log(f"❌ CUST-100 should have isAgent=false, got {cust_100.get('isAgent')}")
-        return False
-    if cust_is_dropshipper:
-        log(f"❌ CUST-100 should have isDropshipper=false, got {cust_100.get('isDropshipper')}")
-        return False
-    
-    log("✅ TEST 1 PASSED: Backfill flags verified correctly")
-    return True, {'ag_100': ag_100, 'ds_100': ds_100, 'cust_100': cust_100}
-
-def test_create_dual_role_contact():
-    """TEST 2: Create DUAL-ROLE contact with both isAgent=true AND isDropshipper=true"""
-    log("\n=== TEST 2: Create dual-role contact ===")
-    
-    # First check if DUAL-1 already exists
-    resp = session.get(f"{API_URL}/contacts")
-    if resp.status_code == 200:
-        contacts_data = resp.json()
-        if isinstance(contacts_data, dict):
-            contacts = contacts_data.get('data', contacts_data.get('contacts', []))
-        else:
-            contacts = contacts_data
-        
-        existing_dual = next((c for c in contacts if c.get('code') == 'DUAL-1'), None)
-        if existing_dual:
-            log(f"DUAL-1 already exists (id: {existing_dual.get('id')}), using existing contact")
-            dual = existing_dual
-        else:
-            # Create new DUAL-1
-            payload = {
-                "contactType": "Agen",
-                "code": "DUAL-1",
-                "displayName": "Andi Dual",
-                "isAgent": True,
-                "agentDiscountPct": 5,
-                "isDropshipper": True,
-                "commissionType": "per_kg",
-                "commissionValue": 150
-            }
-            
-            resp = session.post(f"{API_URL}/contacts", json=payload)
-            if resp.status_code != 201:
-                log(f"❌ POST /contacts failed: {resp.status_code} {resp.text}")
-                return False
-            
-            contact_data = resp.json()
-            # Handle both direct object and wrapped response
-            if isinstance(contact_data, dict) and 'contact' in contact_data:
-                dual = contact_data['contact']
-            else:
-                dual = contact_data
-            
-            log(f"Created contact: {dual.get('code', 'N/A')} (id: {dual.get('id', 'N/A')})")
-    else:
-        log(f"❌ GET /contacts failed: {resp.status_code}")
-        return False
-    
-    # Verify BOTH flags are true
-    is_agent = dual.get('isAgent') == True or dual.get('isAgent') == 1
-    is_dropshipper = dual.get('isDropshipper') == True or dual.get('isDropshipper') == 1
-    
-    log(f"DUAL-1: isAgent={dual.get('isAgent')}, isDropshipper={dual.get('isDropshipper')}, agentDiscountPct={dual.get('agentDiscountPct')}, commissionType={dual.get('commissionType')}, commissionValue={dual.get('commissionValue')}")
-    
-    if not is_agent:
-        log(f"❌ DUAL-1 should have isAgent=true, got {dual.get('isAgent')}")
-        return False
-    if not is_dropshipper:
-        log(f"❌ DUAL-1 should have isDropshipper=true, got {dual.get('isDropshipper')}")
-        return False
-    if dual.get('agentDiscountPct') != 5:
-        log(f"❌ DUAL-1 should have agentDiscountPct=5, got {dual.get('agentDiscountPct')}")
-        return False
-    if dual.get('commissionType') != 'per_kg':
-        log(f"❌ DUAL-1 should have commissionType='per_kg', got {dual.get('commissionType')}")
-        return False
-    if dual.get('commissionValue') != 150:
-        log(f"❌ DUAL-1 should have commissionValue=150, got {dual.get('commissionValue')}")
-        return False
-    
-    log("✅ TEST 2 PASSED: Dual-role contact created and persisted correctly")
-    return True, dual
-
-def test_dual_role_as_dropshipper(dual_contact, cust_100, product_id):
-    """TEST 3: Dual-role acts as Dropshipper - auto-commission via isDropshipper flag"""
-    log("\n=== TEST 3: Dual-role acts as Dropshipper (flag-based auto-commission) ===")
-    
-    # Create SO with DUAL-1 as dropshipper
-    so_payload = {
-        "customerId": cust_100['id'],
-        "dropshipperId": dual_contact['id'],
-        "orderDate": datetime.now().isoformat(),
-        "items": [{
-            "productId": product_id,
-            "quantity": 1,
-            "weight": 40,
-            "unitPrice": 40000
-        }]
-    }
-    
-    resp = session.post(f"{API_URL}/sales-orders", json=so_payload)
-    if resp.status_code != 201:
-        log(f"❌ POST /sales-orders failed: {resp.status_code} {resp.text}")
-        return False
-    
-    so_data = resp.json()
-    log(f"SO response: {json.dumps(so_data, indent=2)[:500]}")
-    
-    # The commission object contains the SO ID via salesOrderId
-    commission = so_data.get('commission')
-    if not commission:
-        log(f"❌ SO response should include commission object, got None")
-        return False
-    
-    # Extract SO ID from commission record
-    so_id = commission.get('salesOrderId')
-    if not so_id:
-        # Try to get from data object
-        data_obj = so_data.get('data', {})
-        so_id = data_obj.get('id')
-    
-    so_number = so_data.get('soNumber') or so_data.get('data', {}).get('soNumber', 'N/A')
-    
-    log(f"Created SO: {so_number} (id: {so_id})")
-    log(f"Commission object: {json.dumps(commission, indent=2)[:300]}")
-    
-    expected_commission = 150 * 40  # 150 per_kg * 40kg = 6000
-    actual_commission = commission.get('amount')
-    
-    log(f"Commission in response: {commission}")
-    log(f"Expected commission: {expected_commission}, Actual: {actual_commission}")
-    
-    if actual_commission != expected_commission:
-        log(f"❌ Commission amount should be {expected_commission}, got {actual_commission}")
-        return False
-    
-    # GET commissions for DUAL-1
-    resp = session.get(f"{API_URL}/contacts/{dual_contact['id']}/commissions")
-    if resp.status_code != 200:
-        log(f"❌ GET /contacts/{dual_contact['id']}/commissions failed: {resp.status_code}")
-        return False
-    
-    comm_data = resp.json()
-    log(f"Commission API response: {json.dumps(comm_data, indent=2)}")
-    
-    # Handle different response formats
-    if isinstance(comm_data, dict):
-        records = comm_data.get('records', comm_data.get('data', {}).get('records', []))
-    else:
-        records = comm_data
-    
-    log(f"Commission records for DUAL-1: {len(records)} records")
-    
-    if len(records) == 0:
-        log(f"❌ Should have at least 1 commission record, got 0")
-        return False
-    
-    # Find the record for this SO using the commission ID
-    record = next((r for r in records if r.get('id') == commission.get('id')), None)
-    if not record:
-        log(f"❌ Commission record with id {commission.get('id')} not found")
-        return False
-    
-    if record.get('status') != 'unpaid':
-        log(f"❌ Commission record should be unpaid, got {record.get('status')}")
-        return False
-    
-    if record.get('commissionAmount') != expected_commission:
-        log(f"❌ Commission record amount should be {expected_commission}, got {record.get('commissionAmount')}")
-        return False
-    
-    log("✅ TEST 3 PASSED: Dual-role auto-commission via isDropshipper flag works correctly")
-    return True, {'id': so_id, 'soNumber': so_number, 'commission': commission}
-
-def test_buyer_equals_dropshipper_rule(dual_contact, product_id):
-    """TEST 4: RULE buyer!=dropshipper - same contact cannot be both buyer and dropshipper"""
-    log("\n=== TEST 4: Rule validation - buyer != dropshipper ===")
-    
-    # Try to create SO where DUAL-1 is BOTH buyer and dropshipper
-    so_payload = {
-        "customerId": dual_contact['id'],
-        "dropshipperId": dual_contact['id'],
-        "orderDate": datetime.now().isoformat(),
-        "items": [{
-            "productId": product_id,
-            "quantity": 1,
-            "weight": 10,
-            "unitPrice": 40000
-        }]
-    }
-    
-    resp = session.post(f"{API_URL}/sales-orders", json=so_payload)
-    
-    # Should get 400 error
-    if resp.status_code != 400:
-        log(f"❌ Expected 400 error, got {resp.status_code}")
-        return False
-    
-    error_msg = resp.text
-    log(f"Error message: {error_msg}")
-    
-    # Check error message contains the expected text
-    if "tidak boleh menjadi pembeli sekaligus dropshipper" not in error_msg:
-        log(f"❌ Error message should contain 'tidak boleh menjadi pembeli sekaligus dropshipper', got: {error_msg}")
-        return False
-    
-    log("✅ TEST 4 PASSED: Rule buyer!=dropshipper enforced correctly")
-    return True
-
-def test_manual_commission_role_check(cust_100, dual_contact, so_id):
-    """TEST 5: Manual commission endpoint role check"""
-    log("\n=== TEST 5: Manual commission endpoint role check ===")
-    
-    # Test 5a: Try to create commission for CUST-100 (not a dropshipper)
-    log("Test 5a: POST commission for CUST-100 (not dropshipper) - should fail")
-    resp = session.post(f"{API_URL}/contacts/{cust_100['id']}/commissions", json={
-        "salesOrderId": so_id
-    })
-    
-    if resp.status_code != 400:
-        log(f"❌ Expected 400 error for non-dropshipper, got {resp.status_code}")
-        return False
-    
-    error_msg = resp.text
-    log(f"Error message: {error_msg}")
-    
-    if "Kontak ini bukan Dropshipper" not in error_msg:
-        log(f"❌ Error message should contain 'Kontak ini bukan Dropshipper', got: {error_msg}")
-        return False
-    
-    log("✅ Test 5a PASSED: Non-dropshipper rejected correctly")
-    
-    # Test 5b: Create commission for DUAL-1 (dual-role, accepted as dropshipper)
-    # First, create a new SO without dropshipper to use for manual commission
-    log("Test 5b: Create new SO without dropshipper for manual commission test")
-    
-    # Get product ID
-    resp = session.get(f"{API_URL}/products")
-    if resp.status_code != 200:
-        log(f"❌ GET /products failed: {resp.status_code}")
-        return False
-    
-    products_data = resp.json()
-    # Handle both array and object responses
-    if isinstance(products_data, dict):
-        products = products_data.get('data', products_data.get('products', []))
-    else:
-        products = products_data
-    
-    product = next((p for p in products if p.get('sku') == 'KRK-100'), None)
-    if not product:
-        log("❌ Product KRK-100 not found")
-        return False
-    
-    so_payload = {
-        "customerId": cust_100['id'],
-        # NO dropshipperId - this is key!
-        "orderDate": datetime.now().isoformat(),
-        "items": [{
-            "productId": product['id'],
-            "quantity": 1,
-            "weight": 20,
-            "unitPrice": 40000
-        }]
-    }
-    
-    resp = session.post(f"{API_URL}/sales-orders", json=so_payload)
-    if resp.status_code != 201:
-        log(f"❌ POST /sales-orders failed: {resp.status_code}")
-        return False
-    
-    so_data = resp.json()
-    log(f"SO creation response keys: {list(so_data.keys())}")
-    
-    # Verify NO commission was created (since no dropshipperId)
-    if 'commission' in so_data and so_data['commission'] is not None:
-        log(f"⚠️  SO was created with commission even though no dropshipperId was specified")
-    
-    # The response might just be a success message, so we need to fetch the latest SO
-    # Get all SOs and find the most recent one
-    resp = session.get(f"{API_URL}/sales-orders")
-    if resp.status_code != 200:
-        log(f"❌ GET /sales-orders failed: {resp.status_code}")
-        return False
-    
-    sos_data = resp.json()
-    if isinstance(sos_data, dict):
-        sos = sos_data.get('data', sos_data.get('salesOrders', []))
-    else:
-        sos = sos_data
-    
-    # Sort by createdAt and get the most recent
-    if len(sos) == 0:
-        log(f"❌ No SOs found")
-        return False
-    
-    # Find the most recent SO for CUST-100
-    cust_sos = [s for s in sos if s.get('customerId') == cust_100['id']]
-    if len(cust_sos) == 0:
-        log(f"❌ No SOs found for CUST-100")
-        return False
-    
-    # Sort by createdAt descending
-    cust_sos.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
-    new_so = cust_sos[0]
-    
-    log(f"Found SO: {new_so.get('soNumber')} (id: {new_so.get('id')})")
-    
-    # Now create manual commission for DUAL-1
-    log("Test 5b: POST commission for DUAL-1 (dual-role) - should succeed")
-    resp = session.post(f"{API_URL}/contacts/{dual_contact['id']}/commissions", json={
-        "salesOrderId": new_so['id']
-    })
-    
-    if resp.status_code == 400 and "sudah tercatat" in resp.text:
-        # This SO already has a commission, try to find an older SO without commission
-        log("⚠️  SO already has commission, trying to find an SO without commission...")
-        
-        # Get commission records for DUAL-1
-        resp = session.get(f"{API_URL}/contacts/{dual_contact['id']}/commissions")
+    """Login as admin and store session cookie"""
+    print_test("Login as admin")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/auth/sign-in/email",
+            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+            timeout=10
+        )
         if resp.status_code == 200:
-            comm_data = resp.json()
-            if isinstance(comm_data, dict):
-                records = comm_data.get('records', comm_data.get('data', {}).get('records', []))
-            else:
-                records = comm_data
-            
-            # Get list of SO IDs that already have commissions
-            so_ids_with_commission = [r.get('salesOrderId') for r in records]
-            
-            # Find an SO without commission
-            so_without_commission = next((s for s in cust_sos if s.get('id') not in so_ids_with_commission), None)
-            
-            if so_without_commission:
-                log(f"Found SO without commission: {so_without_commission.get('soNumber')}")
-                resp = session.post(f"{API_URL}/contacts/{dual_contact['id']}/commissions", json={
-                    "salesOrderId": so_without_commission['id']
-                })
-            else:
-                log("⚠️  All SOs already have commissions, skipping manual commission test")
-                log("✅ Test 5b PASSED: Dual-role accepted as dropshipper (verified via existing commissions)")
-                log("✅ TEST 5 PASSED: Manual commission role check works correctly")
-                return True
-    
-    if resp.status_code != 201:
-        log(f"❌ Expected 201 for dual-role dropshipper, got {resp.status_code} {resp.text}")
-        return False
-    
-    log("✅ Test 5b PASSED: Dual-role accepted as dropshipper for manual commission")
-    
-    log("✅ TEST 5 PASSED: Manual commission role check works correctly")
-    return True
-
-def test_regression(dual_contact, so_id):
-    """TEST 6: Regression tests - SO total correct, commission pay-all"""
-    log("\n=== TEST 6: Regression tests ===")
-    
-    # Test 6a: SO total should be correct (40000 * 40 = 1,600,000)
-    log("Test 6a: Verify SO total is correct")
-    resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-    if resp.status_code != 200:
-        log(f"❌ GET /sales-orders/{so_id} failed: {resp.status_code}")
-        return False
-    
-    so_detail = resp.json()
-    log(f"SO detail keys: {list(so_detail.keys())}")
-    
-    # Handle different response formats
-    if isinstance(so_detail, dict):
-        if 'data' in so_detail:
-            so = so_detail['data']
-        elif 'salesOrder' in so_detail:
-            so = so_detail['salesOrder']
+            print_result(True, f"Login successful: {ADMIN_EMAIL}")
+            return True
         else:
-            so = so_detail
-    else:
-        so = so_detail
-    
-    expected_total = 40000 * 40  # 1,600,000
-    actual_total = so.get('totalAmount')
-    
-    log(f"SO total: Expected={expected_total}, Actual={actual_total}")
-    
-    if actual_total != expected_total:
-        log(f"❌ SO total should be {expected_total}, got {actual_total}")
+            print_result(False, f"Login failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        print_result(False, f"Login error: {str(e)}")
         return False
-    
-    log("✅ Test 6a PASSED: SO total is correct")
-    
-    # Test 6b: Commission pay-all
-    log("Test 6b: Pay all outstanding commissions")
-    resp = session.post(f"{API_URL}/contacts/{dual_contact['id']}/commission-payments", json={})
-    
-    if resp.status_code != 201:
-        log(f"❌ POST commission-payments failed: {resp.status_code} {resp.text}")
+
+def create_supplier():
+    """Create a Supplier contact for testing"""
+    print_test("Create Supplier contact (SUP-T1)")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/contacts",
+            json={
+                "contactType": "Supplier",
+                "code": "SUP-T1",
+                "displayName": "Sup T1",
+                "companyName": "Supplier Test 1",
+                "phone": "081234567890"
+            },
+            timeout=10
+        )
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            print_result(True, f"Supplier created: {data.get('id')}", data)
+            return data.get('id')
+        else:
+            print_result(False, f"Failed to create supplier: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        print_result(False, f"Error creating supplier: {str(e)}")
+        return None
+
+def create_customer():
+    """Create a Customer contact for testing"""
+    print_test("Create Customer contact (CUST-T1)")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/contacts",
+            json={
+                "contactType": "Customer",
+                "code": "CUST-T1",
+                "displayName": "Cust T1",
+                "companyName": "Customer Test 1",
+                "phone": "081234567891"
+            },
+            timeout=10
+        )
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            print_result(True, f"Customer created: {data.get('id')}", data)
+            return data.get('id')
+        else:
+            print_result(False, f"Failed to create customer: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        print_result(False, f"Error creating customer: {str(e)}")
+        return None
+
+def create_product():
+    """Create a Product for testing"""
+    print_test("Create Product (PRD-T1)")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/products",
+            json={
+                "sku": "PRD-T1",
+                "name": "Prod T1",
+                "unit": "kg",
+                "basePrice": 40000,
+                "category": "Test"
+            },
+            timeout=10
+        )
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            print_result(True, f"Product created: {data.get('id')}", data)
+            return data.get('id')
+        else:
+            print_result(False, f"Failed to create product: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        print_result(False, f"Error creating product: {str(e)}")
+        return None
+
+def test_dropship_so_creation(customer_id, supplier_id, product_id):
+    """
+    A.1: Create dropship SO and verify auto-PO creation
+    """
+    print_test("A.1: Create Dropship SO with auto-PO")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/sales-orders",
+            json={
+                "customerId": customer_id,
+                "fulfillmentType": "dropship",
+                "supplierId": supplier_id,
+                "orderDate": datetime.now().isoformat(),
+                "expectedDate": (datetime.now() + timedelta(days=7)).isoformat(),
+                "items": [
+                    {
+                        "productId": product_id,
+                        "quantity": 1,
+                        "weight": 100,
+                        "unitPrice": 40000
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if resp.status_code != 201:
+            print_result(False, f"Failed to create SO: {resp.status_code} - {resp.text}")
+            return None
+        
+        data = resp.json().get('data', {})
+        so_id = data.get('id')
+        
+        # Verify SO properties
+        print_result(True, f"SO created: {data.get('soNumber')}")
+        
+        # Get SO detail to verify all properties
+        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
+        if detail_resp.status_code != 200:
+            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
+            return so_id
+        
+        so_detail = detail_resp.json().get('data', {})
+        
+        # Verify fulfillmentType
+        fulfillment_type = so_detail.get('fulfillmentType')
+        print_result(
+            fulfillment_type == 'dropship',
+            f"fulfillmentType == 'dropship': {fulfillment_type}"
+        )
+        
+        # Verify supplierId
+        supplier_id_set = so_detail.get('supplierId')
+        print_result(
+            supplier_id_set == supplier_id,
+            f"supplierId set: {supplier_id_set}"
+        )
+        
+        # Verify autoPoId
+        auto_po_id = so_detail.get('autoPoId')
+        print_result(
+            auto_po_id is not None,
+            f"autoPoId is non-null: {auto_po_id}"
+        )
+        
+        # Verify totalAmount (weight-based: 40000 * 100 = 4,000,000)
+        total_amount = so_detail.get('totalAmount')
+        expected_total = 4000000
+        print_result(
+            total_amount == expected_total,
+            f"totalAmount == {expected_total}: {total_amount}"
+        )
+        
+        return so_id, auto_po_id
+        
+    except Exception as e:
+        print_result(False, f"Error in dropship SO creation: {str(e)}")
+        return None
+
+def test_auto_po_verification(auto_po_id):
+    """
+    A.2: Verify the auto-created PO exists with correct properties
+    """
+    print_test("A.2: Verify auto-created PO")
+    try:
+        # Get all POs and find the one with matching ID
+        resp = session.get(f"{BASE_URL}/purchase-orders", timeout=10)
+        if resp.status_code != 200:
+            print_result(False, f"Failed to get POs: {resp.status_code}")
+            return False
+        
+        pos = resp.json().get('data', [])
+        auto_po = None
+        for po in pos:
+            if po.get('id') == auto_po_id:
+                auto_po = po
+                break
+        
+        if not auto_po:
+            print_result(False, f"Auto-PO not found in list: {auto_po_id}")
+            return False
+        
+        print_result(True, f"Auto-PO found: {auto_po.get('poNumber')}")
+        
+        # Verify poType
+        po_type = auto_po.get('poType')
+        print_result(
+            po_type == 'Produk Jadi',
+            f"poType == 'Produk Jadi': {po_type}"
+        )
+        
+        # Verify pipelineStatus
+        pipeline_status = auto_po.get('pipelineStatus')
+        print_result(
+            pipeline_status == 'Draft',
+            f"pipelineStatus == 'Draft': {pipeline_status}"
+        )
+        
+        # Verify isDropship
+        is_dropship = auto_po.get('isDropship')
+        print_result(
+            is_dropship == True or is_dropship == 1,
+            f"isDropship == true: {is_dropship}"
+        )
+        
+        # Get PO detail to verify items
+        detail_resp = session.get(f"{BASE_URL}/purchase-orders/{auto_po_id}", timeout=10)
+        if detail_resp.status_code == 200:
+            po_detail = detail_resp.json().get('data', {})
+            items = po_detail.get('items', [])
+            print_result(
+                len(items) == 1,
+                f"PO has 1 item: {len(items)} items"
+            )
+            if items:
+                print(f"PO item: productId={items[0].get('productId')}, weight={items[0].get('weight')}")
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Error verifying auto-PO: {str(e)}")
         return False
-    
-    payment = resp.json()
-    log(f"Payment created: {payment}")
-    
-    # Verify outstanding becomes 0
-    resp = session.get(f"{API_URL}/contacts/{dual_contact['id']}/commissions")
-    if resp.status_code != 200:
-        log(f"❌ GET commissions failed: {resp.status_code}")
+
+def test_confirm_dropship_so(so_id):
+    """
+    A.3: Confirm dropship SO - should NOT error about stock and NOT deduct inventory
+    """
+    print_test("A.3: Confirm Dropship SO (no stock deduction)")
+    try:
+        # Get inventory stock count before confirmation
+        inv_resp = session.get(f"{BASE_URL}/inventory/stocks", timeout=10)
+        stock_count_before = 0
+        if inv_resp.status_code == 200:
+            stock_count_before = len(inv_resp.json().get('data', []))
+            print(f"Inventory stock count before confirm: {stock_count_before}")
+        
+        # Confirm the SO
+        resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id}/status",
+            json={"status": "Confirmed"},
+            timeout=10
+        )
+        
+        if resp.status_code != 200:
+            print_result(False, f"Failed to confirm SO: {resp.status_code} - {resp.text}")
+            return False
+        
+        print_result(True, "SO confirmed successfully (no stock error)")
+        
+        # Verify pipelineStatus changed to Confirmed
+        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
+        if detail_resp.status_code == 200:
+            so_detail = detail_resp.json().get('data', {})
+            pipeline_status = so_detail.get('pipelineStatus')
+            print_result(
+                pipeline_status == 'Confirmed',
+                f"pipelineStatus == 'Confirmed': {pipeline_status}"
+            )
+        
+        # Verify no inventory stock was created/deducted
+        inv_resp_after = session.get(f"{BASE_URL}/inventory/stocks", timeout=10)
+        stock_count_after = 0
+        if inv_resp_after.status_code == 200:
+            stock_count_after = len(inv_resp_after.json().get('data', []))
+            print(f"Inventory stock count after confirm: {stock_count_after}")
+            print_result(
+                stock_count_after == stock_count_before,
+                f"No inventory stock created/deducted: {stock_count_before} -> {stock_count_after}"
+            )
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Error confirming dropship SO: {str(e)}")
         return False
-    
-    comm_data = resp.json()
-    summary = comm_data.get('summary', comm_data.get('data', {}).get('summary', {}))
-    outstanding = summary.get('outstanding', -999)
-    
-    log(f"Outstanding after pay-all: {outstanding}")
-    log(f"Full summary: {json.dumps(summary, indent=2)}")
-    
-    # Allow for small rounding errors (< 1)
-    if abs(outstanding) > 0.01:
-        log(f"❌ Outstanding should be ~0 after pay-all, got {outstanding}")
+
+def test_sj_shipped_weight(so_id):
+    """
+    B: Create Surat Jalan with real shipped weight and received column
+    """
+    print_test("B: Advance SO to Packed and create SJ with shipped weight")
+    try:
+        # Advance to Packed (Confirmed -> Packed)
+        resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id}/status",
+            json={"status": "Packed"},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            print_result(False, f"Failed to advance to Packed: {resp.status_code} - {resp.text}")
+            return None
+        
+        print_result(True, "SO advanced to Packed")
+        
+        # Get SO detail to get item IDs
+        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
+        if detail_resp.status_code != 200:
+            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
+            return None
+        
+        so_detail = detail_resp.json().get('data', {})
+        items = so_detail.get('items', [])
+        if not items:
+            print_result(False, "No items found in SO")
+            return None
+        
+        item_id = items[0].get('id')
+        print(f"SO item ID: {item_id}")
+        
+        # Create Surat Jalan with shippedWeight=95 (less than ordered 100)
+        sj_resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id}/surat-jalan",
+            json={
+                "deliveryDate": "2026-07-20",
+                "showReceivedColumn": True,
+                "items": [
+                    {
+                        "itemId": item_id,
+                        "shippedWeight": 95
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if sj_resp.status_code != 201:
+            print_result(False, f"Failed to create SJ: {sj_resp.status_code} - {sj_resp.text}")
+            return None
+        
+        sj_data = sj_resp.json().get('data', {})
+        print_result(True, f"SJ created: {sj_data.get('sjNumber')}")
+        
+        # Verify SO detail shows updated shippedWeight and showReceivedColumn
+        detail_resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
+        if detail_resp2.status_code == 200:
+            so_detail2 = detail_resp2.json().get('data', {})
+            items2 = so_detail2.get('items', [])
+            if items2:
+                shipped_weight = items2[0].get('shippedWeight')
+                print_result(
+                    shipped_weight == 95,
+                    f"item.shippedWeight == 95: {shipped_weight}"
+                )
+            
+            surat_jalan = so_detail2.get('suratJalan', [])
+            if surat_jalan:
+                show_received = surat_jalan[0].get('showReceivedColumn')
+                print_result(
+                    show_received == True or show_received == 1,
+                    f"suratJalan[0].showReceivedColumn == true: {show_received}"
+                )
+            
+            # Verify pipeline auto-moved to Shipped
+            pipeline_status = so_detail2.get('pipelineStatus')
+            print_result(
+                pipeline_status == 'Shipped',
+                f"Pipeline auto-moved Packed→Shipped: {pipeline_status}"
+            )
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Error in SJ shipped weight test: {str(e)}")
+        return None
+
+def test_invoice_shipped_basis(so_id):
+    """
+    C.6: Transition to Invoiced with SHIPPED basis
+    """
+    print_test("C.6: Invoice with SHIPPED weight basis")
+    try:
+        resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id}/status",
+            json={
+                "status": "Invoiced",
+                "invoiceWeightBasis": "shipped"
+            },
+            timeout=10
+        )
+        
+        if resp.status_code != 200:
+            print_result(False, f"Failed to invoice: {resp.status_code} - {resp.text}")
+            return False
+        
+        print_result(True, "SO transitioned to Invoiced with shipped basis")
+        
+        # Verify SO detail
+        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
+        if detail_resp.status_code == 200:
+            so_detail = detail_resp.json().get('data', {})
+            
+            # Verify invoiceWeightBasis
+            invoice_weight_basis = so_detail.get('invoiceWeightBasis')
+            print_result(
+                invoice_weight_basis == 'shipped',
+                f"invoiceWeightBasis == 'shipped': {invoice_weight_basis}"
+            )
+            
+            # Verify totalAmount recomputed (40000 * 95 = 3,800,000)
+            total_amount = so_detail.get('totalAmount')
+            expected_total = 3800000
+            print_result(
+                total_amount == expected_total,
+                f"totalAmount == {expected_total} (40000*95): {total_amount}"
+            )
+            
+            # Verify invoice number generated
+            invoice_number = so_detail.get('invoiceNumber')
+            print_result(
+                invoice_number is not None and invoice_number != '',
+                f"invoiceNumber generated: {invoice_number}"
+            )
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Error in invoice shipped basis test: {str(e)}")
         return False
-    
-    log("✅ Test 6b PASSED: Commission pay-all works correctly")
-    
-    log("✅ TEST 6 PASSED: Regression tests passed")
-    return True
+
+def test_invoice_received_basis(customer_id, product_id):
+    """
+    C.7: Create second SO, advance to Shipped, create receipts, invoice with RECEIVED basis
+    """
+    print_test("C.7: Create second SO for RECEIVED weight basis test")
+    try:
+        # Create regular SO (not dropship)
+        resp = session.post(
+            f"{BASE_URL}/sales-orders",
+            json={
+                "customerId": customer_id,
+                "orderDate": datetime.now().isoformat(),
+                "expectedDate": (datetime.now() + timedelta(days=7)).isoformat(),
+                "items": [
+                    {
+                        "productId": product_id,
+                        "quantity": 1,
+                        "weight": 100,
+                        "unitPrice": 40000
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if resp.status_code != 201:
+            print_result(False, f"Failed to create second SO: {resp.status_code} - {resp.text}")
+            return False
+        
+        data = resp.json().get('data', {})
+        so_id2 = data.get('id')
+        print_result(True, f"Second SO created: {data.get('soNumber')}")
+        
+        # Advance Draft→Confirmed→Packed→Shipped
+        for status in ['Confirmed', 'Packed']:
+            resp = session.post(
+                f"{BASE_URL}/sales-orders/{so_id2}/status",
+                json={"status": status},
+                timeout=10
+            )
+            if resp.status_code != 200:
+                print_result(False, f"Failed to advance to {status}: {resp.status_code}")
+                return False
+        
+        # Get item ID for SJ
+        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id2}", timeout=10)
+        if detail_resp.status_code != 200:
+            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
+            return False
+        
+        so_detail = detail_resp.json().get('data', {})
+        items = so_detail.get('items', [])
+        if not items:
+            print_result(False, "No items found in SO")
+            return False
+        
+        item_id = items[0].get('id')
+        
+        # Create SJ with shippedWeight=100
+        sj_resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id2}/surat-jalan",
+            json={
+                "deliveryDate": "2026-07-20",
+                "items": [
+                    {
+                        "itemId": item_id,
+                        "shippedWeight": 100
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if sj_resp.status_code != 201:
+            print_result(False, f"Failed to create SJ: {sj_resp.status_code}")
+            return False
+        
+        print_result(True, "SO advanced to Shipped with shippedWeight=100")
+        
+        # Create receipt with receivedWeight=90
+        receipt_resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id2}/receipts",
+            json={
+                "receivedDate": "2026-07-21",
+                "items": [
+                    {
+                        "productId": product_id,
+                        "receivedWeight": 90
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if receipt_resp.status_code != 201:
+            print_result(False, f"Failed to create receipt: {receipt_resp.status_code} - {receipt_resp.text}")
+            return False
+        
+        receipt_data = receipt_resp.json().get('data', {})
+        print_result(True, f"Receipt created: {receipt_data.get('receiptNumber')}")
+        
+        # Transition to Invoiced with received basis
+        invoice_resp = session.post(
+            f"{BASE_URL}/sales-orders/{so_id2}/status",
+            json={
+                "status": "Invoiced",
+                "invoiceWeightBasis": "received"
+            },
+            timeout=10
+        )
+        
+        if invoice_resp.status_code != 200:
+            print_result(False, f"Failed to invoice: {invoice_resp.status_code} - {invoice_resp.text}")
+            return False
+        
+        print_result(True, "SO transitioned to Invoiced with received basis")
+        
+        # Verify SO detail
+        detail_resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id2}", timeout=10)
+        if detail_resp2.status_code == 200:
+            so_detail2 = detail_resp2.json().get('data', {})
+            
+            # Verify invoiceWeightBasis
+            invoice_weight_basis = so_detail2.get('invoiceWeightBasis')
+            print_result(
+                invoice_weight_basis == 'received',
+                f"invoiceWeightBasis == 'received': {invoice_weight_basis}"
+            )
+            
+            # Verify totalAmount recomputed (40000 * 90 = 3,600,000)
+            total_amount = so_detail2.get('totalAmount')
+            expected_total = 3600000
+            print_result(
+                total_amount == expected_total,
+                f"totalAmount == {expected_total} (40000*90): {total_amount}"
+            )
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Error in invoice received basis test: {str(e)}")
+        return False
 
 def main():
-    log("=== BACKEND TEST: Dual-role contacts + buyer!=dropshipper rule ===")
+    """Main test execution"""
+    print("\n" + "="*80)
+    print("BACKEND TEST: Dropship SO + SJ Shipped Weight + Invoice Weight Basis")
+    print("="*80)
     
     # Login
-    login()
+    if not login():
+        print("\n❌ LOGIN FAILED - Cannot proceed with tests")
+        return
     
-    # Get existing data
-    log("\nFetching existing data...")
+    # Create test data
+    supplier_id = create_supplier()
+    if not supplier_id:
+        print("\n❌ SUPPLIER CREATION FAILED - Cannot proceed")
+        return
     
-    # Get contacts
-    resp = session.get(f"{API_URL}/contacts")
-    if resp.status_code != 200:
-        log(f"❌ GET /contacts failed: {resp.status_code}")
-        sys.exit(1)
+    customer_id = create_customer()
+    if not customer_id:
+        print("\n❌ CUSTOMER CREATION FAILED - Cannot proceed")
+        return
     
-    contacts_data = resp.json()
-    # Handle both array and object responses
-    if isinstance(contacts_data, dict):
-        contacts = contacts_data.get('data', contacts_data.get('contacts', []))
-    else:
-        contacts = contacts_data
+    product_id = create_product()
+    if not product_id:
+        print("\n❌ PRODUCT CREATION FAILED - Cannot proceed")
+        return
     
-    # Get products
-    resp = session.get(f"{API_URL}/products")
-    if resp.status_code != 200:
-        log(f"❌ GET /products failed: {resp.status_code}")
-        sys.exit(1)
+    print("\n" + "="*80)
+    print("TEST DATA CREATED SUCCESSFULLY")
+    print(f"Supplier ID: {supplier_id}")
+    print(f"Customer ID: {customer_id}")
+    print(f"Product ID: {product_id}")
+    print("="*80)
     
-    products_data = resp.json()
-    # Handle both array and object responses
-    if isinstance(products_data, dict):
-        products = products_data.get('data', products_data.get('products', []))
-    else:
-        products = products_data
-    
-    product = next((p for p in products if p.get('sku') == 'KRK-100'), None)
-    if not product:
-        log("❌ Product KRK-100 not found")
-        sys.exit(1)
-    
-    log(f"Found product: {product['name']} (id: {product['id']})")
-    
-    # TEST 1: Backfill flags
-    result = test_backfill_flags()
+    # A. DROPSHIP SO TESTS
+    result = test_dropship_so_creation(customer_id, supplier_id, product_id)
     if not result:
-        log("❌ TEST 1 FAILED")
-        sys.exit(1)
-    _, existing_contacts = result
+        print("\n❌ DROPSHIP SO CREATION FAILED - Cannot proceed")
+        return
     
-    # TEST 2: Create dual-role contact
-    result = test_create_dual_role_contact()
-    if not result:
-        log("❌ TEST 2 FAILED")
-        sys.exit(1)
-    _, dual_contact = result
+    so_id, auto_po_id = result
     
-    # TEST 3: Dual-role as dropshipper
-    result = test_dual_role_as_dropshipper(dual_contact, existing_contacts['cust_100'], product['id'])
-    if not result:
-        log("❌ TEST 3 FAILED")
-        sys.exit(1)
-    _, so = result
+    if not test_auto_po_verification(auto_po_id):
+        print("\n⚠️ AUTO-PO VERIFICATION FAILED")
     
-    # TEST 4: Buyer != dropshipper rule
-    if not test_buyer_equals_dropshipper_rule(dual_contact, product['id']):
-        log("❌ TEST 4 FAILED")
-        sys.exit(1)
+    if not test_confirm_dropship_so(so_id):
+        print("\n❌ DROPSHIP SO CONFIRMATION FAILED - Cannot proceed")
+        return
     
-    # TEST 5: Manual commission role check
-    if not test_manual_commission_role_check(existing_contacts['cust_100'], dual_contact, so['id']):
-        log("❌ TEST 5 FAILED")
-        sys.exit(1)
+    # B. SJ SHIPPED WEIGHT TEST
+    if not test_sj_shipped_weight(so_id):
+        print("\n❌ SJ SHIPPED WEIGHT TEST FAILED - Cannot proceed")
+        return
     
-    # TEST 6: Regression tests
-    if not test_regression(dual_contact, so.get('id')):
-        log("❌ TEST 6 FAILED")
-        sys.exit(1)
+    # C. INVOICE WEIGHT BASIS TESTS
+    if not test_invoice_shipped_basis(so_id):
+        print("\n⚠️ INVOICE SHIPPED BASIS TEST FAILED")
     
-    log("\n" + "="*60)
-    log("✅ ALL TESTS PASSED (6/6)")
-    log("="*60)
-    log("\nSummary:")
-    log("✅ TEST 1: Backfill flags verified (AG-100, DS-100, CUST-100)")
-    log("✅ TEST 2: Dual-role contact created (DUAL-1 with both flags)")
-    log("✅ TEST 3: Dual-role auto-commission via isDropshipper flag (6000)")
-    log("✅ TEST 4: Rule buyer!=dropshipper enforced (400 error)")
-    log("✅ TEST 5: Manual commission role check (non-dropshipper rejected, dual-role accepted)")
-    log("✅ TEST 6: Regression tests (SO total=1,600,000, pay-all works)")
+    if not test_invoice_received_basis(customer_id, product_id):
+        print("\n⚠️ INVOICE RECEIVED BASIS TEST FAILED")
+    
+    print("\n" + "="*80)
+    print("ALL TESTS COMPLETED")
+    print("="*80)
 
 if __name__ == "__main__":
     main()
