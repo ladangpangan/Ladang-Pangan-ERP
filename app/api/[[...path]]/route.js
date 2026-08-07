@@ -1396,7 +1396,7 @@ async function handleRoute(request, { params }) {
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
-        const line = Number(it.unitPrice) * Number(it.quantity || it.weight || 0);
+        const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
         const disc = Number(it.discount || 0);
         const st = line - disc;
         subtotal += line;
@@ -1496,7 +1496,7 @@ async function handleRoute(request, { params }) {
       };
       db.insert(s.salesOrder).values(row).run();
       for (const it of body.items) {
-        const line = Number(it.unitPrice) * Number(it.quantity || it.weight || 0);
+        const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
         const disc = Number(it.discount || 0);
         db.insert(s.salesOrderItems).values({
           id: uuidv4(), salesOrderId: id,
@@ -1699,7 +1699,7 @@ async function handleRoute(request, { params }) {
         }
         db.delete(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).run();
         for (const it of body.items) {
-          const line = Number(it.unitPrice) * Number(it.quantity || it.weight || 0);
+          const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
           const disc = Number(it.discount || 0);
           db.insert(s.salesOrderItems).values({
             id: uuidv4(), salesOrderId: id,
