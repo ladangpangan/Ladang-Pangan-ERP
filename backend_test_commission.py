@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta
 
 # Base URL from .env
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
+BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
 
 # Test credentials
 ADMIN_EMAIL = "admin@lpi.co.id"

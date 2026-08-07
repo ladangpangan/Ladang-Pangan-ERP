@@ -1,7 +1,7 @@
 ============================================================
 LPI ERP BACKEND API TEST SUITE
 ============================================================
-Base URL: https://erp-builder-48.preview.emergentagent.com/api
+Base URL: https://resume-project-90.preview.emergentagent.com/api
 ============================================================
 
 === TEST 1: HEALTH CHECK ===

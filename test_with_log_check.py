@@ -4,7 +4,7 @@ from datetime import datetime
 import time
 import subprocess
 
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
+BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login

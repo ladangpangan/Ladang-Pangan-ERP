@@ -7,7 +7,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
+BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
 
 # Correct passwords from seed
 ADMIN_CREDS = ("admin@lpi.co.id", "admin123")

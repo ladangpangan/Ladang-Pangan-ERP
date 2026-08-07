@@ -2,7 +2,7 @@
 ================================================================================
 BACKEND API TESTING: Agen & Dropshipper + Commission + End-Customers
 ================================================================================
-Base URL: https://erp-builder-48.preview.emergentagent.com/api
+Base URL: https://resume-project-90.preview.emergentagent.com/api
 Test started at: 2026-08-07 08:37:55
 
 ================================================================================

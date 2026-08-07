@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime, timedelta
 
-BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
+BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
 
 def login():
     resp = requests.post(
