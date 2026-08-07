@@ -334,7 +334,7 @@ function CreateSODialog({ onSaved }) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label className="flex items-center gap-2">
-            <Boxes className="w-4 h-4" /> Items (dari Inventory) *
+            <Boxes className="w-4 h-4" /> {isDropship ? 'Items (Dropship — dari Supplier)' : 'Items (dari Inventory)'} *
           </Label>
           <Button size="sm" variant="outline" onClick={addItem}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
         </div>
