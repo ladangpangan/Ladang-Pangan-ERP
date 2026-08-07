@@ -151,7 +151,9 @@ function CreatePODialog({ onSaved }) {
   const { data: rph } = useSWR('/api/contacts?type=RPH', fetcher);
   const { data: cust } = useSWR('/api/contacts?type=Customer', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
-  const supplierOptions = [...(sup?.data || []), ...(rph?.data || [])];
+  const supplierOptions = Object.values(
+    [...(sup?.data || []), ...(rph?.data || [])].reduce((acc, c) => { acc[c.id] = c; return acc; }, {})
+  );
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const updItem = (i, k, v) => setForm(f => { const items = [...f.items]; items[i] = { ...items[i], [k]: v }; return { ...f, items }; });
