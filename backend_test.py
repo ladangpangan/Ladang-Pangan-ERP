@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timedelta
 
 # Base URL from .env
-BASE_URL = "https://pangan-system.preview.emergentagent.com/api"
+BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
 
 # Test credentials
 ADMIN_EMAIL = "admin@lpi.co.id"
@@ -24,14 +24,14 @@ OPERATOR_PASSWORD = "operator123"
 sessions = {}
 http_session = requests.Session()  # Reuse HTTP connections
 http_session.headers.update({
-    'Origin': 'https://pangan-system.preview.emergentagent.com',
-    'Referer': 'https://pangan-system.preview.emergentagent.com/'
+    'Origin': 'https://erp-builder-48.preview.emergentagent.com',
+    'Referer': 'https://erp-builder-48.preview.emergentagent.com/'
 })
 
 def login(email, password, role_name):
     """Login and store session cookie"""
     try:
-        url = "https://pangan-system.preview.emergentagent.com/api/auth/sign-in/email"
+        url = "https://erp-builder-48.preview.emergentagent.com/api/auth/sign-in/email"
         resp = http_session.post(url, json={"email": email, "password": password}, timeout=10)
         if resp.status_code == 200:
             sessions[role_name] = resp.cookies

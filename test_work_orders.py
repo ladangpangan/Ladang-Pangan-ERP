@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 
 # Base URL from .env
-BASE_URL = "https://pangan-system.preview.emergentagent.com/api"
+BASE_URL = "https://erp-builder-48.preview.emergentagent.com/api"
 
 # Test credentials
 CREDENTIALS = {
@@ -34,7 +34,7 @@ def login(role):
     
     try:
         resp = session.post(
-            f"https://pangan-system.preview.emergentagent.com/api/auth/sign-in/email",
+            f"https://erp-builder-48.preview.emergentagent.com/api/auth/sign-in/email",
             json=creds,
             timeout=30
         )
