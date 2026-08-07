@@ -1490,6 +1490,8 @@ async function handleRoute(request, { params }) {
         id, soNumber, customerId: body.customerId,
         orderDate, expectedDate,
         pipelineStatus: 'Draft',
+        fulfillmentType: body.fulfillmentType === 'dropship' ? 'dropship' : 'stock',
+        supplierId: body.fulfillmentType === 'dropship' ? (body.supplierId || null) : null,
         dpAmount: Number(body.dpAmount || 0),
         paymentTerm: body.paymentTerm || null,
         notes: body.notes || null,
@@ -1514,7 +1516,30 @@ async function handleRoute(request, { params }) {
       recalcSoTotals(id);
       const created = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
 
-      // Auto-create approval concern if discount is significant (>10% or > Rp 1jt)
+      // Dropship: auto-create PO (Draft, Produk Jadi) ke supplier, tertaut ke SO
+      if (created.fulfillmentType === 'dropship' && body.supplierId) {
+        try {
+          const poId = uuidv4();
+          const poNum = nextPoNumber();
+          const nowP = new Date();
+          db.insert(s.purchaseOrder).values({
+            id: poId, poNumber: poNum, supplierId: body.supplierId,
+            poType: 'Produk Jadi', method: null, orderDate: nowP, expectedDate: expectedDate,
+            pipelineStatus: 'Draft', isDropship: true, dropshipCustomerId: body.customerId,
+            additionalCost: 0, dpAmount: 0, notes: `Auto dari SO Dropship ${soNumber}`,
+            createdBy: session.user.email, createdAt: nowP, updatedAt: nowP,
+          }).run();
+          for (const it of body.items) {
+            db.insert(s.purchaseOrderItems).values({
+              id: uuidv4(), purchaseOrderId: poId, productId: it.productId,
+              quantity: Number(it.quantity || 0), weight: Number(it.weight || 0), unitPrice: Number(it.unitPrice || 0),
+            }).run();
+          }
+          recalcPoHpp(poId);
+          db.update(s.salesOrder).set({ autoPoId: poId, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
+          created.autoPoId = poId;
+        } catch (e) { console.error('auto-PO failed:', e?.message || e); }
+      }
       const discountTotal = body.items.reduce((a, it) => a + Number(it.discount || 0), 0);
       const grossTotal = body.items.reduce((a, it) => a + Number(it.unitPrice || 0) * Number(it.weight || it.quantity || 0), 0);
       const discountPct = grossTotal > 0 ? (discountTotal / grossTotal) * 100 : 0;
@@ -1784,8 +1809,38 @@ async function handleRoute(request, { params }) {
           db.update(s.contacts).set({ prepaidBalance: newBal, updatedAt: new Date() }).where(eq(s.contacts.id, cust.id)).run();
         }
       }
-      // On Invoiced: auto-generate invoice number & date if not set
+      // On Invoiced: pilih basis berat (shipped/received) & recompute total, lalu auto-generate invoice
       if (target === 'Invoiced') {
+        const basis = body.invoiceWeightBasis === 'received' ? 'received' : 'shipped';
+        upd.invoiceWeightBasis = basis;
+        const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+        // received per produk dari Receipts (auto), untuk basis 'received'
+        let recvByProduct = {};
+        if (basis === 'received') {
+          const recs = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).all();
+          for (const rc of recs) {
+            const ri = db.select().from(s.salesOrderReceiptItems).where(eq(s.salesOrderReceiptItems.receiptId, rc.id)).all();
+            for (const li of ri) recvByProduct[li.productId] = (recvByProduct[li.productId] || 0) + Number(li.receivedWeight || 0);
+          }
+        }
+        let subtotal = 0, discountTotal = 0;
+        for (const it of items) {
+          let w;
+          if (basis === 'received') {
+            w = Number(it.receivedWeight || 0);
+            if (!w && recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId]; // auto dari receipts
+            if (!w) w = Number(it.shippedWeight || it.weight || 0);
+            if (Number(it.receivedWeight || 0) === 0) db.update(s.salesOrderItems).set({ receivedWeight: w }).where(eq(s.salesOrderItems.id, it.id)).run();
+          } else {
+            w = Number(it.shippedWeight || it.weight || 0);
+          }
+          const line = Number(it.unitPrice) * w;
+          const disc = Number(it.discount || 0);
+          subtotal += line; discountTotal += disc;
+          db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
+        }
+        upd.totalAmount = subtotal - discountTotal;
+        upd.discountTotal = discountTotal;
         if (!so.invoiceNumber) upd.invoiceNumber = nextInvoiceNumber();
         if (!so.invoiceDate) upd.invoiceDate = new Date();
         if (!so.dueDate && so.paymentTerm && /TOP (\d+)/.test(so.paymentTerm)) {
@@ -1854,12 +1909,21 @@ async function handleRoute(request, { params }) {
         driverName: body.driverName || null,
         vehicleNumber: body.vehicleNumber || null,
         ...shipTo,
+        showReceivedColumn: !!body.showReceivedColumn,
         notes: body.notes || null,
         status: 'confirmed',
         createdBy: session.user.email,
         createdAt: new Date(),
       };
       db.insert(s.suratJalan).values(sj).run();
+      // Catat berat kirim RIIL per item (hari-H) ke sales_order_items
+      if (Array.isArray(body.items)) {
+        for (const it of body.items) {
+          if (it.itemId && it.shippedWeight !== undefined && it.shippedWeight !== null && it.shippedWeight !== '') {
+            db.update(s.salesOrderItems).set({ shippedWeight: Number(it.shippedWeight) }).where(eq(s.salesOrderItems.id, it.itemId)).run();
+          }
+        }
+      }
       // Auto-transition Packed -> Shipped when SJ created + create Shipping concern
       if (so.pipelineStatus === 'Packed') {
         db.update(s.salesOrder).set({ pipelineStatus: 'Shipped', updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();

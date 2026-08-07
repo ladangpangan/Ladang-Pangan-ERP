@@ -38,6 +38,7 @@ const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
+  fulfillmentType: 'stock', supplierId: '',
   dropshipperId: '', commissionType: '', commissionValue: 0,
   orderDate: new Date().toISOString().slice(0,10),
   expectedDate: '',
@@ -194,15 +195,22 @@ function CreateSODialog({ onSaved }) {
     return { type, amount: null }; // percent_profit
   })();
 
+  const isDropship = form.fulfillmentType === 'dropship';
+  const suppliers = allContacts.filter(c => c.contactType === 'Supplier');
   const save = async () => {
     if (!form.customerId) return toast.error('Pilih customer');
-    if (form.items.length === 0 || form.items.some(it => !it.stockId)) return toast.error('Isi minimal 1 item dengan kode simpan');
-    // Validate weights vs availability
-    for (const it of form.items) {
-      if (Number(it.weight) > Number(it.availableWeight) + 0.0001) {
-        return toast.error(`Berat ${it.weight} kg melebihi stok tersedia ${it.availableWeight} kg pada ${it.kodeSimpan}`);
+    if (isDropship) {
+      if (!form.supplierId) return toast.error('Pilih supplier asal (dropship)');
+      if (form.items.length === 0 || form.items.some(it => !it.productId)) return toast.error('Isi minimal 1 item dengan produk');
+      if (form.items.some(it => Number(it.weight) <= 0)) return toast.error('Berat harus > 0');
+    } else {
+      if (form.items.length === 0 || form.items.some(it => !it.stockId)) return toast.error('Isi minimal 1 item dengan kode simpan');
+      for (const it of form.items) {
+        if (Number(it.weight) > Number(it.availableWeight) + 0.0001) {
+          return toast.error(`Berat ${it.weight} kg melebihi stok tersedia ${it.availableWeight} kg pada ${it.kodeSimpan}`);
+        }
+        if (Number(it.weight) <= 0) return toast.error(`Berat harus > 0 pada ${it.kodeSimpan}`);
       }
-      if (Number(it.weight) <= 0) return toast.error(`Berat harus > 0 pada ${it.kodeSimpan}`);
     }
     setSaving(true);
     try {
@@ -210,7 +218,7 @@ function CreateSODialog({ onSaved }) {
         ...form,
         commissionValue: Number(form.commissionValue || 0),
         items: form.items.map(it => ({
-          stockId: it.stockId,
+          stockId: isDropship ? undefined : it.stockId,
           productId: it.productId,
           quantity: Number(it.quantity || 0),
           weight: Number(it.weight || 0),
@@ -293,6 +301,25 @@ function CreateSODialog({ onSaved }) {
             </div>
           )}
         </F>
+        <F label="Mode Pemenuhan" className="sm:col-span-2">
+          <Select value={form.fulfillmentType} onValueChange={v => upd('fulfillmentType', v)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="stock">Reguler (dari stok inventory)</SelectItem>
+              <SelectItem value="dropship">Dropship (langsung dari supplier, tanpa stok)</SelectItem>
+            </SelectContent>
+          </Select>
+          {isDropship && (
+            <div className="mt-2">
+              <Label className="text-xs">Supplier Asal *</Label>
+              <Select value={form.supplierId} onValueChange={v => upd('supplierId', v)}>
+                <SelectTrigger><SelectValue placeholder="Pilih supplier" /></SelectTrigger>
+                <SelectContent>{suppliers.map(sp => <SelectItem key={sp.id} value={sp.id}>{sp.code} - {sp.displayName}</SelectItem>)}</SelectContent>
+              </Select>
+              <p className="text-[11px] text-blue-700 mt-1">PO Draft (Produk Jadi) otomatis dibuat ke supplier ini. Tidak memotong stok. Berat riil dicatat saat Surat Jalan.</p>
+            </div>
+          )}
+        </F>
         <F label="Tanggal Order *"><Input type="date" value={form.orderDate} onChange={e => upd('orderDate', e.target.value)} /></F>
         <F label="Perkiraan Kirim"><Input type="date" value={form.expectedDate} onChange={e => upd('expectedDate', e.target.value)} /></F>
         <F label="Term Pembayaran (TOP)">
@@ -312,7 +339,7 @@ function CreateSODialog({ onSaved }) {
           <Button size="sm" variant="outline" onClick={addItem}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
         </div>
 
-        {stocks.length === 0 && !stockLoading && (
+        {!isDropship && stocks.length === 0 && !stockLoading && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-center gap-2">
             <AlertTriangle className="w-4 h-4" />
             Belum ada stok aktif di inventory. Silakan input Inbound dari Tally / GRN Purchase Order terlebih dahulu.
@@ -328,7 +355,12 @@ function CreateSODialog({ onSaved }) {
                   {/* Stock Picker Button */}
                   <div className="flex-1 min-w-0">
                     <Label className="text-xs text-muted-foreground">Kode Simpan / Produk</Label>
-                    {it.stockId ? (
+                    {isDropship ? (
+                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', unitPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
+                        <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
+                        <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    ) : it.stockId ? (
                       <div className="mt-1 border rounded-md p-2 bg-emerald-50 flex items-start gap-2">
                         <Package className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
