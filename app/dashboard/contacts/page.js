@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -17,7 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown, FileText, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -115,7 +115,7 @@ export default function ContactsPage() {
 
   const save = async () => {
     if (!Array.isArray(form.categories) || form.categories.length === 0) { toast.error('Pilih minimal 1 kategori kontak'); return; }
-    if (!form.code || !form.displayName) { toast.error('Kode & Nama Tampilan wajib diisi'); return; }
+    if (!form.displayName) { toast.error('Nama Tampilan wajib diisi'); return; }
     setSaving(true);
     try {
       const method = editing ? 'PATCH' : 'POST';
@@ -232,7 +232,7 @@ function ContactDetailSheet({ id, onClose }) {
   const isAgentOrDs = d ? (isAgentRole(d.contact) || isDsRole(d.contact)) : false;
   const isDropshipper = d ? isDsRole(d.contact) : false;
   const isAgent = d ? isAgentRole(d.contact) : false;
-  const tabCount = 2 + (isAgentOrDs ? 1 : 0) + (isDropshipper ? 1 : 0);
+  const tabCount = 3 + (isAgentOrDs ? 1 : 0) + (isDropshipper ? 1 : 0);
 
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -254,6 +254,7 @@ function ContactDetailSheet({ id, onClose }) {
                 <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${tabCount}, minmax(0, 1fr))` }}>
                   <TabsTrigger value="info"><Info className="w-4 h-4 mr-1" /> Info</TabsTrigger>
                   <TabsTrigger value="history"><ClipboardList className="w-4 h-4 mr-1" /> Riwayat</TabsTrigger>
+                  <TabsTrigger value="documents"><FileText className="w-4 h-4 mr-1" /> Dokumen</TabsTrigger>
                   {isAgentOrDs && <TabsTrigger value="customers"><Contact2 className="w-4 h-4 mr-1" /> Pelanggan</TabsTrigger>}
                   {isDropshipper && <TabsTrigger value="commission"><Wallet className="w-4 h-4 mr-1" /> Komisi</TabsTrigger>}
                 </TabsList>
@@ -340,6 +341,10 @@ function ContactDetailSheet({ id, onClose }) {
                   )}
                 </TabsContent>
 
+                <TabsContent value="documents" className="mt-4">
+                  <DocumentsTab contactId={id} canManage={canManage} />
+                </TabsContent>
+
                 {isAgentOrDs && (
                   <TabsContent value="customers" className="mt-4">
                     <EndCustomersTab contactId={id} canManage={canManage} />
@@ -358,6 +363,107 @@ function ContactDetailSheet({ id, onClose }) {
     </Sheet>
   );
 }
+
+const DOC_TYPES = ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya'];
+const DOC_TYPE_COLOR = {
+  'NPWP': 'bg-blue-100 text-blue-700',
+  'Akta Perusahaan': 'bg-purple-100 text-purple-700',
+  'SK Perusahaan': 'bg-amber-100 text-amber-700',
+  'KTP': 'bg-emerald-100 text-emerald-700',
+  'Lainnya': 'bg-slate-100 text-slate-700',
+};
+const formatBytes = (b) => {
+  if (!b) return '0 B';
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return `${(b / Math.pow(k, i)).toFixed(i ? 1 : 0)} ${sizes[i]}`;
+};
+
+function DocumentsTab({ contactId, canManage }) {
+  const { data, mutate, isLoading } = useSWR(contactId ? `/api/contacts/${contactId}/documents` : null, fetcher);
+  const rows = data?.data || [];
+  const [docType, setDocType] = useState('NPWP');
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const upload = async () => {
+    if (!file) { toast.error('Pilih file terlebih dahulu'); return; }
+    if (file.size > 10 * 1024 * 1024) { toast.error('Ukuran file maksimal 10MB'); return; }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('docType', docType);
+      const res = await fetch(`/api/contacts/${contactId}/documents`, { method: 'POST', body: fd });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal mengunggah');
+      toast.success('Dokumen diunggah');
+      setFile(null);
+      // reset the native input
+      const el = document.getElementById('doc-file-input'); if (el) el.value = '';
+      mutate();
+    } catch (e) { toast.error(e.message); } finally { setUploading(false); }
+  };
+  const remove = async (docId) => {
+    if (!confirm('Hapus dokumen ini?')) return;
+    const res = await fetch(`/api/contacts/${contactId}/documents/${docId}`, { method: 'DELETE' });
+    if (res.ok) { toast.success('Terhapus'); mutate(); } else { toast.error('Gagal menghapus'); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">Dokumen legal kontak (opsional): NPWP, Akta, SK Perusahaan, atau KTP. Maks 10MB per file.</p>
+
+      {canManage && (
+        <div className="p-3 rounded-lg border bg-slate-50 space-y-3">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Unggah Dokumen</div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+            <div>
+              <Label className="text-xs">Jenis Dokumen</Label>
+              <Select value={docType} onValueChange={setDocType}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{DOC_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="sm:col-span-2">
+              <Label className="text-xs">File</Label>
+              <Input id="doc-file-input" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx" onChange={e => setFile(e.target.files?.[0] || null)} />
+            </div>
+          </div>
+          <Button size="sm" onClick={upload} disabled={uploading || !file}>
+            {uploading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Upload className="w-4 h-4 mr-1" />} Unggah
+          </Button>
+        </div>
+      )}
+
+      {isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> :
+        rows.length === 0 ? <div className="text-sm text-muted-foreground p-6 rounded-lg bg-slate-50 border border-dashed text-center">Belum ada dokumen</div> :
+          <div className="border rounded-lg divide-y">
+            {rows.map(r => (
+              <div key={r.id} className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded bg-slate-100 flex items-center justify-center shrink-0"><FileText className="w-4 h-4 text-slate-500" /></div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="secondary" className={DOC_TYPE_COLOR[r.docType] || 'bg-slate-100 text-slate-700'}>{r.docType}</Badge>
+                      <span className="text-sm font-medium truncate max-w-[220px]" title={r.fileName}>{r.fileName}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{formatBytes(r.size)}{r.uploadedBy ? ` · ${r.uploadedBy}` : ''}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 whitespace-nowrap">
+                  <a href={`/api/contacts/${contactId}/documents/${r.id}/file`} target="_blank" rel="noopener noreferrer">
+                    <Button size="icon" variant="ghost" title="Lihat / Unduh"><Download className="w-4 h-4" /></Button>
+                  </a>
+                  {canManage && <Button size="icon" variant="ghost" onClick={() => remove(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>}
+                </div>
+              </div>
+            ))}
+          </div>}
+    </div>
+  );
+}
+
 
 const emptyCust = { name: '', phone: '', address: '', city: '', picName: '', notes: '', mapsUrl: '' };
 function EndCustomersTab({ contactId, canManage }) {
@@ -762,6 +868,18 @@ function TransactionList({ title, items, emptyMsg, numberKey, dateKey }) {
 function ContactDialog({ form, setForm, onSave, saving, editing }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const cats = Array.isArray(form.categories) ? form.categories : [];
+  const [codeAuto, setCodeAuto] = useState(!editing);
+  const primary = cats[0];
+  // Auto-generate code from primary category when creating (until user edits manually)
+  useEffect(() => {
+    if (editing || !codeAuto || !primary) return;
+    let active = true;
+    fetch(`/api/contacts/next-code?category=${encodeURIComponent(primary)}`)
+      .then(r => r.json())
+      .then(j => { if (active && j?.code) setForm(f => ({ ...f, code: j.code })); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [primary, codeAuto, editing, setForm]);
   const toggleCat = (cat) => {
     setForm(f => {
       const cur = Array.isArray(f.categories) ? f.categories : [];
@@ -799,7 +917,10 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
           </Popover>
           <p className="text-xs text-muted-foreground mt-1">Bisa pilih lebih dari satu. Fitur mengikuti setiap kategori yang dipilih.</p>
         </Field>
-        <Field label="Kode *"><Input value={form.code} onChange={e => set('code', e.target.value)} placeholder="SUP-001" /></Field>
+        <Field label="Kode *">
+          <Input value={form.code} onChange={e => { set('code', e.target.value); setCodeAuto(false); }} placeholder="otomatis" />
+          {!editing && codeAuto && <p className="text-xs text-muted-foreground mt-1">Terisi otomatis dari kategori. Bisa diedit.</p>}
+        </Field>
         <Field label="Nama Tampilan *"><Input value={form.displayName} onChange={e => set('displayName', e.target.value)} /></Field>
         <Field label="Nama Perusahaan" className="sm:col-span-2"><Input value={form.companyName || ''} onChange={e => set('companyName', e.target.value)} /></Field>
         {cats.includes('Customer') && (
