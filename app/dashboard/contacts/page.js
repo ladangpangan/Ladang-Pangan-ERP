@@ -13,9 +13,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -38,15 +40,22 @@ const COMMISSION_TYPE_LABEL = {
   percent_profit: '% Profit Bersih',
 };
 
-// Peran efektif (flag baru ATAU tipe lama)
-const isAgentRole = (c) => !!(c?.isAgent || c?.contactType === 'Agen');
-const isDsRole = (c) => !!(c?.isDropshipper || c?.contactType === 'Dropshipper');
+// Kategori efektif kontak (array). Backward-compatible dgn contactType lama.
+const getCats = (c) => {
+  if (Array.isArray(c?.categories) && c.categories.length) return c.categories;
+  if (typeof c?.categories === 'string' && c.categories) {
+    try { const p = JSON.parse(c.categories); if (Array.isArray(p) && p.length) return p; } catch { /* ignore */ }
+  }
+  return c?.contactType ? [c.contactType] : [];
+};
+const hasCat = (c, cat) => getCats(c).includes(cat);
+
+// Peran efektif (kategori ATAU flag lama)
+const isAgentRole = (c) => !!(c?.isAgent || hasCat(c, 'Agen'));
+const isDsRole = (c) => !!(c?.isDropshipper || hasCat(c, 'Dropshipper'));
 const roleLabel = (c) => {
-  const a = isAgentRole(c), d = isDsRole(c);
-  if (a && d) return 'Agen + Dropshipper';
-  if (a) return 'Agen';
-  if (d) return 'Dropshipper';
-  return c?.contactType;
+  const cats = getCats(c);
+  return cats.length ? cats.join(' + ') : (c?.contactType || '-');
 };
 
 const STATUS_COLOR = {
@@ -58,7 +67,7 @@ const STATUS_COLOR = {
 };
 
 const emptyForm = {
-  contactType: 'Supplier', code: '', displayName: '', companyName: '',
+  contactType: 'Customer', categories: ['Customer'], code: '', displayName: '', companyName: '',
   isSubscriber: false, creditLimit: 0, prepaidBalance: 0, taxStatus: '',
   isAgent: false, isDropshipper: false,
   agentDiscountPct: 0, commissionType: 'per_kg', commissionValue: 0,
@@ -102,9 +111,11 @@ export default function ContactsPage() {
   }
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
-  const openEdit = (row) => { setEditing(row); setForm({ ...emptyForm, ...row }); setOpen(true); };
+  const openEdit = (row) => { setEditing(row); setForm({ ...emptyForm, ...row, categories: getCats(row) }); setOpen(true); };
 
   const save = async () => {
+    if (!Array.isArray(form.categories) || form.categories.length === 0) { toast.error('Pilih minimal 1 kategori kontak'); return; }
+    if (!form.code || !form.displayName) { toast.error('Kode & Nama Tampilan wajib diisi'); return; }
     setSaving(true);
     try {
       const method = editing ? 'PATCH' : 'POST';
@@ -176,7 +187,7 @@ export default function ContactsPage() {
               {!isLoading && !error && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Belum ada data</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
-                  <TableCell><Badge variant="secondary" className={TYPE_COLOR[r.contactType]}>{roleLabel(r)}</Badge></TableCell>
+                  <TableCell><div className="flex flex-wrap gap-1">{getCats(r).map(cat => <Badge key={cat} variant="secondary" className={TYPE_COLOR[cat] || 'bg-slate-100 text-slate-700'}>{cat}</Badge>)}</div></TableCell>
                   <TableCell className="font-mono text-xs">{r.code}</TableCell>
                   <TableCell>
                     <div className="font-medium">{r.displayName}</div>
@@ -188,7 +199,7 @@ export default function ContactsPage() {
                     {r.email && <><br /><span className="text-xs text-muted-foreground">{r.email}</span></>}
                   </TableCell>
                   <TableCell className="text-right text-sm">
-                    {r.contactType === 'Customer' && r.isSubscriber ? <span className="text-emerald-600 font-medium">Prepaid: Rp {Number(r.prepaidBalance).toLocaleString('id-ID')}</span> :
+                    {hasCat(r, 'Customer') && r.isSubscriber ? <span className="text-emerald-600 font-medium">Prepaid: Rp {Number(r.prepaidBalance).toLocaleString('id-ID')}</span> :
                       r.creditLimit > 0 ? <span>Limit: Rp {Number(r.creditLimit).toLocaleString('id-ID')}</span> : '-'}
                   </TableCell>
                   <TableCell><Badge variant={r.status === 'active' ? 'default' : 'secondary'}>{r.status}</Badge></TableCell>
@@ -232,7 +243,7 @@ function ContactDetailSheet({ id, onClose }) {
           <>
             <SheetHeader>
               <div className="flex items-center gap-3">
-                <Badge variant="secondary" className={TYPE_COLOR[d.contact.contactType]}>{roleLabel(d.contact)}</Badge>
+                <div className="flex flex-wrap gap-1">{getCats(d.contact).map(cat => <Badge key={cat} variant="secondary" className={TYPE_COLOR[cat] || 'bg-slate-100 text-slate-700'}>{cat}</Badge>)}</div>
                 <SheetTitle className="text-2xl">{d.contact.displayName}</SheetTitle>
               </div>
               <SheetDescription className="font-mono text-xs">{d.contact.code}</SheetDescription>
@@ -283,7 +294,7 @@ function ContactDetailSheet({ id, onClose }) {
                     <InfoRow label="PIC" value={d.contact.picName} />
                     <InfoRow label="PIC Phone" value={d.contact.picPhone} />
                   </InfoGroup>
-                  {d.contact.contactType === 'Customer' && (
+                  {hasCat(d.contact, 'Customer') && (
                     <InfoGroup title="Kredit & Prepaid">
                       <InfoRow label="Subscriber" value={d.contact.isSubscriber ? 'Ya' : 'Tidak'} />
                       <InfoRow label="Credit Limit" value={`Rp ${Number(d.contact.creditLimit || 0).toLocaleString('id-ID')}`} />
@@ -318,10 +329,10 @@ function ContactDetailSheet({ id, onClose }) {
                       <div className="text-lg font-bold mt-1">Rp {Number(d.summary.totalPurchaseAmount).toLocaleString('id-ID')}</div>
                     </div>
                   </div>
-                  {(d.contact.contactType === 'Customer' || isAgent) && (
+                  {(hasCat(d.contact, 'Customer') || isAgent) && (
                     <TransactionList title="Sales Orders" items={d.salesOrders} emptyMsg="Belum ada Sales Order" numberKey="soNumber" dateKey="orderDate" />
                   )}
-                  {['Supplier', 'RPH'].includes(d.contact.contactType) && (
+                  {(hasCat(d.contact, 'Supplier') || hasCat(d.contact, 'RPH')) && (
                     <TransactionList title="Purchase Orders" items={d.purchaseOrders} emptyMsg="Belum ada Purchase Order" numberKey="poNumber" dateKey="orderDate" />
                   )}
                   {d.workOrders.length > 0 && (
@@ -750,6 +761,14 @@ function TransactionList({ title, items, emptyMsg, numberKey, dateKey }) {
 
 function ContactDialog({ form, setForm, onSave, saving, editing }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const cats = Array.isArray(form.categories) ? form.categories : [];
+  const toggleCat = (cat) => {
+    setForm(f => {
+      const cur = Array.isArray(f.categories) ? f.categories : [];
+      const next = cur.includes(cat) ? cur.filter(c => c !== cat) : [...cur, cat];
+      return { ...f, categories: next, contactType: next[0] || '', isAgent: next.includes('Agen'), isDropshipper: next.includes('Dropshipper') };
+    });
+  };
   return (
     <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
       <DialogHeader>
@@ -757,16 +776,33 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
         <DialogDescription>Data master untuk relasi bisnis PT Ladang Pangan Indonesia.</DialogDescription>
       </DialogHeader>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Field label="Tipe *">
-          <Select value={form.contactType} onValueChange={v => set('contactType', v)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>{TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-          </Select>
+        <Field label="Kategori Kontak *" className="sm:col-span-2">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" className="w-full justify-between font-normal h-auto min-h-10 py-2">
+                <span className="flex flex-wrap gap-1 items-center">
+                  {cats.length ? cats.map(c => <Badge key={c} variant="secondary" className={TYPE_COLOR[c] || 'bg-slate-100 text-slate-700'}>{c}</Badge>) : <span className="text-muted-foreground">Pilih kategori...</span>}
+                </span>
+                <ChevronsUpDown className="w-4 h-4 opacity-50 ml-2 shrink-0" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-2" align="start">
+              <div className="space-y-0.5">
+                {TYPES.map(t => (
+                  <label key={t} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-100 cursor-pointer text-sm">
+                    <Checkbox checked={cats.includes(t)} onCheckedChange={() => toggleCat(t)} />
+                    <span className="flex-1">{t}</span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+          <p className="text-xs text-muted-foreground mt-1">Bisa pilih lebih dari satu. Fitur mengikuti setiap kategori yang dipilih.</p>
         </Field>
         <Field label="Kode *"><Input value={form.code} onChange={e => set('code', e.target.value)} placeholder="SUP-001" /></Field>
-        <Field label="Nama Tampilan *" className="sm:col-span-2"><Input value={form.displayName} onChange={e => set('displayName', e.target.value)} /></Field>
+        <Field label="Nama Tampilan *"><Input value={form.displayName} onChange={e => set('displayName', e.target.value)} /></Field>
         <Field label="Nama Perusahaan" className="sm:col-span-2"><Input value={form.companyName || ''} onChange={e => set('companyName', e.target.value)} /></Field>
-        {form.contactType === 'Customer' && (
+        {cats.includes('Customer') && (
           <>
             <Field label="Subscriber (Prepaid)">
               <div className="flex items-center gap-2 h-10">
@@ -781,27 +817,17 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
             )}
           </>
         )}
-        {form.contactType !== 'Customer' && (
+        {(cats.includes('Agen') || cats.includes('Dropshipper')) && (
           <div className="sm:col-span-2 p-3 rounded-lg border bg-slate-50 space-y-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Peran (bisa lebih dari satu)</div>
-            <div className="flex flex-wrap gap-6">
-              <div className="flex items-center gap-2">
-                <Switch checked={isAgentRole(form)} onCheckedChange={v => set('isAgent', v)} disabled={form.contactType === 'Agen'} />
-                <span className="text-sm">Agen <span className="text-xs text-muted-foreground">(harga khusus)</span></span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={isDsRole(form)} onCheckedChange={v => set('isDropshipper', v)} disabled={form.contactType === 'Dropshipper'} />
-                <span className="text-sm">Dropshipper <span className="text-xs text-muted-foreground">(komisi)</span></span>
-              </div>
-            </div>
-            {isAgentRole(form) && (
+            <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Pengaturan Peran</div>
+            {cats.includes('Agen') && (
               <div>
                 <Label className="text-xs">Diskon Khusus Agen (%)</Label>
                 <Input type="number" step="0.1" value={form.agentDiscountPct || 0} onChange={e => set('agentDiscountPct', Number(e.target.value))} placeholder="mis. 5" />
                 <p className="text-xs text-muted-foreground">Diskon otomatis diterapkan saat kontak ini jadi pembeli di Sales Order.</p>
               </div>
             )}
-            {isDsRole(form) && (
+            {cats.includes('Dropshipper') && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs">Tipe Komisi</Label>

@@ -136,9 +136,11 @@ function CreateSODialog({ onSaved }) {
   const router = useRouter();
   const { data: custData } = useSWR('/api/contacts', fetcher);
   const allContacts = custData?.data || [];
-  const isAgentRole = (c) => !!(c?.isAgent || c?.contactType === 'Agen');
-  const isDsRole = (c) => !!(c?.isDropshipper || c?.contactType === 'Dropshipper');
-  const buyers = allContacts.filter(c => c.contactType === 'Customer' || isAgentRole(c));
+  const getCats = (c) => (Array.isArray(c?.categories) && c.categories.length) ? c.categories : (c?.contactType ? [c.contactType] : []);
+  const hasCat = (c, cat) => getCats(c).includes(cat);
+  const isAgentRole = (c) => !!(c?.isAgent || hasCat(c, 'Agen'));
+  const isDsRole = (c) => !!(c?.isDropshipper || hasCat(c, 'Dropshipper'));
+  const buyers = allContacts.filter(c => hasCat(c, 'Customer') || isAgentRole(c));
   const dropshippers = allContacts.filter(c => isDsRole(c) && c.id !== form.customerId);
   const { data: stockData, isLoading: stockLoading } = useSWR('/api/inventory/stocks?status=active&sort=FEFO', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
@@ -196,7 +198,7 @@ function CreateSODialog({ onSaved }) {
   })();
 
   const isDropship = form.fulfillmentType === 'dropship';
-  const suppliers = allContacts.filter(c => c.contactType === 'Supplier');
+  const suppliers = allContacts.filter(c => hasCat(c, 'Supplier'));
   const save = async () => {
     if (!form.customerId) return toast.error('Pilih customer');
     if (isDropship) {

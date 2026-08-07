@@ -36,6 +36,37 @@ function requireRole(session, allowed) {
   return allowed.includes(session.user.role);
 }
 
+// -----------------------
+// Contact categories (multi-select) helpers
+// -----------------------
+const VALID_CATEGORIES = ['Supplier', 'Customer', 'Agen', 'Dropshipper', 'RPH', 'Karyawan', 'Mitra'];
+
+// Parse a contact DB row's categories into an array (backward compatible with legacy contactType).
+function parseCategories(row) {
+  let cats = [];
+  if (row?.categories) {
+    try { cats = JSON.parse(row.categories); } catch { cats = []; }
+  }
+  if (!Array.isArray(cats)) cats = [];
+  if (cats.length === 0 && row?.contactType) cats = [row.contactType];
+  return cats;
+}
+
+// Return an enriched contact object with `categories` array parsed (for API responses).
+function withCategories(row) {
+  if (!row) return row;
+  return { ...row, categories: parseCategories(row) };
+}
+
+// From a POST/PATCH body, compute the categories array (or null if not provided in a partial PATCH).
+function categoriesFromBody(body) {
+  let cats = Array.isArray(body.categories) ? body.categories.filter(c => VALID_CATEGORIES.includes(c)) : null;
+  if ((!cats || cats.length === 0) && body.contactType) cats = [body.contactType];
+  if (cats && cats.length) cats = [...new Set(cats)];
+  return cats && cats.length ? cats : null;
+}
+
+
 export async function OPTIONS() { return cors(new NextResponse(null, { status: 200 })); }
 
 // -----------------------
@@ -215,7 +246,8 @@ async function handleRoute(request, { params }) {
       const now = new Date();
       const upsertContact = (c) => {
         const found = db.select().from(s.contacts).where(eq(s.contacts.code, c.code)).all();
-        if (found.length === 0) db.insert(s.contacts).values({ id: uuidv4(), ...c, createdAt: now, updatedAt: now }).run();
+        const cats = Array.isArray(c.categories) && c.categories.length ? c.categories : (c.contactType ? [c.contactType] : ['Customer']);
+        if (found.length === 0) db.insert(s.contacts).values({ id: uuidv4(), ...c, contactType: cats[0], categories: JSON.stringify(cats), isAgent: cats.includes('Agen'), isDropshipper: cats.includes('Dropshipper'), createdAt: now, updatedAt: now }).run();
       };
       upsertContact({ contactType: 'Supplier', code: 'SUP-001', displayName: 'PT Ayam Sejahtera', companyName: 'PT Ayam Sejahtera', phone: '021-5551001', city: 'Bekasi', taxStatus: 'PKP' });
       upsertContact({ contactType: 'RPH', code: 'RPH-001', displayName: 'RPH Cikarang Prima', companyName: 'RPH Cikarang Prima', phone: '021-5552002', city: 'Cikarang' });
@@ -503,7 +535,6 @@ async function handleRoute(request, { params }) {
       const q = url.searchParams.get('q');
       let query = db.select().from(s.contacts);
       const conds = [];
-      if (type && type !== 'all') conds.push(eq(s.contacts.contactType, type));
       if (q) conds.push(or(
         like(s.contacts.displayName, `%${q}%`),
         like(s.contacts.code, `%${q}%`),
@@ -512,19 +543,29 @@ async function handleRoute(request, { params }) {
         like(s.contacts.picPhone, `%${q}%`),
       ));
       if (conds.length) query = query.where(and(...conds));
-      const rows = query.orderBy(desc(s.contacts.createdAt)).all();
+      let rows = query.orderBy(desc(s.contacts.createdAt)).all().map(withCategories);
+      // Multi-category filter: match if the requested type is among the contact's categories
+      if (type && type !== 'all') rows = rows.filter(r => r.categories.includes(type));
       return json({ data: rows });
     }
     if (route === '/contacts' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
       const body = await request.json();
-      if (!body.contactType || !body.displayName || !body.code) return err('contactType, code, displayName required');
+      const cats = categoriesFromBody(body);
+      if (!cats || !body.displayName || !body.code) return err('categories (minimal 1), code, displayName required');
       const now = new Date();
-      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body };
+      // Derive backward-compatible fields from categories
+      const derived = {
+        contactType: cats[0],
+        categories: JSON.stringify(cats),
+        isAgent: cats.includes('Agen'),
+        isDropshipper: cats.includes('Dropshipper'),
+      };
+      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body, ...derived };
       try {
         db.insert(s.contacts).values(row).run();
-        return json({ data: row }, { status: 201 });
+        return json({ data: withCategories(row) }, { status: 201 });
       } catch (e) { return err('Failed to create: ' + e.message); }
     }
     // Transaction history for a contact
@@ -550,7 +591,7 @@ async function handleRoute(request, { params }) {
       const totalPurchaseAmount = purchaseOrders.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       return json({
         data: {
-          contact,
+          contact: withCategories(contact),
           salesOrders,
           purchaseOrders,
           workOrders,
@@ -570,7 +611,7 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
       if (!row) return err('Not found', 404);
-      return json({ data: row });
+      return json({ data: withCategories(row) });
     }
     if (route.startsWith('/contacts/') && path.length === 2 && (method === 'PATCH' || method === 'PUT')) {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -578,9 +619,19 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt;
+      // If categories (or contactType) provided, recompute derived fields
+      const cats = (Array.isArray(body.categories) || body.contactType) ? categoriesFromBody(body) : null;
+      if (cats) {
+        body.contactType = cats[0];
+        body.categories = JSON.stringify(cats);
+        body.isAgent = cats.includes('Agen');
+        body.isDropshipper = cats.includes('Dropshipper');
+      } else {
+        delete body.categories; // avoid writing a bad value
+      }
       db.update(s.contacts).set({ ...body, updatedAt: new Date() }).where(eq(s.contacts.id, id)).run();
       const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
-      return json({ data: row });
+      return json({ data: withCategories(row) });
     }
     if (route.startsWith('/contacts/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;

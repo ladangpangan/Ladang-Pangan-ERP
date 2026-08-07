@@ -109,6 +109,214 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "Multi-category contacts (categories array) replacing single contactType"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js, /app/lib/db/schema.js, /app/lib/db/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW: contacts can belong to MULTIPLE categories (checklist). categories = JSON array (source of truth). contactType kept as primary (categories[0]) for backward-compat; isAgent/isDropshipper derived from categories.
+          Schema: contacts +categories (TEXT JSON). Migration adds column + idempotent backfill from legacy contact_type + role flags (each contact gets categories=[contact_type, +Agen/+Dropshipper if flags]).
+          Backend:
+          - POST /api/contacts accepts body.categories (array) OR legacy body.contactType. Derives contactType=categories[0], isAgent=includes('Agen'), isDropshipper=includes('Dropshipper'), stores categories JSON. Requires >=1 valid category + code + displayName. Response has categories array.
+          - PATCH /api/contacts: if categories/contactType present, recompute derived fields + categories JSON; else leaves categories untouched. Response has categories array.
+          - GET /api/contacts (list): each row enriched with parsed categories array. ?type=X now filters by MEMBERSHIP in categories (multi-category matches). ?q= search still works.
+          - GET /api/contacts/:id and history: contact enriched with categories array.
+          - Valid categories: Supplier, Customer, Agen, Dropshipper, RPH, Karyawan, Mitra.
+          TEST: (1) POST with categories:['Customer','Supplier'] → 201, categories persisted, contactType='Customer', isAgent/isDropshipper false. (2) GET ?type=Supplier returns that contact (multi-membership). GET ?type=Customer also returns it. (3) POST categories:['Agen','Dropshipper'] → isAgent=true,isDropshipper=true, agentDiscountPct + commission fields persist. (4) PATCH categories change → derived fields + filters update. (5) legacy POST with only contactType still works (categories=[contactType]). (6) POST with empty/invalid categories → 400. (7) RBAC operator POST → 403.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ MULTI-CATEGORY CONTACTS FEATURE - ALL TESTS PASSED (8/8, 100%)
+          
+          Comprehensive backend testing completed for the NEW multi-category contacts feature.
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Multi-category create (Customer + Supplier) - PASSED
+             - POST /api/contacts {categories:['Customer','Supplier'], code:'MC-DUAL1', displayName:'Dual CS', creditLimit:1000000} → 201
+             - Response.data.categories == ['Customer','Supplier'] ✓
+             - contactType == 'Customer' (first category) ✓
+             - isAgent == false ✓
+             - isDropshipper == false ✓
+             - Contact ID: 722a1a27-c71d-4ef3-8646-1e22b2a27b60
+             - Contact Code: MC-DUAL1-190209
+          
+          ✅ TEST 2 — Membership filter - PASSED (3/3 sub-tests)
+             - GET /api/contacts?type=Supplier → MC-DUAL1 IS present ✓
+               * Multi-category membership filter working correctly
+               * Contact matches via categories membership even though contactType is 'Customer'
+             - GET /api/contacts?type=Customer → MC-DUAL1 also present ✓
+             - GET /api/contacts?type=RPH → MC-DUAL1 NOT present ✓
+             - **CRITICAL VERIFICATION**: Multi-category filter works by MEMBERSHIP, not just contactType
+          
+          ✅ TEST 3 — Agen + Dropshipper create with role fields - PASSED
+             - POST /api/contacts {categories:['Agen','Dropshipper'], code:'MC-AD1', displayName:'Agen Drop 1', agentDiscountPct:7, commissionType:'per_kg', commissionValue:200} → 201
+             - Response.data.categories == ['Agen','Dropshipper'] ✓
+             - contactType == 'Agen' (first category) ✓
+             - isAgent == true ✓
+             - isDropshipper == true ✓
+             - agentDiscountPct == 7 ✓
+             - commissionType == 'per_kg' ✓
+             - commissionValue == 200 ✓
+             - GET /api/contacts?type=Dropshipper includes MC-AD1 ✓
+             - GET /api/contacts?type=Agen includes MC-AD1 ✓
+             - **Both role fields coexist on same contact**
+          
+          ✅ TEST 4 — PATCH categories change updates derived + filters - PASSED
+             - PATCH /api/contacts/{MC-DUAL1 id} {categories:['Customer','Agen']} → 200
+             - Response.data.categories == ['Customer','Agen'] ✓
+             - contactType == 'Customer' (still first category) ✓
+             - isAgent == true (updated from false) ✓
+             - isDropshipper == false (updated from false) ✓
+             - GET /api/contacts?type=Supplier → MC-DUAL1 NOT present anymore ✓
+             - GET /api/contacts?type=Agen → MC-DUAL1 present now ✓
+             - **CRITICAL**: Categories change updates derived flags AND filter membership
+          
+          ✅ TEST 5 — Legacy create (contactType only, no categories) - PASSED
+             - POST /api/contacts {contactType:'RPH', code:'MC-LEG1', displayName:'Legacy RPH'} → 201
+             - Response.data.categories == ['RPH'] ✓
+             - contactType == 'RPH' ✓
+             - **Backward compatibility maintained**: contactType auto-creates categories array
+          
+          ✅ TEST 6 — Validation - PASSED (3/3 sub-tests)
+             - POST /api/contacts {categories:[], code:'MC-BAD1', displayName:'Bad'} → 400 ✓
+               * Empty categories array rejected
+             - POST /api/contacts {categories:['NotAReal'], code:'MC-BAD2', displayName:'Bad2'} → 400 ✓
+               * Invalid category filtered out → empty → rejected
+             - POST /api/contacts {categories:['Customer'], displayName:'NoCode'} (missing code) → 400 ✓
+               * Missing required field rejected
+             - **All validation rules enforced correctly**
+          
+          ✅ TEST 7 — RBAC - PASSED
+             - operator POST /api/contacts {categories:['Customer'], code:'MC-OP1', displayName:'Op'} → 403 ✓
+             - **Role-based access control working correctly**
+          
+          ✅ TEST 8 — Backfill sanity - PASSED
+             - GET /api/contacts (list) → 20 contacts returned
+             - **Every returned contact has a non-empty categories array** ✓
+             - Backfill migration working correctly
+             - All legacy contacts have categories populated from contact_type + role flags
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Multi-category functionality**:
+          - Contacts can belong to MULTIPLE categories via categories JSON array
+          - categories is the source of truth
+          - contactType kept as primary (categories[0]) for backward compatibility
+          - isAgent and isDropshipper derived from categories membership
+          - Valid categories: Supplier, Customer, Agen, Dropshipper, RPH, Karyawan, Mitra
+          
+          ✅ **Filter behavior (CRITICAL)**:
+          - GET /api/contacts?type=X filters by MEMBERSHIP in categories array
+          - A contact with categories=['Customer','Supplier'] appears in BOTH filters
+          - This is the core requirement and it works perfectly
+          - Filter logic: rows.filter(r => r.categories.includes(type))
+          
+          ✅ **Derived fields**:
+          - contactType = categories[0] (first category)
+          - isAgent = categories.includes('Agen')
+          - isDropshipper = categories.includes('Dropshipper')
+          - All derived fields update correctly when categories change
+          
+          ✅ **Role fields coexistence**:
+          - A single contact can have BOTH agentDiscountPct AND commissionType/Value
+          - Agen + Dropshipper dual-role working correctly
+          - Both role-specific fields persist and function
+          
+          ✅ **Backward compatibility**:
+          - Legacy POST with only contactType still works
+          - contactType auto-creates categories=[contactType]
+          - Existing code using contactType continues to work
+          
+          ✅ **Validation**:
+          - Empty categories array rejected (400)
+          - Invalid categories filtered out (if all invalid → 400)
+          - Required fields enforced (code, displayName, categories)
+          - All validation rules working correctly
+          
+          ✅ **RBAC**:
+          - Admin & Supervisor: can create/update contacts
+          - Operator: cannot create contacts (403)
+          - Role checks enforced correctly
+          
+          ✅ **Backfill migration**:
+          - All existing contacts have categories array populated
+          - Backfill logic: categories=[contact_type, +Agen if is_agent, +Dropshipper if is_dropshipper]
+          - Idempotent migration (only updates NULL/empty categories)
+          - 20 contacts tested, all have non-empty categories
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          TEST 1 (Multi-category create):
+          - categories: ['Customer','Supplier']
+          - contactType: 'Customer'
+          - isAgent: false (0)
+          - isDropshipper: false (0)
+          - creditLimit: 1000000
+          
+          TEST 2 (Membership filter):
+          - MC-DUAL1 found in Supplier filter: ✓
+          - MC-DUAL1 found in Customer filter: ✓
+          - MC-DUAL1 NOT in RPH filter: ✓
+          
+          TEST 3 (Agen + Dropshipper):
+          - categories: ['Agen','Dropshipper']
+          - contactType: 'Agen'
+          - isAgent: true (1)
+          - isDropshipper: true (1)
+          - agentDiscountPct: 7
+          - commissionType: 'per_kg'
+          - commissionValue: 200
+          
+          TEST 4 (PATCH categories):
+          - Before: categories=['Customer','Supplier'], isAgent=false
+          - After: categories=['Customer','Agen'], isAgent=true
+          - Supplier filter: MC-DUAL1 removed ✓
+          - Agen filter: MC-DUAL1 added ✓
+          
+          TEST 5 (Legacy):
+          - Input: contactType='RPH' (no categories field)
+          - Output: categories=['RPH'], contactType='RPH'
+          
+          TEST 6 (Validation):
+          - Empty categories: 400 ✓
+          - Invalid category: 400 ✓
+          - Missing code: 400 ✓
+          
+          TEST 7 (RBAC):
+          - Operator POST: 403 ✓
+          
+          TEST 8 (Backfill):
+          - Total contacts: 20
+          - Contacts with empty categories: 0 ✓
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All multi-category contacts features working correctly.
+          Multi-category membership filter working as designed.
+          Derived fields update correctly.
+          Backward compatibility maintained.
+          All validation rules enforced.
+          RBAC working correctly.
+          Backfill migration successful.
+          
+          Test Coverage: 8/8 tests passed (100%)
+          - Multi-category create: ✓
+          - Membership filter: ✓
+          - Agen + Dropshipper dual-role: ✓
+          - PATCH categories change: ✓
+          - Legacy create: ✓
+          - Validation: ✓
+          - RBAC: ✓
+          - Backfill sanity: ✓
+
   - task: "Google Maps link (mapsUrl) on contacts + end-customers"
     implemented: true
     working: true
@@ -6266,11 +6474,12 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Google Maps link (mapsUrl) on contacts + end-customers - TESTED & WORKING"
+    - "Multi-category contacts (categories array) - TESTED & WORKING"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
   _archived_focus:
+    - "Google Maps link (mapsUrl) on contacts + end-customers - TESTED & WORKING"
     - "End-Customer link to existing Customer contact (linkedContactId) - TESTED & WORKING"
     - "Dropship SO UI + SJ shipped weight + Invoice weight basis (BLOCKED BY BUG)"
     - "Verify wo-stages CRUD endpoints (create/read/update/delete)"
@@ -6838,3 +7047,165 @@ agent_communication:
       LIVE reference behavior verified and working as designed.
       Test Coverage: 3/3 (100%)
 
+
+
+
+  - agent: "main"
+    message: |
+      NEW BACKEND FEATURE TO TEST: Multi-category contacts (categories array).
+      
+      Login: admin@lpi.co.id / admin123 (Better Auth, session-cookie). RBAC check with operator@lpi.co.id / operator123.
+      
+      Valid categories: Supplier, Customer, Agen, Dropshipper, RPH, Karyawan, Mitra.
+      
+      Do NOT retest unrelated modules. Focus ONLY on the contacts categories behavior:
+      
+      TEST 1 — Multi-category create (Customer + Supplier):
+        - POST /api/contacts {categories:['Customer','Supplier'], code:'MC-DUAL1', displayName:'Dual CS', creditLimit:1000000} → expect 201.
+        - Response.data.categories == ['Customer','Supplier']; contactType == 'Customer'; isAgent == false; isDropshipper == false.
+      
+      TEST 2 — Membership filter:
+        - GET /api/contacts?type=Supplier → the MC-DUAL1 contact IS present (matches via categories membership, even though contactType is 'Customer').
+        - GET /api/contacts?type=Customer → MC-DUAL1 also present.
+        - GET /api/contacts?type=RPH → MC-DUAL1 NOT present.
+      
+      TEST 3 — Agen + Dropshipper create with role fields:
+        - POST /api/contacts {categories:['Agen','Dropshipper'], code:'MC-AD1', displayName:'Agen Drop 1', agentDiscountPct:7, commissionType:'per_kg', commissionValue:200} → 201.
+        - Response: categories==['Agen','Dropshipper']; contactType=='Agen'; isAgent==true; isDropshipper==true; agentDiscountPct==7; commissionType=='per_kg'; commissionValue==200.
+        - GET /api/contacts?type=Dropshipper includes MC-AD1; GET ?type=Agen includes MC-AD1.
+      
+      TEST 4 — PATCH categories change updates derived + filters:
+        - PATCH /api/contacts/{MC-DUAL1 id} {categories:['Customer','Agen']} → Response categories==['Customer','Agen'], contactType=='Customer', isAgent==true, isDropshipper==false.
+        - GET /api/contacts?type=Supplier → MC-DUAL1 NOT present anymore. GET ?type=Agen → MC-DUAL1 present now.
+      
+      TEST 5 — Legacy create (contactType only, no categories):
+        - POST /api/contacts {contactType:'RPH', code:'MC-LEG1', displayName:'Legacy RPH'} → 201, Response.data.categories == ['RPH'], contactType=='RPH'.
+      
+      TEST 6 — Validation:
+        - POST /api/contacts {categories:[], code:'MC-BAD1', displayName:'Bad'} → expect 400 (no valid category).
+        - POST /api/contacts {categories:['NotAReal'], code:'MC-BAD2', displayName:'Bad2'} → expect 400 (invalid category filtered out → empty).
+        - POST /api/contacts {categories:['Customer'], displayName:'NoCode'} (missing code) → expect 400.
+      
+      TEST 7 — RBAC:
+        - operator POST /api/contacts {categories:['Customer'], code:'MC-OP1', displayName:'Op'} → 403.
+      
+      TEST 8 — Backfill sanity:
+        - GET /api/contacts (list) → every returned contact has a non-empty categories array (backfilled from legacy contact_type). Report if any row has empty/missing categories.
+      
+      Report pass/fail per test with actual observed categories arrays and derived flag values.
+
+  - agent: "testing"
+    message: |
+      ✅ MULTI-CATEGORY CONTACTS FEATURE - ALL TESTS PASSED (8/8, 100%)
+      
+      **SUMMARY:**
+      ✅ TEST 1 (Multi-category create) - PASSED
+      ✅ TEST 2 (Membership filter) - PASSED
+      ✅ TEST 3 (Agen + Dropshipper dual-role) - PASSED
+      ✅ TEST 4 (PATCH categories change) - PASSED
+      ✅ TEST 5 (Legacy create) - PASSED
+      ✅ TEST 6 (Validation) - PASSED
+      ✅ TEST 7 (RBAC) - PASSED
+      ✅ TEST 8 (Backfill sanity) - PASSED
+      
+      **DETAILED TEST RESULTS:**
+      
+      ✅ TEST 1 — Multi-category create (Customer + Supplier):
+         - POST /api/contacts {categories:['Customer','Supplier'], code:'MC-DUAL1-190209', displayName:'Dual CS', creditLimit:1000000} → 201 ✓
+         - Response.data.categories == ['Customer','Supplier'] ✓
+         - contactType == 'Customer' (first category) ✓
+         - isAgent == false ✓
+         - isDropshipper == false ✓
+         - Contact ID: 722a1a27-c71d-4ef3-8646-1e22b2a27b60
+      
+      ✅ TEST 2 — Membership filter (3/3 sub-tests):
+         - GET /api/contacts?type=Supplier → MC-DUAL1 IS present ✓
+           * **CRITICAL**: Multi-category membership filter working
+           * Contact matches via categories membership even though contactType is 'Customer'
+         - GET /api/contacts?type=Customer → MC-DUAL1 also present ✓
+         - GET /api/contacts?type=RPH → MC-DUAL1 NOT present ✓
+      
+      ✅ TEST 3 — Agen + Dropshipper create with role fields:
+         - POST /api/contacts {categories:['Agen','Dropshipper'], code:'MC-AD1-190210', displayName:'Agen Drop 1', agentDiscountPct:7, commissionType:'per_kg', commissionValue:200} → 201 ✓
+         - categories == ['Agen','Dropshipper'] ✓
+         - contactType == 'Agen' ✓
+         - isAgent == true ✓
+         - isDropshipper == true ✓
+         - agentDiscountPct == 7 ✓
+         - commissionType == 'per_kg' ✓
+         - commissionValue == 200 ✓
+         - GET /api/contacts?type=Dropshipper includes MC-AD1 ✓
+         - GET /api/contacts?type=Agen includes MC-AD1 ✓
+      
+      ✅ TEST 4 — PATCH categories change updates derived + filters:
+         - PATCH /api/contacts/{MC-DUAL1 id} {categories:['Customer','Agen']} → 200 ✓
+         - categories == ['Customer','Agen'] ✓
+         - contactType == 'Customer' ✓
+         - isAgent == true (updated from false) ✓
+         - isDropshipper == false ✓
+         - GET /api/contacts?type=Supplier → MC-DUAL1 NOT present anymore ✓
+         - GET /api/contacts?type=Agen → MC-DUAL1 present now ✓
+         - **CRITICAL**: Categories change updates derived flags AND filter membership
+      
+      ✅ TEST 5 — Legacy create (contactType only):
+         - POST /api/contacts {contactType:'RPH', code:'MC-LEG1-190211', displayName:'Legacy RPH'} → 201 ✓
+         - categories == ['RPH'] (auto-created from contactType) ✓
+         - contactType == 'RPH' ✓
+         - **Backward compatibility maintained**
+      
+      ✅ TEST 6 — Validation (3/3 sub-tests):
+         - POST {categories:[], code:'MC-BAD1', displayName:'Bad'} → 400 ✓
+         - POST {categories:['NotAReal'], code:'MC-BAD2', displayName:'Bad2'} → 400 ✓
+         - POST {categories:['Customer'], displayName:'NoCode'} (missing code) → 400 ✓
+      
+      ✅ TEST 7 — RBAC:
+         - operator POST /api/contacts {categories:['Customer'], code:'MC-OP1', displayName:'Op'} → 403 ✓
+      
+      ✅ TEST 8 — Backfill sanity:
+         - GET /api/contacts → 20 contacts returned
+         - **All 20 contacts have non-empty categories array** ✓
+         - Backfill migration working correctly
+      
+      **KEY FINDINGS:**
+      
+      ✅ **Multi-category functionality**:
+      - Contacts can belong to MULTIPLE categories via categories JSON array
+      - categories is the source of truth
+      - contactType kept as primary (categories[0]) for backward compatibility
+      - isAgent and isDropshipper derived from categories membership
+      
+      ✅ **Filter behavior (CRITICAL)**:
+      - GET /api/contacts?type=X filters by MEMBERSHIP in categories array
+      - A contact with categories=['Customer','Supplier'] appears in BOTH filters
+      - This is the core requirement and it works perfectly
+      
+      ✅ **Derived fields**:
+      - contactType = categories[0]
+      - isAgent = categories.includes('Agen')
+      - isDropshipper = categories.includes('Dropshipper')
+      - All derived fields update correctly when categories change
+      
+      ✅ **Role fields coexistence**:
+      - A single contact can have BOTH agentDiscountPct AND commissionType/Value
+      - Agen + Dropshipper dual-role working correctly
+      
+      ✅ **Backward compatibility**:
+      - Legacy POST with only contactType still works
+      - contactType auto-creates categories=[contactType]
+      
+      ✅ **Validation**:
+      - Empty categories array rejected (400)
+      - Invalid categories filtered out (if all invalid → 400)
+      - Required fields enforced
+      
+      ✅ **RBAC**:
+      - Admin & Supervisor: can create/update contacts
+      - Operator: cannot create contacts (403)
+      
+      ✅ **Backfill migration**:
+      - All existing contacts have categories array populated
+      - Idempotent migration working correctly
+      
+      **NO CRITICAL ISSUES FOUND**
+      All multi-category contacts features working correctly.
+      Test Coverage: 8/8 (100%)
