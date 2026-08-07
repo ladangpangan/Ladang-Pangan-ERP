@@ -109,6 +109,99 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "Auto-generate contact code + Contact document uploads (NPWP/Akta/SK/KTP)"
+    implemented: true
+    working: false
+    file: "/app/app/api/[[...path]]/route.js, /app/lib/db/schema.js, /app/lib/db/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW A) Auto-generate contact code (editable):
+          - GET /api/contacts/next-code?category=Supplier → {code} e.g. 'SUP-001' (prefix map: Supplier→SUP, Customer→CUST, Agen→AGN, Dropshipper→DS, RPH→RPH, Karyawan→EMP, Mitra→MTR). Next number = max existing suffix for that prefix + 1 (padStart 3), guaranteed unique.
+          - POST /api/contacts: if body.code empty/missing → auto-generates from categories[0]. If provided → used as-is (still unique-constrained by DB). code no longer strictly required in body (displayName + >=1 category still required).
+          NEW B) Contact documents (optional legal docs):
+          - Schema: new table contact_documents (id, contact_id FK cascade, doc_type, file_name, stored_name, mime_type, size, uploaded_by, created_at). Files stored on disk at /app/data/uploads/contacts/:contactId/ (persistent).
+          - POST /api/contacts/:id/documents  → multipart/form-data {file, docType}. docType must be one of NPWP|Akta Perusahaan|SK Perusahaan|KTP|Lainnya (else coerced to 'Lainnya'). Max 10MB, rejects empty. 201 with metadata row. admin/supervisor only.
+          - GET /api/contacts/:id/documents → list metadata (admin/supervisor/direktur).
+          - GET /api/contacts/:id/documents/:docId/file → streams file inline with correct Content-Type (admin/supervisor/direktur).
+          - DELETE /api/contacts/:id/documents/:docId → removes DB row + file from disk (admin/supervisor).
+          TEST: (A) next-code for a couple categories returns correct prefix + increments; POST without code auto-generates; POST with explicit code keeps it; duplicate explicit code → error. (B) upload a small file (use multipart, e.g. a tiny .txt/.png bytes) → 201; GET list shows it; GET /file returns bytes with content-type; DELETE removes it; RBAC: operator upload → 403, direktur upload → 403, direktur GET list → 200; invalid docType coerced to 'Lainnya'; >10MB rejected (can simulate with a large buffer if feasible, otherwise skip size test).
+      
+      - working: false
+        agent: "testing"
+        comment: |
+          ✅ FEATURE A (Auto-generate contact code): ALL TESTS PASSED (6/6, 100%)
+          ❌ FEATURE B (Contact document uploads): BLOCKED BY CRITICAL BUG
+          
+          === FEATURE A: AUTO-GENERATE CONTACT CODE - WORKING ===
+          
+          Tested via curl (Python requests had session cookie issues with Secure flag over HTTP localhost).
+          
+          ✅ A1: GET /api/contacts/next-code?category=Supplier → 200, code='SUP-001' (matches ^SUP-\d{3}$)
+          ✅ A2: GET /api/contacts/next-code?category=Customer → 200, code='CUST-002' (matches ^CUST-\d{3}$)
+          ✅ A3: POST /api/contacts WITHOUT code → 201, auto-generated code='SUP-001' (matches pattern)
+          ✅ A4: GET next-code again → 200, code='SUP-002' (incremented from SUP-001)
+          ✅ A5: POST WITH explicit code='TEST-EXPLICIT-001' → 201, code preserved as-is
+          ✅ A6: POST duplicate code → 400 "UNIQUE constraint failed: contacts.code" (correctly rejected)
+          
+          **All auto-generate contact code features working correctly.**
+          
+          === FEATURE B: CONTACT DOCUMENT UPLOADS - CRITICAL BUG FOUND ===
+          
+          ❌ **CRITICAL BUG in /app/app/api/[[...path]]/route.js line 106:**
+          
+          **Root Cause:** Variable shadowing issue
+          - Line 4: `import path from 'path';` (Node.js path module)
+          - Line 106: `const { path = [] } = await params;` (route params array)
+          - The route params `path` variable shadows the imported `path` module
+          - All `path.join()` calls in the file use the array instead of the Node.js module
+          - This causes file path construction to fail with garbled paths
+          
+          **Error observed:**
+          ```
+          ENOENT: no such file or directory, open 'contactscontacts/app/data/uploads/contacts7b668f03.../app/data/uploads/contactsdocuments...'
+          ```
+          
+          **Impact:**
+          - POST /api/contacts/:id/documents → 500 error (cannot write file)
+          - All document upload functionality broken
+          - GET/DELETE endpoints also affected
+          
+          **Fix Required:**
+          Rename the route params variable from `path` to avoid shadowing:
+          ```javascript
+          // Line 106 - BEFORE (broken):
+          const { path = [] } = await params;
+          
+          // Line 106 - AFTER (fixed):
+          const { path: pathSegments = [] } = await params;
+          
+          // Line 107 - Update usage:
+          const route = '/' + pathSegments.join('/');
+          ```
+          
+          **Test Results:**
+          - B1: Upload with docType='NPWP' → 500 error (path construction fails)
+          - B2: GET documents list → 200 but empty (no docs uploaded due to B1 failure)
+          - B3: GET document file → 404 (no document exists)
+          - B4: Upload with invalid docType → 500 error (same path issue)
+          - B5: Upload with NO file → 400 "File wajib diunggah" ✓ (validation works)
+          - B6: DELETE document → 404 (no document to delete)
+          
+          **Schema & Logic Verification:**
+          ✅ contact_documents table exists in schema
+          ✅ ALLOWED_DOC_TYPES array correct: ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya']
+          ✅ CONTACT_DOCS_ROOT path correct: /app/data/uploads/contacts
+          ✅ File validation logic correct (size, type, empty check)
+          ✅ RBAC checks in place (admin/supervisor for write, direktur for read)
+          ✅ Multipart form-data handling implemented
+          
+          **The implementation is correct except for the variable shadowing bug.**
+
   - task: "Multi-category contacts (categories array) replacing single contactType"
     implemented: true
     working: true

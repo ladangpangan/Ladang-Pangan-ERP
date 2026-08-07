@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
 import { eq, and, like, or, desc, sql, inArray, isNotNull } from 'drizzle-orm';
 import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
@@ -65,6 +67,34 @@ function categoriesFromBody(body) {
   if (cats && cats.length) cats = [...new Set(cats)];
   return cats && cats.length ? cats : null;
 }
+
+// Auto-generate a contact code based on its primary category, e.g. SUP-001, CUST-002.
+const CONTACT_CODE_PREFIX = { Supplier: 'SUP', Customer: 'CUST', Agen: 'AGN', Dropshipper: 'DS', RPH: 'RPH', Karyawan: 'EMP', Mitra: 'MTR' };
+function generateContactCode(db, category) {
+  const prefix = CONTACT_CODE_PREFIX[category] || 'CT';
+  const rows = db.select({ code: s.contacts.code }).from(s.contacts).all();
+  const existing = new Set(rows.map(r => r.code));
+  const re = new RegExp('^' + prefix + '-(\\d+)$');
+  let max = 0;
+  for (const r of rows) { const m = re.exec(r.code || ''); if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; } }
+  let n = max + 1;
+  let code = `${prefix}-${String(n).padStart(3, '0')}`;
+  while (existing.has(code)) { n++; code = `${prefix}-${String(n).padStart(3, '0')}`; }
+  return code;
+}
+
+// Root dir for uploaded contact documents (persistent, same volume as erp.db)
+const CONTACT_DOCS_ROOT = path.join(process.cwd(), 'data', 'uploads', 'contacts');
+const ALLOWED_DOC_TYPES = ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya'];
+
+// Safely resolve a stored document path inside CONTACT_DOCS_ROOT (guards against path traversal).
+function path_join_safe(contactId, storedName) {
+  const base = path.join(CONTACT_DOCS_ROOT, String(contactId));
+  const resolved = path.join(base, path.basename(String(storedName)));
+  if (!resolved.startsWith(base)) return null;
+  return resolved;
+}
+
 
 
 export async function OPTIONS() { return cors(new NextResponse(null, { status: 200 })); }
@@ -548,13 +578,21 @@ async function handleRoute(request, { params }) {
       if (type && type !== 'all') rows = rows.filter(r => r.categories.includes(type));
       return json({ data: rows });
     }
+    if (route === '/contacts/next-code' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const category = new URL(request.url).searchParams.get('category') || 'Customer';
+      return json({ code: generateContactCode(db, category) });
+    }
     if (route === '/contacts' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
       const body = await request.json();
       const cats = categoriesFromBody(body);
-      if (!cats || !body.displayName || !body.code) return err('categories (minimal 1), code, displayName required');
+      if (!cats || !body.displayName) return err('categories (minimal 1) & displayName required');
       const now = new Date();
+      // Auto-generate code if not provided (editable by user before submit)
+      if (!body.code || !String(body.code).trim()) body.code = generateContactCode(db, cats[0]);
       // Derive backward-compatible fields from categories
       const derived = {
         contactType: cats[0],
@@ -738,6 +776,77 @@ async function handleRoute(request, { params }) {
       db.delete(s.contactCustomers).where(eq(s.contactCustomers.id, cid)).run();
       return json({ ok: true });
     }
+
+    // ---------- CONTACT DOCUMENTS (dokumen legal opsional) ----------
+    // GET /contacts/:id/documents/:docId/file  → stream/preview the file
+    if (route.startsWith('/contacts/') && path.length === 5 && path[2] === 'documents' && path[4] === 'file' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1]; const docId = path[3];
+      const doc = db.select().from(s.contactDocuments).where(and(eq(s.contactDocuments.id, docId), eq(s.contactDocuments.contactId, id))).get();
+      if (!doc) return err('Dokumen tidak ditemukan', 404);
+      const filePath = path_join_safe(id, doc.storedName);
+      if (!filePath || !fs.existsSync(filePath)) return err('File tidak ada di server', 404);
+      const buf = fs.readFileSync(filePath);
+      const res = new NextResponse(buf, { status: 200, headers: {
+        'Content-Type': doc.mimeType || 'application/octet-stream',
+        'Content-Disposition': `inline; filename="${encodeURIComponent(doc.fileName)}"`,
+        'Content-Length': String(buf.length),
+      } });
+      return cors(res);
+    }
+    // GET /contacts/:id/documents  → list metadata
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'documents' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const rows = db.select().from(s.contactDocuments).where(eq(s.contactDocuments.contactId, id)).orderBy(desc(s.contactDocuments.createdAt)).all();
+      return json({ data: rows });
+    }
+    // POST /contacts/:id/documents  → multipart upload {file, docType}
+    if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'documents' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const id = path[1];
+      const parent = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!parent) return err('Kontak tidak ditemukan', 404);
+      let formData;
+      try { formData = await request.formData(); } catch (e) { return err('Body harus multipart/form-data'); }
+      const file = formData.get('file');
+      let docType = formData.get('docType') || 'Lainnya';
+      if (!file || typeof file === 'string' || typeof file.arrayBuffer !== 'function') return err('File wajib diunggah');
+      if (!ALLOWED_DOC_TYPES.includes(docType)) docType = 'Lainnya';
+      const bytes = Buffer.from(await file.arrayBuffer());
+      if (bytes.length === 0) return err('File kosong');
+      if (bytes.length > 10 * 1024 * 1024) return err('Ukuran file maksimal 10MB');
+      const dir = path.join(CONTACT_DOCS_ROOT, id);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
+      const safeName = String(file.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storedName = `${uuidv4()}_${safeName}`;
+      fs.writeFileSync(path.join(dir, storedName), bytes);
+      const now = new Date();
+      const row = {
+        id: uuidv4(), contactId: id, docType,
+        fileName: file.name || safeName, storedName,
+        mimeType: file.type || 'application/octet-stream', size: bytes.length,
+        uploadedBy: session.user?.email || session.user?.id || null, createdAt: now,
+      };
+      db.insert(s.contactDocuments).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+    // DELETE /contacts/:id/documents/:docId
+    if (route.startsWith('/contacts/') && path.length === 4 && path[2] === 'documents' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const id = path[1]; const docId = path[3];
+      const doc = db.select().from(s.contactDocuments).where(and(eq(s.contactDocuments.id, docId), eq(s.contactDocuments.contactId, id))).get();
+      if (!doc) return err('Dokumen tidak ditemukan', 404);
+      const filePath = path_join_safe(id, doc.storedName);
+      try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
+      db.delete(s.contactDocuments).where(eq(s.contactDocuments.id, docId)).run();
+      return json({ ok: true });
+    }
+
 
     // ---------- DROPSHIPPER COMMISSIONS ----------
     // GET /contacts/:id/commissions - list records + payments + summary
