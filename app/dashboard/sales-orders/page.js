@@ -38,6 +38,7 @@ const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
+  dropshipperId: '', commissionType: '', commissionValue: 0,
   orderDate: new Date().toISOString().slice(0,10),
   expectedDate: '',
   dpAmount: 0, paymentTerm: 'TOP 14',
@@ -132,7 +133,10 @@ function CreateSODialog({ onSaved }) {
   const [saving, setSaving] = useState(false);
   const [stockPickerFor, setStockPickerFor] = useState(null); // index of item currently picking
   const router = useRouter();
-  const { data: custData } = useSWR('/api/contacts?type=Customer', fetcher);
+  const { data: custData } = useSWR('/api/contacts', fetcher);
+  const allContacts = custData?.data || [];
+  const buyers = allContacts.filter(c => ['Customer', 'Agen'].includes(c.contactType));
+  const dropshippers = allContacts.filter(c => c.contactType === 'Dropshipper');
   const { data: stockData, isLoading: stockLoading } = useSWR('/api/inventory/stocks?status=active&sort=FEFO', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -168,10 +172,25 @@ function CreateSODialog({ onSaved }) {
     updItem(idx, emptyItem());
   };
 
-  const selectedCust = (custData?.data || []).find(c => c.id === form.customerId);
+  const selectedCust = allContacts.find(c => c.id === form.customerId);
+  const selectedDs = allContacts.find(c => c.id === form.dropshipperId);
+  const agentPct = selectedCust?.contactType === 'Agen' ? Number(selectedCust.agentDiscountPct || 0) : 0;
+  const itemDiscount = (it) => agentPct > 0
+    ? Math.round(Number(it.unitPrice || 0) * Number(it.weight || 0) * agentPct / 100)
+    : Number(it.discount || 0);
   const subtotal = form.items.reduce((a, it) => a + (Number(it.unitPrice) * Number(it.weight || it.quantity)), 0);
-  const discountTotal = form.items.reduce((a, it) => a + Number(it.discount || 0), 0);
+  const discountTotal = form.items.reduce((a, it) => a + itemDiscount(it), 0);
   const total = subtotal - discountTotal;
+  const totalWeight = form.items.reduce((a, it) => a + Number(it.weight || 0), 0);
+  // Preview komisi (per_kg & fixed dihitung di klien; percent_profit dihitung server saat simpan)
+  const commissionPreview = (() => {
+    if (!form.dropshipperId) return null;
+    const type = form.commissionType || selectedDs?.commissionType || 'per_kg';
+    const value = Number(form.commissionValue || selectedDs?.commissionValue || 0);
+    if (type === 'per_kg') return { type, amount: Math.round(value * totalWeight) };
+    if (type === 'fixed') return { type, amount: Math.round(value) };
+    return { type, amount: null }; // percent_profit
+  })();
 
   const save = async () => {
     if (!form.customerId) return toast.error('Pilih customer');
@@ -187,13 +206,14 @@ function CreateSODialog({ onSaved }) {
     try {
       const payload = {
         ...form,
+        commissionValue: Number(form.commissionValue || 0),
         items: form.items.map(it => ({
           stockId: it.stockId,
           productId: it.productId,
           quantity: Number(it.quantity || 0),
           weight: Number(it.weight || 0),
           unitPrice: Number(it.unitPrice || 0),
-          discount: Number(it.discount || 0),
+          discount: itemDiscount(it),
         })),
       };
       const res = await fetch('/api/sales-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -214,18 +234,60 @@ function CreateSODialog({ onSaved }) {
         <DialogDescription>Pilih <b>Kode Simpan</b> dari inventory. Stok otomatis dipotong saat status → <b>Confirmed</b>.</DialogDescription>
       </DialogHeader>
       <div className="grid sm:grid-cols-2 gap-4">
-        <F label="Customer *" className="sm:col-span-2">
+        <F label="Pembeli (Customer / Agen) *" className="sm:col-span-2">
           <Select value={form.customerId} onValueChange={v => upd('customerId', v)}>
-            <SelectTrigger><SelectValue placeholder="Pilih customer" /></SelectTrigger>
-            <SelectContent>{(custData?.data || []).map(c => (
+            <SelectTrigger><SelectValue placeholder="Pilih customer / agen" /></SelectTrigger>
+            <SelectContent>{buyers.map(c => (
               <SelectItem key={c.id} value={c.id}>
-                {c.code} - {c.displayName} {c.isSubscriber ? '(Subscriber)' : ''}
+                {c.code} - {c.displayName} {c.contactType === 'Agen' ? '(Agen)' : c.isSubscriber ? '(Subscriber)' : ''}
               </SelectItem>
             ))}</SelectContent>
           </Select>
           {selectedCust?.isSubscriber && (
             <div className="text-xs mt-1 text-emerald-700">
               Prepaid balance: Rp {Number(selectedCust.prepaidBalance || 0).toLocaleString('id-ID')}
+            </div>
+          )}
+          {agentPct > 0 && (
+            <div className="text-xs mt-1 text-teal-700">
+              Agen: diskon khusus {agentPct}% otomatis diterapkan pada setiap item.
+            </div>
+          )}
+        </F>
+        <F label="Dropshipper (opsional)" className="sm:col-span-2">
+          <Select value={form.dropshipperId || 'none'} onValueChange={v => {
+            if (v === 'none') { upd('dropshipperId', ''); return; }
+            const ds = dropshippers.find(x => x.id === v);
+            setForm(f => ({ ...f, dropshipperId: v, commissionType: ds?.commissionType || 'per_kg', commissionValue: ds?.commissionValue || 0 }));
+          }}>
+            <SelectTrigger><SelectValue placeholder="Tanpa dropshipper" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">— Tanpa Dropshipper —</SelectItem>
+              {dropshippers.map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.displayName}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {form.dropshipperId && (
+            <div className="mt-2 grid grid-cols-2 gap-2 p-2 rounded-lg bg-pink-50 border border-pink-100">
+              <div>
+                <Label className="text-xs">Tipe Komisi</Label>
+                <Select value={form.commissionType || 'per_kg'} onValueChange={v => upd('commissionType', v)}>
+                  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_kg">Per Kg</SelectItem>
+                    <SelectItem value="fixed">Nominal Tetap</SelectItem>
+                    <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">{form.commissionType === 'percent_profit' ? 'Nilai (%)' : 'Nilai (Rp)'}</Label>
+                <Input className="h-8" type="number" value={form.commissionValue} onChange={e => upd('commissionValue', Number(e.target.value))} />
+              </div>
+              <div className="col-span-2 text-xs text-pink-700">
+                {commissionPreview?.amount !== null && commissionPreview?.amount !== undefined
+                  ? <>Estimasi komisi: <b>Rp {Number(commissionPreview.amount).toLocaleString('id-ID')}</b></>
+                  : 'Komisi % profit dihitung otomatis saat SO dibuat (berdasarkan HPP stok).'}
+              </div>
             </div>
           )}
         </F>
@@ -315,10 +377,11 @@ function CreateSODialog({ onSaved }) {
                     </div>
                     <div>
                       <Label className="text-xs">Diskon (Rp)</Label>
-                      <Input type="number" value={it.discount} onChange={e => updItem(i, { discount: Number(e.target.value) })} />
+                      <Input type="number" value={agentPct > 0 ? itemDiscount(it) : it.discount} readOnly={agentPct > 0} onChange={e => updItem(i, { discount: Number(e.target.value) })} className={cn(agentPct > 0 && 'bg-teal-50')} />
+                      {agentPct > 0 && <p className="text-[10px] text-teal-600 mt-0.5">Diskon Agen {agentPct}%</p>}
                     </div>
                     <div className="col-span-2 md:col-span-4 text-right text-sm text-muted-foreground">
-                      Subtotal: <b className="text-emerald-700">Rp {(Number(it.unitPrice) * Number(it.weight) - Number(it.discount || 0)).toLocaleString('id-ID')}</b>
+                      Subtotal: <b className="text-emerald-700">Rp {(Number(it.unitPrice) * Number(it.weight) - itemDiscount(it)).toLocaleString('id-ID')}</b>
                     </div>
                   </div>
                 )}
