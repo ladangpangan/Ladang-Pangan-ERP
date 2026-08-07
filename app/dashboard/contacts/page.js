@@ -62,7 +62,7 @@ const emptyForm = {
   isSubscriber: false, creditLimit: 0, prepaidBalance: 0, taxStatus: '',
   isAgent: false, isDropshipper: false,
   agentDiscountPct: 0, commissionType: 'per_kg', commissionValue: 0,
-  npwp: '', address: '', city: '', province: '', postalCode: '',
+  npwp: '', address: '', city: '', province: '', postalCode: '', mapsUrl: '',
   phone: '', email: '', picName: '', picPhone: '',
   bankName: '', bankAccount: '', bankHolder: '', notes: '', status: 'active'
 };
@@ -270,6 +270,14 @@ function ContactDetailSheet({ id, onClose }) {
                     <InfoRow label="Kota" value={d.contact.city} />
                     <InfoRow label="Provinsi" value={d.contact.province} />
                     <InfoRow label="Kode Pos" value={d.contact.postalCode} />
+                    {d.contact.mapsUrl && (
+                      <InfoRow label="Lokasi" value={
+                        <a href={d.contact.mapsUrl} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-sm font-medium">
+                          <MapPin className="w-3.5 h-3.5" /> Buka Maps
+                        </a>
+                      } />
+                    )}
                     <InfoRow label="Telepon" value={d.contact.phone} />
                     <InfoRow label="Email" value={d.contact.email} />
                     <InfoRow label="PIC" value={d.contact.picName} />
@@ -340,7 +348,7 @@ function ContactDetailSheet({ id, onClose }) {
   );
 }
 
-const emptyCust = { name: '', phone: '', address: '', city: '', picName: '', notes: '' };
+const emptyCust = { name: '', phone: '', address: '', city: '', picName: '', notes: '', mapsUrl: '' };
 function EndCustomersTab({ contactId, canManage }) {
   const { data, mutate, isLoading } = useSWR(contactId ? `/api/contacts/${contactId}/customers` : null, fetcher);
   const rows = data?.data || [];
@@ -426,6 +434,12 @@ function EndCustomersTab({ contactId, canManage }) {
                   </div>
                   <div className="text-xs text-muted-foreground">{r.phone || '-'} {r.picName ? `· PIC: ${r.picName}` : ''}</div>
                   {r.address && <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" />{r.address}{r.city ? `, ${r.city}` : ''}</div>}
+                  {r.mapsUrl && (
+                    <a href={r.mapsUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline mt-0.5 font-medium">
+                      <MapPin className="w-3 h-3" /> Buka Maps
+                    </a>
+                  )}
                 </div>
                 {canManage && (
                   <div className="whitespace-nowrap">
@@ -449,6 +463,15 @@ function EndCustomersTab({ contactId, canManage }) {
             <Field label="Alamat" className="col-span-2"><Textarea rows={2} value={form.address || ''} onChange={e => set('address', e.target.value)} /></Field>
             <Field label="Kota"><Input value={form.city || ''} onChange={e => set('city', e.target.value)} /></Field>
             <Field label="Catatan"><Input value={form.notes || ''} onChange={e => set('notes', e.target.value)} /></Field>
+            <Field label="Link Google Maps" className="col-span-2">
+              <div className="flex gap-2">
+                <Input value={form.mapsUrl || ''} onChange={e => set('mapsUrl', e.target.value)} placeholder="https://maps.google.com/..." />
+                <Button type="button" variant="outline" size="icon" disabled={!form.mapsUrl} title="Buka Maps"
+                  onClick={() => window.open(form.mapsUrl, '_blank', 'noopener,noreferrer')}>
+                  <MapPin className="w-4 h-4" />
+                </Button>
+              </div>
+            </Field>
           </div>
           <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
         </DialogContent>
@@ -813,6 +836,15 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
         <Field label="Alamat" className="sm:col-span-2"><Textarea value={form.address || ''} onChange={e => set('address', e.target.value)} rows={2} /></Field>
         <Field label="Kota"><Input value={form.city || ''} onChange={e => set('city', e.target.value)} /></Field>
         <Field label="Provinsi"><Input value={form.province || ''} onChange={e => set('province', e.target.value)} /></Field>
+        <Field label="Link Google Maps" className="sm:col-span-2">
+          <div className="flex gap-2">
+            <Input value={form.mapsUrl || ''} onChange={e => set('mapsUrl', e.target.value)} placeholder="https://maps.google.com/..." />
+            <Button type="button" variant="outline" size="icon" disabled={!form.mapsUrl} title="Buka Maps"
+              onClick={() => window.open(form.mapsUrl, '_blank', 'noopener,noreferrer')}>
+              <MapPin className="w-4 h-4" />
+            </Button>
+          </div>
+        </Field>
         <Field label="Telepon"><Input value={form.phone || ''} onChange={e => set('phone', e.target.value)} /></Field>
         <Field label="Email"><Input type="email" value={form.email || ''} onChange={e => set('email', e.target.value)} /></Field>
         <Field label="PIC Name"><Input value={form.picName || ''} onChange={e => set('picName', e.target.value)} /></Field>

@@ -607,7 +607,7 @@ async function handleRoute(request, { params }) {
               linkedContact: {
                 id: c.id, code: c.code, displayName: c.displayName,
                 companyName: c.companyName, phone: c.phone, picName: c.picName,
-                address: c.address, city: c.city, contactType: c.contactType,
+                address: c.address, city: c.city, contactType: c.contactType, mapsUrl: c.mapsUrl,
               },
               // surface live values for display convenience
               name: c.displayName || r.name,
@@ -615,6 +615,7 @@ async function handleRoute(request, { params }) {
               address: c.address || r.address,
               city: c.city || r.city,
               picName: c.picName || r.picName,
+              mapsUrl: c.mapsUrl || r.mapsUrl,
             };
           }
           return { ...r, linkedContact: null, linkedMissing: true };
@@ -649,6 +650,7 @@ async function handleRoute(request, { params }) {
           name: linked.displayName || linked.companyName || 'Kontak',
           phone: linked.phone || null, address: linked.address || null,
           city: linked.city || null, picName: linked.picName || null,
+          mapsUrl: linked.mapsUrl || null,
           notes: body.notes || null, status: 'active', createdAt: now, updatedAt: now,
         };
         db.insert(s.contactCustomers).values(row).run();
@@ -660,6 +662,7 @@ async function handleRoute(request, { params }) {
         id: uuidv4(), parentContactId: id, linkedContactId: null,
         name: body.name, phone: body.phone || null, address: body.address || null,
         city: body.city || null, picName: body.picName || null, notes: body.notes || null,
+        mapsUrl: body.mapsUrl || null,
         status: 'active', createdAt: now, updatedAt: now,
       };
       db.insert(s.contactCustomers).values(row).run();
