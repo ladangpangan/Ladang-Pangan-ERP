@@ -135,8 +135,10 @@ function CreateSODialog({ onSaved }) {
   const router = useRouter();
   const { data: custData } = useSWR('/api/contacts', fetcher);
   const allContacts = custData?.data || [];
-  const buyers = allContacts.filter(c => ['Customer', 'Agen'].includes(c.contactType));
-  const dropshippers = allContacts.filter(c => c.contactType === 'Dropshipper');
+  const isAgentRole = (c) => !!(c?.isAgent || c?.contactType === 'Agen');
+  const isDsRole = (c) => !!(c?.isDropshipper || c?.contactType === 'Dropshipper');
+  const buyers = allContacts.filter(c => c.contactType === 'Customer' || isAgentRole(c));
+  const dropshippers = allContacts.filter(c => isDsRole(c) && c.id !== form.customerId);
   const { data: stockData, isLoading: stockLoading } = useSWR('/api/inventory/stocks?status=active&sort=FEFO', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -174,7 +176,7 @@ function CreateSODialog({ onSaved }) {
 
   const selectedCust = allContacts.find(c => c.id === form.customerId);
   const selectedDs = allContacts.find(c => c.id === form.dropshipperId);
-  const agentPct = selectedCust?.contactType === 'Agen' ? Number(selectedCust.agentDiscountPct || 0) : 0;
+  const agentPct = isAgentRole(selectedCust) ? Number(selectedCust.agentDiscountPct || 0) : 0;
   const itemDiscount = (it) => agentPct > 0
     ? Math.round(Number(it.unitPrice || 0) * Number(it.weight || 0) * agentPct / 100)
     : Number(it.discount || 0);
@@ -235,11 +237,11 @@ function CreateSODialog({ onSaved }) {
       </DialogHeader>
       <div className="grid sm:grid-cols-2 gap-4">
         <F label="Pembeli (Customer / Agen) *" className="sm:col-span-2">
-          <Select value={form.customerId} onValueChange={v => upd('customerId', v)}>
+          <Select value={form.customerId} onValueChange={v => setForm(f => ({ ...f, customerId: v, dropshipperId: f.dropshipperId === v ? '' : f.dropshipperId }))}>
             <SelectTrigger><SelectValue placeholder="Pilih customer / agen" /></SelectTrigger>
             <SelectContent>{buyers.map(c => (
               <SelectItem key={c.id} value={c.id}>
-                {c.code} - {c.displayName} {c.contactType === 'Agen' ? '(Agen)' : c.isSubscriber ? '(Subscriber)' : ''}
+                {c.code} - {c.displayName} {isAgentRole(c) ? '(Agen)' : c.isSubscriber ? '(Subscriber)' : ''}
               </SelectItem>
             ))}</SelectContent>
           </Select>

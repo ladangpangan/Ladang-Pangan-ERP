@@ -656,6 +656,7 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const ds = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
       if (!ds) return err('Dropshipper tidak ditemukan', 404);
+      if (!(ds.isDropshipper || ds.contactType === 'Dropshipper')) return err('Kontak ini bukan Dropshipper', 400);
       const body = await request.json();
       if (!body.salesOrderId) return err('salesOrderId required');
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, body.salesOrderId)).get();
@@ -1450,6 +1451,7 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const body = await request.json();
       if (!body.customerId || !Array.isArray(body.items) || body.items.length === 0) return err('customerId and items required');
+      if (body.dropshipperId && body.dropshipperId === body.customerId) return err('Kontak yang sama tidak boleh menjadi pembeli sekaligus dropshipper dalam 1 SO');
 
       // Validate stock-linked items (considering reservations from other Draft SOs)
       const stockUsage = {}; // {stockId: totalWeightRequested}
@@ -1582,8 +1584,9 @@ async function handleRoute(request, { params }) {
       let commissionResult = null;
       if (body.dropshipperId) {
         try {
+          if (body.dropshipperId === body.customerId) throw new Error('same-as-buyer');
           const ds = db.select().from(s.contacts).where(eq(s.contacts.id, body.dropshipperId)).get();
-          if (ds && ds.contactType === 'Dropshipper') {
+          if (ds && (ds.isDropshipper || ds.contactType === 'Dropshipper')) {
             const type = body.commissionType || ds.commissionType || 'per_kg';
             const value = body.commissionValue !== undefined && body.commissionValue !== null && body.commissionValue !== ''
               ? Number(body.commissionValue) : Number(ds.commissionValue || 0);
