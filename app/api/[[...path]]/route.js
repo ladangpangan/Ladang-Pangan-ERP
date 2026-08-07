@@ -654,7 +654,7 @@ async function handleRoute(request, { params }) {
           notes: body.notes || null, status: 'active', createdAt: now, updatedAt: now,
         };
         db.insert(s.contactCustomers).values(row).run();
-        return json({ data: { ...row, linkedContact: { id: linked.id, code: linked.code, displayName: linked.displayName, phone: linked.phone, contactType: linked.contactType } } }, { status: 201 });
+        return json({ data: { ...row, linkedContact: { id: linked.id, code: linked.code, displayName: linked.displayName, phone: linked.phone, contactType: linked.contactType, mapsUrl: linked.mapsUrl } } }, { status: 201 });
       }
 
       if (!body.name) return err('name required');
