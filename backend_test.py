@@ -1,678 +1,492 @@
 #!/usr/bin/env python3
 """
-Backend Test Script for Dropship SO + SJ Shipped Weight + Invoice Weight Basis
-Tests NEW features:
-- A. Dropship SO (no stock, auto-PO)
-- B. SJ real shipped weight + received column
-- C. Invoice weight basis (shipped vs received)
+Backend API Test for End-Customer Link Feature (linkedContactId)
+Tests the NEW feature: link end-customer to existing Customer contact via linkedContactId (reference, NOT a copy)
 """
 
 import requests
 import json
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime
 
-# Configuration
-BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
+BASE_URL = "http://localhost:3000/api"
+
+# Test credentials
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
+OPERATOR_EMAIL = "operator@lpi.co.id"
+OPERATOR_PASSWORD = "operator123"
+DIREKTUR_EMAIL = "direktur@lpi.co.id"
+DIREKTUR_PASSWORD = "direktur123"
 
-# Create session for cookie persistence
 session = requests.Session()
 
-def print_test(msg):
-    print(f"\n{'='*80}")
-    print(f"TEST: {msg}")
-    print('='*80)
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def print_result(success, msg, data=None):
-    status = "✅ PASS" if success else "❌ FAIL"
-    print(f"{status}: {msg}")
-    if data:
-        print(f"Data: {json.dumps(data, indent=2, default=str)}")
-
-def login():
-    """Login as admin and store session cookie"""
-    print_test("Login as admin")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/auth/sign-in/email",
-            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-            timeout=10
-        )
-        if resp.status_code == 200:
-            print_result(True, f"Login successful: {ADMIN_EMAIL}")
-            return True
-        else:
-            print_result(False, f"Login failed: {resp.status_code} - {resp.text}")
-            return False
-    except Exception as e:
-        print_result(False, f"Login error: {str(e)}")
-        return False
-
-def create_supplier():
-    """Create a Supplier contact for testing"""
-    print_test("Create Supplier contact (SUP-T1)")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/contacts",
-            json={
-                "contactType": "Supplier",
-                "code": "SUP-T1",
-                "displayName": "Sup T1",
-                "companyName": "Supplier Test 1",
-                "phone": "081234567890"
-            },
-            timeout=10
-        )
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            print_result(True, f"Supplier created: {data.get('id')}", data)
-            return data.get('id')
-        else:
-            print_result(False, f"Failed to create supplier: {resp.status_code} - {resp.text}")
-            return None
-    except Exception as e:
-        print_result(False, f"Error creating supplier: {str(e)}")
+def login(email, password):
+    """Login and return cookies dict"""
+    log(f"Logging in as {email}...")
+    resp = requests.post(
+        "http://localhost:3000/api/auth/sign-in/email",
+        json={"email": email, "password": password},
+        headers={"Content-Type": "application/json"}
+    )
+    if resp.status_code != 200:
+        log(f"❌ Login failed: {resp.status_code} - {resp.text}")
         return None
+    
+    # Extract cookies as dict
+    cookies = {cookie.name: cookie.value for cookie in resp.cookies}
+    
+    log(f"✅ Login successful as {email}")
+    return cookies
 
-def create_customer():
-    """Create a Customer contact for testing"""
-    print_test("Create Customer contact (CUST-T1)")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/contacts",
-            json={
-                "contactType": "Customer",
-                "code": "CUST-T1",
-                "displayName": "Cust T1",
-                "companyName": "Customer Test 1",
-                "phone": "081234567891"
-            },
-            timeout=10
-        )
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            print_result(True, f"Customer created: {data.get('id')}", data)
-            return data.get('id')
-        else:
-            print_result(False, f"Failed to create customer: {resp.status_code} - {resp.text}")
-            return None
-    except Exception as e:
-        print_result(False, f"Error creating customer: {str(e)}")
+def test_setup():
+    """Setup: Create parent contact P and Customer contact C"""
+    """Setup: Create parent contact P and Customer contact C"""
+    log("\n=== SETUP: Creating test data ===")
+    
+    cookies = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    if not cookies:
+        return None, None, None
+    
+    # Create parent contact P (Agen type)
+    log("Creating parent contact P (Agen)...")
+    parent_data = {
+        "contactType": "Agen",
+        "code": f"PARENT-{datetime.now().strftime('%H%M%S')}",
+        "displayName": "Parent Agen",
+        "agentDiscountPct": 5,
+        "phone": "0811111111",
+        "address": "Jl Parent 1",
+        "city": "Jakarta"
+    }
+    resp = requests.post(f"{BASE_URL}/contacts", json=parent_data, cookies=cookies)
+    if resp.status_code != 201:
+        log(f"❌ Failed to create parent contact: {resp.status_code} - {resp.text}")
+        return None, None, cookies
+    parent = resp.json()["data"]
+    log(f"✅ Parent contact created: {parent['id']} ({parent['code']})")
+    
+    # Create Customer contact C
+    log("Creating Customer contact C...")
+    customer_data = {
+        "contactType": "Customer",
+        "code": f"CUST-{datetime.now().strftime('%H%M%S')}",
+        "displayName": "PT Cust Link",
+        "phone": "0811111",
+        "address": "Jl Live 1",
+        "city": "Jakarta",
+        "picName": "Budi"
+    }
+    resp = requests.post(f"{BASE_URL}/contacts", json=customer_data, cookies=cookies)
+    if resp.status_code != 201:
+        log(f"❌ Failed to create customer contact: {resp.status_code} - {resp.text}")
+        return parent, None, cookies
+    customer = resp.json()["data"]
+    log(f"✅ Customer contact created: {customer['id']} ({customer['code']})")
+    
+    return parent, customer, cookies
+
+def test_a_link_happy_path(parent_id, customer_id, cookies):
+    """Test A: Link (happy path)"""
+    log("\n=== TEST A: Link (happy path) ===")
+    
+    log(f"Linking customer {customer_id} to parent {parent_id}...")
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"linkedContactId": customer_id}, cookies=cookies)
+    
+    if resp.status_code != 201:
+        log(f"❌ FAIL: Expected 201, got {resp.status_code} - {resp.text}")
         return None
-
-def create_product():
-    """Create a Product for testing"""
-    print_test("Create Product (PRD-T1)")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/products",
-            json={
-                "sku": "PRD-T1",
-                "name": "Prod T1",
-                "unit": "kg",
-                "basePrice": 40000,
-                "category": "Test"
-            },
-            timeout=10
-        )
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            print_result(True, f"Product created: {data.get('id')}", data)
-            return data.get('id')
-        else:
-            print_result(False, f"Failed to create product: {resp.status_code} - {resp.text}")
-            return None
-    except Exception as e:
-        print_result(False, f"Error creating product: {str(e)}")
+    
+    data = resp.json()["data"]
+    
+    # Verify linkedContactId
+    if data.get("linkedContactId") != customer_id:
+        log(f"❌ FAIL: linkedContactId mismatch. Expected {customer_id}, got {data.get('linkedContactId')}")
         return None
-
-def test_dropship_so_creation(customer_id, supplier_id, product_id):
-    """
-    A.1: Create dropship SO and verify auto-PO creation
-    """
-    print_test("A.1: Create Dropship SO with auto-PO")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/sales-orders",
-            json={
-                "customerId": customer_id,
-                "fulfillmentType": "dropship",
-                "supplierId": supplier_id,
-                "orderDate": datetime.now().isoformat(),
-                "expectedDate": (datetime.now() + timedelta(days=7)).isoformat(),
-                "items": [
-                    {
-                        "productId": product_id,
-                        "quantity": 1,
-                        "weight": 100,
-                        "unitPrice": 40000
-                    }
-                ]
-            },
-            timeout=10
-        )
-        
-        if resp.status_code != 201:
-            print_result(False, f"Failed to create SO: {resp.status_code} - {resp.text}")
-            return None
-        
-        data = resp.json().get('data', {})
-        so_id = data.get('id')
-        
-        # Verify SO properties
-        print_result(True, f"SO created: {data.get('soNumber')}")
-        
-        # Get SO detail to verify all properties
-        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
-        if detail_resp.status_code != 200:
-            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
-            return so_id
-        
-        so_detail = detail_resp.json().get('data', {})
-        
-        # Verify fulfillmentType
-        fulfillment_type = so_detail.get('fulfillmentType')
-        print_result(
-            fulfillment_type == 'dropship',
-            f"fulfillmentType == 'dropship': {fulfillment_type}"
-        )
-        
-        # Verify supplierId
-        supplier_id_set = so_detail.get('supplierId')
-        print_result(
-            supplier_id_set == supplier_id,
-            f"supplierId set: {supplier_id_set}"
-        )
-        
-        # Verify autoPoId
-        auto_po_id = so_detail.get('autoPoId')
-        print_result(
-            auto_po_id is not None,
-            f"autoPoId is non-null: {auto_po_id}"
-        )
-        
-        # Verify totalAmount (weight-based: 40000 * 100 = 4,000,000)
-        total_amount = so_detail.get('totalAmount')
-        expected_total = 4000000
-        print_result(
-            total_amount == expected_total,
-            f"totalAmount == {expected_total}: {total_amount}"
-        )
-        
-        return so_id, auto_po_id
-        
-    except Exception as e:
-        print_result(False, f"Error in dropship SO creation: {str(e)}")
+    
+    # Verify linkedContact object
+    if "linkedContact" not in data:
+        log(f"❌ FAIL: linkedContact object missing in response")
         return None
-
-def test_auto_po_verification(auto_po_id):
-    """
-    A.2: Verify the auto-created PO exists with correct properties
-    """
-    print_test("A.2: Verify auto-created PO")
-    try:
-        # Get all POs and find the one with matching ID
-        resp = session.get(f"{BASE_URL}/purchase-orders", timeout=10)
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get POs: {resp.status_code}")
-            return False
-        
-        pos = resp.json().get('data', [])
-        auto_po = None
-        for po in pos:
-            if po.get('id') == auto_po_id:
-                auto_po = po
-                break
-        
-        if not auto_po:
-            print_result(False, f"Auto-PO not found in list: {auto_po_id}")
-            return False
-        
-        print_result(True, f"Auto-PO found: {auto_po.get('poNumber')}")
-        
-        # Verify poType
-        po_type = auto_po.get('poType')
-        print_result(
-            po_type == 'Produk Jadi',
-            f"poType == 'Produk Jadi': {po_type}"
-        )
-        
-        # Verify pipelineStatus
-        pipeline_status = auto_po.get('pipelineStatus')
-        print_result(
-            pipeline_status == 'Draft',
-            f"pipelineStatus == 'Draft': {pipeline_status}"
-        )
-        
-        # Verify isDropship
-        is_dropship = auto_po.get('isDropship')
-        print_result(
-            is_dropship == True or is_dropship == 1,
-            f"isDropship == true: {is_dropship}"
-        )
-        
-        # Get PO detail to verify items
-        detail_resp = session.get(f"{BASE_URL}/purchase-orders/{auto_po_id}", timeout=10)
-        if detail_resp.status_code == 200:
-            po_detail = detail_resp.json().get('data', {})
-            items = po_detail.get('items', [])
-            print_result(
-                len(items) == 1,
-                f"PO has 1 item: {len(items)} items"
-            )
-            if items:
-                print(f"PO item: productId={items[0].get('productId')}, weight={items[0].get('weight')}")
-        
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Error verifying auto-PO: {str(e)}")
-        return False
-
-def test_confirm_dropship_so(so_id):
-    """
-    A.3: Confirm dropship SO - should NOT error about stock and NOT deduct inventory
-    """
-    print_test("A.3: Confirm Dropship SO (no stock deduction)")
-    try:
-        # Get inventory stock count before confirmation
-        inv_resp = session.get(f"{BASE_URL}/inventory/stocks", timeout=10)
-        stock_count_before = 0
-        if inv_resp.status_code == 200:
-            stock_count_before = len(inv_resp.json().get('data', []))
-            print(f"Inventory stock count before confirm: {stock_count_before}")
-        
-        # Confirm the SO
-        resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id}/status",
-            json={"status": "Confirmed"},
-            timeout=10
-        )
-        
-        if resp.status_code != 200:
-            print_result(False, f"Failed to confirm SO: {resp.status_code} - {resp.text}")
-            return False
-        
-        print_result(True, "SO confirmed successfully (no stock error)")
-        
-        # Verify pipelineStatus changed to Confirmed
-        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
-        if detail_resp.status_code == 200:
-            so_detail = detail_resp.json().get('data', {})
-            pipeline_status = so_detail.get('pipelineStatus')
-            print_result(
-                pipeline_status == 'Confirmed',
-                f"pipelineStatus == 'Confirmed': {pipeline_status}"
-            )
-        
-        # Verify no inventory stock was created/deducted
-        inv_resp_after = session.get(f"{BASE_URL}/inventory/stocks", timeout=10)
-        stock_count_after = 0
-        if inv_resp_after.status_code == 200:
-            stock_count_after = len(inv_resp_after.json().get('data', []))
-            print(f"Inventory stock count after confirm: {stock_count_after}")
-            print_result(
-                stock_count_after == stock_count_before,
-                f"No inventory stock created/deducted: {stock_count_before} -> {stock_count_after}"
-            )
-        
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Error confirming dropship SO: {str(e)}")
-        return False
-
-def test_sj_shipped_weight(so_id):
-    """
-    B: Create Surat Jalan with real shipped weight and received column
-    """
-    print_test("B: Advance SO to Packed and create SJ with shipped weight")
-    try:
-        # Advance to Packed (Confirmed -> Packed)
-        resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id}/status",
-            json={"status": "Packed"},
-            timeout=10
-        )
-        if resp.status_code != 200:
-            print_result(False, f"Failed to advance to Packed: {resp.status_code} - {resp.text}")
-            return None
-        
-        print_result(True, "SO advanced to Packed")
-        
-        # Get SO detail to get item IDs
-        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
-        if detail_resp.status_code != 200:
-            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
-            return None
-        
-        so_detail = detail_resp.json().get('data', {})
-        items = so_detail.get('items', [])
-        if not items:
-            print_result(False, "No items found in SO")
-            return None
-        
-        item_id = items[0].get('id')
-        print(f"SO item ID: {item_id}")
-        
-        # Create Surat Jalan with shippedWeight=95 (less than ordered 100)
-        sj_resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id}/surat-jalan",
-            json={
-                "deliveryDate": "2026-07-20",
-                "showReceivedColumn": True,
-                "items": [
-                    {
-                        "itemId": item_id,
-                        "shippedWeight": 95
-                    }
-                ]
-            },
-            timeout=10
-        )
-        
-        if sj_resp.status_code != 201:
-            print_result(False, f"Failed to create SJ: {sj_resp.status_code} - {sj_resp.text}")
-            return None
-        
-        sj_data = sj_resp.json().get('data', {})
-        print_result(True, f"SJ created: {sj_data.get('sjNumber')}")
-        
-        # Verify SO detail shows updated shippedWeight and showReceivedColumn
-        detail_resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
-        if detail_resp2.status_code == 200:
-            so_detail2 = detail_resp2.json().get('data', {})
-            items2 = so_detail2.get('items', [])
-            if items2:
-                shipped_weight = items2[0].get('shippedWeight')
-                print_result(
-                    shipped_weight == 95,
-                    f"item.shippedWeight == 95: {shipped_weight}"
-                )
-            
-            surat_jalan = so_detail2.get('suratJalan', [])
-            if surat_jalan:
-                show_received = surat_jalan[0].get('showReceivedColumn')
-                print_result(
-                    show_received == True or show_received == 1,
-                    f"suratJalan[0].showReceivedColumn == true: {show_received}"
-                )
-            
-            # Verify pipeline auto-moved to Shipped
-            pipeline_status = so_detail2.get('pipelineStatus')
-            print_result(
-                pipeline_status == 'Shipped',
-                f"Pipeline auto-moved Packed→Shipped: {pipeline_status}"
-            )
-        
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Error in SJ shipped weight test: {str(e)}")
+    
+    linked = data["linkedContact"]
+    if not all(k in linked for k in ["id", "code", "displayName", "phone"]):
+        log(f"❌ FAIL: linkedContact missing required fields. Got: {linked.keys()}")
         return None
+    
+    log(f"✅ PASS: Link created successfully")
+    log(f"   - linkedContactId: {data['linkedContactId']}")
+    log(f"   - linkedContact.code: {linked['code']}")
+    log(f"   - linkedContact.displayName: {linked['displayName']}")
+    log(f"   - linkedContact.phone: {linked['phone']}")
+    
+    return data["id"]  # Return the linked row ID
 
-def test_invoice_shipped_basis(so_id):
-    """
-    C.6: Transition to Invoiced with SHIPPED basis
-    """
-    print_test("C.6: Invoice with SHIPPED weight basis")
-    try:
-        resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id}/status",
-            json={
-                "status": "Invoiced",
-                "invoiceWeightBasis": "shipped"
-            },
-            timeout=10
-        )
-        
-        if resp.status_code != 200:
-            print_result(False, f"Failed to invoice: {resp.status_code} - {resp.text}")
-            return False
-        
-        print_result(True, "SO transitioned to Invoiced with shipped basis")
-        
-        # Verify SO detail
-        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", timeout=10)
-        if detail_resp.status_code == 200:
-            so_detail = detail_resp.json().get('data', {})
-            
-            # Verify invoiceWeightBasis
-            invoice_weight_basis = so_detail.get('invoiceWeightBasis')
-            print_result(
-                invoice_weight_basis == 'shipped',
-                f"invoiceWeightBasis == 'shipped': {invoice_weight_basis}"
-            )
-            
-            # Verify totalAmount recomputed (40000 * 95 = 3,800,000)
-            total_amount = so_detail.get('totalAmount')
-            expected_total = 3800000
-            print_result(
-                total_amount == expected_total,
-                f"totalAmount == {expected_total} (40000*95): {total_amount}"
-            )
-            
-            # Verify invoice number generated
-            invoice_number = so_detail.get('invoiceNumber')
-            print_result(
-                invoice_number is not None and invoice_number != '',
-                f"invoiceNumber generated: {invoice_number}"
-            )
-        
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Error in invoice shipped basis test: {str(e)}")
+def test_b_get_enrichment_live(parent_id, customer_id, cookies):
+    """Test B: GET enrichment (LIVE, not copy)"""
+    log("\n=== TEST B: GET enrichment (LIVE, not copy) ===")
+    
+    # Step 1: GET linked customers
+    log(f"Step 1: GET /contacts/{parent_id}/customers...")
+    resp = requests.get(f"{BASE_URL}/contacts/{parent_id}/customers", cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code} - {resp.text}")
         return False
+    
+    data = resp.json()["data"]
+    if not data:
+        log(f"❌ FAIL: No linked customers found")
+        return False
+    
+    linked_row = None
+    for row in data:
+        if row.get("linkedContactId") == customer_id:
+            linked_row = row
+            break
+    
+    if not linked_row:
+        log(f"❌ FAIL: Linked customer not found in response")
+        return False
+    
+    # Verify initial values
+    initial_phone = linked_row.get("phone")
+    initial_name = linked_row.get("name")
+    log(f"✅ Initial values: name='{initial_name}', phone='{initial_phone}'")
+    
+    if initial_phone != "0811111":
+        log(f"⚠️  WARNING: Expected phone '0811111', got '{initial_phone}'")
+    
+    # Step 2: Update the Customer contact C
+    log(f"\nStep 2: PATCH Customer contact {customer_id}...")
+    update_data = {
+        "phone": "0899999",
+        "displayName": "PT Cust Link Updated"
+    }
+    resp = requests.patch(f"{BASE_URL}/contacts/{customer_id}", json=update_data, cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Failed to update customer: {resp.status_code} - {resp.text}")
+        return False
+    
+    log(f"✅ Customer updated: phone='0899999', displayName='PT Cust Link Updated'")
+    
+    # Step 3: GET linked customers again to verify LIVE reference
+    log(f"\nStep 3: GET /contacts/{parent_id}/customers again (verify LIVE data)...")
+    resp = requests.get(f"{BASE_URL}/contacts/{parent_id}/customers", cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code} - {resp.text}")
+        return False
+    
+    data = resp.json()["data"]
+    linked_row = None
+    for row in data:
+        if row.get("linkedContactId") == customer_id:
+            linked_row = row
+            break
+    
+    if not linked_row:
+        log(f"❌ FAIL: Linked customer not found in response")
+        return False
+    
+    # Verify updated values (LIVE reference)
+    updated_phone = linked_row.get("phone")
+    updated_name = linked_row.get("name")
+    
+    log(f"Updated values: name='{updated_name}', phone='{updated_phone}'")
+    
+    if updated_phone != "0899999":
+        log(f"❌ FAIL: Phone not updated. Expected '0899999', got '{updated_phone}'")
+        log(f"   This proves it's NOT a live reference (it's a static copy)")
+        return False
+    
+    if updated_name != "PT Cust Link Updated":
+        log(f"❌ FAIL: Name not updated. Expected 'PT Cust Link Updated', got '{updated_name}'")
+        log(f"   This proves it's NOT a live reference (it's a static copy)")
+        return False
+    
+    log(f"✅ PASS: LIVE reference verified!")
+    log(f"   - Phone changed from '{initial_phone}' to '{updated_phone}' ✓")
+    log(f"   - Name changed from '{initial_name}' to '{updated_name}' ✓")
+    log(f"   - This proves the data is fetched LIVE from the linked contact, not a static copy")
+    
+    return True
 
-def test_invoice_received_basis(customer_id, product_id):
-    """
-    C.7: Create second SO, advance to Shipped, create receipts, invoice with RECEIVED basis
-    """
-    print_test("C.7: Create second SO for RECEIVED weight basis test")
-    try:
-        # Create regular SO (not dropship)
-        resp = session.post(
-            f"{BASE_URL}/sales-orders",
-            json={
-                "customerId": customer_id,
-                "orderDate": datetime.now().isoformat(),
-                "expectedDate": (datetime.now() + timedelta(days=7)).isoformat(),
-                "items": [
-                    {
-                        "productId": product_id,
-                        "quantity": 1,
-                        "weight": 100,
-                        "unitPrice": 40000
-                    }
-                ]
-            },
-            timeout=10
-        )
-        
-        if resp.status_code != 201:
-            print_result(False, f"Failed to create second SO: {resp.status_code} - {resp.text}")
-            return False
-        
-        data = resp.json().get('data', {})
-        so_id2 = data.get('id')
-        print_result(True, f"Second SO created: {data.get('soNumber')}")
-        
-        # Advance Draft→Confirmed→Packed→Shipped
-        for status in ['Confirmed', 'Packed']:
-            resp = session.post(
-                f"{BASE_URL}/sales-orders/{so_id2}/status",
-                json={"status": status},
-                timeout=10
-            )
-            if resp.status_code != 200:
-                print_result(False, f"Failed to advance to {status}: {resp.status_code}")
-                return False
-        
-        # Get item ID for SJ
-        detail_resp = session.get(f"{BASE_URL}/sales-orders/{so_id2}", timeout=10)
-        if detail_resp.status_code != 200:
-            print_result(False, f"Failed to get SO detail: {detail_resp.status_code}")
-            return False
-        
-        so_detail = detail_resp.json().get('data', {})
-        items = so_detail.get('items', [])
-        if not items:
-            print_result(False, "No items found in SO")
-            return False
-        
-        item_id = items[0].get('id')
-        
-        # Create SJ with shippedWeight=100
-        sj_resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id2}/surat-jalan",
-            json={
-                "deliveryDate": "2026-07-20",
-                "items": [
-                    {
-                        "itemId": item_id,
-                        "shippedWeight": 100
-                    }
-                ]
-            },
-            timeout=10
-        )
-        
-        if sj_resp.status_code != 201:
-            print_result(False, f"Failed to create SJ: {sj_resp.status_code}")
-            return False
-        
-        print_result(True, "SO advanced to Shipped with shippedWeight=100")
-        
-        # Create receipt with receivedWeight=90
-        receipt_resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id2}/receipts",
-            json={
-                "receivedDate": "2026-07-21",
-                "items": [
-                    {
-                        "productId": product_id,
-                        "receivedWeight": 90
-                    }
-                ]
-            },
-            timeout=10
-        )
-        
-        if receipt_resp.status_code != 201:
-            print_result(False, f"Failed to create receipt: {receipt_resp.status_code} - {receipt_resp.text}")
-            return False
-        
-        receipt_data = receipt_resp.json().get('data', {})
-        print_result(True, f"Receipt created: {receipt_data.get('receiptNumber')}")
-        
-        # Transition to Invoiced with received basis
-        invoice_resp = session.post(
-            f"{BASE_URL}/sales-orders/{so_id2}/status",
-            json={
-                "status": "Invoiced",
-                "invoiceWeightBasis": "received"
-            },
-            timeout=10
-        )
-        
-        if invoice_resp.status_code != 200:
-            print_result(False, f"Failed to invoice: {invoice_resp.status_code} - {invoice_resp.text}")
-            return False
-        
-        print_result(True, "SO transitioned to Invoiced with received basis")
-        
-        # Verify SO detail
-        detail_resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id2}", timeout=10)
-        if detail_resp2.status_code == 200:
-            so_detail2 = detail_resp2.json().get('data', {})
-            
-            # Verify invoiceWeightBasis
-            invoice_weight_basis = so_detail2.get('invoiceWeightBasis')
-            print_result(
-                invoice_weight_basis == 'received',
-                f"invoiceWeightBasis == 'received': {invoice_weight_basis}"
-            )
-            
-            # Verify totalAmount recomputed (40000 * 90 = 3,600,000)
-            total_amount = so_detail2.get('totalAmount')
-            expected_total = 3600000
-            print_result(
-                total_amount == expected_total,
-                f"totalAmount == {expected_total} (40000*90): {total_amount}"
-            )
-        
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Error in invoice received basis test: {str(e)}")
+def test_c_duplicate_link_rejected(parent_id, customer_id, cookies):
+    """Test C: Duplicate link rejected"""
+    log("\n=== TEST C: Duplicate link rejected ===")
+    
+    log(f"Attempting to link customer {customer_id} to parent {parent_id} again...")
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"linkedContactId": customer_id}, cookies=cookies)
+    
+    if resp.status_code != 400:
+        log(f"❌ FAIL: Expected 400, got {resp.status_code}")
         return False
+    
+    error_msg = resp.json().get("error", "")
+    if "sudah tertaut" not in error_msg.lower():
+        log(f"❌ FAIL: Error message doesn't contain 'sudah tertaut'. Got: {error_msg}")
+        return False
+    
+    log(f"✅ PASS: Duplicate link rejected with 400")
+    log(f"   - Error message: {error_msg}")
+    
+    return True
+
+def test_d_self_link_rejected(parent_id, cookies):
+    """Test D: Self-link rejected"""
+    log("\n=== TEST D: Self-link rejected ===")
+    
+    log(f"Attempting to link parent {parent_id} to itself...")
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"linkedContactId": parent_id}, cookies=cookies)
+    
+    if resp.status_code != 400:
+        log(f"❌ FAIL: Expected 400, got {resp.status_code}")
+        return False
+    
+    error_msg = resp.json().get("error", "")
+    log(f"✅ PASS: Self-link rejected with 400")
+    log(f"   - Error message: {error_msg}")
+    
+    return True
+
+def test_e_non_existent_linked_contact(parent_id, cookies):
+    """Test E: Non-existent linked contact"""
+    log("\n=== TEST E: Non-existent linked contact ===")
+    
+    fake_id = "non-existent-uuid-12345"
+    log(f"Attempting to link non-existent contact {fake_id}...")
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"linkedContactId": fake_id}, cookies=cookies)
+    
+    if resp.status_code != 404:
+        log(f"❌ FAIL: Expected 404, got {resp.status_code}")
+        return False
+    
+    error_msg = resp.json().get("error", "")
+    log(f"✅ PASS: Non-existent contact rejected with 404")
+    log(f"   - Error message: {error_msg}")
+    
+    return True
+
+def test_f_legacy_manual_create(parent_id, cookies):
+    """Test F: Legacy manual create still works"""
+    log("\n=== TEST F: Legacy manual create still works ===")
+    
+    log(f"Creating manual end-customer (legacy path)...")
+    manual_data = {
+        "name": "Manual Cust",
+        "phone": "0822"
+    }
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json=manual_data, cookies=cookies)
+    
+    if resp.status_code != 201:
+        log(f"❌ FAIL: Expected 201, got {resp.status_code} - {resp.text}")
+        return False
+    
+    data = resp.json()["data"]
+    
+    if data.get("linkedContactId") is not None:
+        log(f"❌ FAIL: linkedContactId should be null for manual create. Got: {data.get('linkedContactId')}")
+        return False
+    
+    if data.get("name") != "Manual Cust":
+        log(f"❌ FAIL: Name mismatch. Expected 'Manual Cust', got '{data.get('name')}'")
+        return False
+    
+    log(f"✅ PASS: Legacy manual create works")
+    log(f"   - linkedContactId: null ✓")
+    log(f"   - name: {data['name']} ✓")
+    log(f"   - phone: {data['phone']} ✓")
+    
+    return True
+
+def test_g_rbac(parent_id, customer_id):
+    """Test G: RBAC"""
+    log("\n=== TEST G: RBAC ===")
+    
+    # Test G.1: operator POST -> 403
+    log("\nG.1: Operator POST /contacts/:id/customers -> 403")
+    operator_cookies = login(OPERATOR_EMAIL, OPERATOR_PASSWORD)
+    if not operator_cookies:
+        log(f"❌ FAIL: Could not login as operator")
+        return False
+    
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"linkedContactId": customer_id},
+        cookies=operator_cookies
+    )
+    
+    if resp.status_code != 403:
+        log(f"❌ FAIL: Expected 403, got {resp.status_code}")
+        return False
+    
+    log(f"✅ PASS: Operator POST rejected with 403")
+    
+    # Test G.2: direktur GET -> 200
+    log("\nG.2: Direktur GET /contacts/:id/customers -> 200")
+    direktur_cookies = login(DIREKTUR_EMAIL, DIREKTUR_PASSWORD)
+    if not direktur_cookies:
+        log(f"❌ FAIL: Could not login as direktur")
+        return False
+    
+    resp = requests.get(f"{BASE_URL}/contacts/{parent_id}/customers", cookies=direktur_cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code}")
+        return False
+    
+    log(f"✅ PASS: Direktur GET allowed with 200")
+    
+    # Test G.3: direktur POST -> 403
+    log("\nG.3: Direktur POST /contacts/:id/customers -> 403")
+    resp = requests.post(
+        f"{BASE_URL}/contacts/{parent_id}/customers",
+        json={"name": "Test", "phone": "123"},
+        cookies=direktur_cookies
+    )
+    
+    if resp.status_code != 403:
+        log(f"❌ FAIL: Expected 403, got {resp.status_code}")
+        return False
+    
+    log(f"✅ PASS: Direktur POST rejected with 403")
+    
+    return True
+
+def test_h_delete_link(parent_id, customer_id, cookies):
+    """Test H: Delete link"""
+    log("\n=== TEST H: Delete link ===")
+    
+    # First, get the linked row ID
+    log(f"Getting linked row ID...")
+    resp = requests.get(f"{BASE_URL}/contacts/{parent_id}/customers", cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Could not get customers: {resp.status_code}")
+        return False
+    
+    data = resp.json()["data"]
+    linked_row = None
+    for row in data:
+        if row.get("linkedContactId") == customer_id:
+            linked_row = row
+            break
+    
+    if not linked_row:
+        log(f"❌ FAIL: Could not find linked row")
+        return False
+    
+    linked_row_id = linked_row["id"]
+    log(f"Found linked row ID: {linked_row_id}")
+    
+    # Delete the link
+    log(f"Deleting link...")
+    resp = requests.delete(
+        f"{BASE_URL}/contacts/{parent_id}/customers/{linked_row_id}", cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Expected 200, got {resp.status_code} - {resp.text}")
+        return False
+    
+    log(f"✅ Link deleted successfully")
+    
+    # Verify the underlying Customer contact C still exists
+    log(f"Verifying Customer contact {customer_id} still exists...")
+    resp = requests.get(f"{BASE_URL}/contacts/{customer_id}", cookies=cookies)
+    
+    if resp.status_code != 200:
+        log(f"❌ FAIL: Customer contact was deleted! Expected 200, got {resp.status_code}")
+        log(f"   The underlying contact should NOT be deleted when the link is removed")
+        return False
+    
+    contact = resp.json()["data"]
+    log(f"✅ PASS: Customer contact still exists")
+    log(f"   - ID: {contact['id']}")
+    log(f"   - Code: {contact['code']}")
+    log(f"   - DisplayName: {contact['displayName']}")
+    log(f"   - Link removed, but contact NOT deleted ✓")
+    
+    return True
 
 def main():
-    """Main test execution"""
-    print("\n" + "="*80)
-    print("BACKEND TEST: Dropship SO + SJ Shipped Weight + Invoice Weight Basis")
-    print("="*80)
+    log("=" * 80)
+    log("BACKEND TEST: End-Customer Link Feature (linkedContactId)")
+    log("=" * 80)
     
-    # Login
-    if not login():
-        print("\n❌ LOGIN FAILED - Cannot proceed with tests")
-        return
+    # Setup
+    parent, customer, cookies = test_setup()
+    if not parent or not customer or not cookies:
+        log("\n❌ SETUP FAILED - Cannot continue tests")
+        sys.exit(1)
     
-    # Create test data
-    supplier_id = create_supplier()
-    if not supplier_id:
-        print("\n❌ SUPPLIER CREATION FAILED - Cannot proceed")
-        return
+    parent_id = parent["id"]
+    customer_id = customer["id"]
     
-    customer_id = create_customer()
-    if not customer_id:
-        print("\n❌ CUSTOMER CREATION FAILED - Cannot proceed")
-        return
+    # Run tests
+    results = {}
     
-    product_id = create_product()
-    if not product_id:
-        print("\n❌ PRODUCT CREATION FAILED - Cannot proceed")
-        return
+    # Test A: Link (happy path)
+    linked_row_id = test_a_link_happy_path(parent_id, customer_id, cookies=cookies)
+    results["A_link_happy_path"] = linked_row_id is not None
     
-    print("\n" + "="*80)
-    print("TEST DATA CREATED SUCCESSFULLY")
-    print(f"Supplier ID: {supplier_id}")
-    print(f"Customer ID: {customer_id}")
-    print(f"Product ID: {product_id}")
-    print("="*80)
+    # Test B: GET enrichment (LIVE, not copy)
+    results["B_get_enrichment_live"] = test_b_get_enrichment_live(parent_id, customer_id, cookies=cookies)
     
-    # A. DROPSHIP SO TESTS
-    result = test_dropship_so_creation(customer_id, supplier_id, product_id)
-    if not result:
-        print("\n❌ DROPSHIP SO CREATION FAILED - Cannot proceed")
-        return
+    # Test C: Duplicate link rejected
+    results["C_duplicate_link_rejected"] = test_c_duplicate_link_rejected(parent_id, customer_id, cookies=cookies)
     
-    so_id, auto_po_id = result
+    # Test D: Self-link rejected
+    results["D_self_link_rejected"] = test_d_self_link_rejected(parent_id, cookies=cookies)
     
-    if not test_auto_po_verification(auto_po_id):
-        print("\n⚠️ AUTO-PO VERIFICATION FAILED")
+    # Test E: Non-existent linked contact
+    results["E_non_existent_linked_contact"] = test_e_non_existent_linked_contact(parent_id, cookies=cookies)
     
-    if not test_confirm_dropship_so(so_id):
-        print("\n❌ DROPSHIP SO CONFIRMATION FAILED - Cannot proceed")
-        return
+    # Test F: Legacy manual create still works
+    results["F_legacy_manual_create"] = test_f_legacy_manual_create(parent_id, cookies=cookies)
     
-    # B. SJ SHIPPED WEIGHT TEST
-    if not test_sj_shipped_weight(so_id):
-        print("\n❌ SJ SHIPPED WEIGHT TEST FAILED - Cannot proceed")
-        return
+    # Test G: RBAC
+    results["G_rbac"] = test_g_rbac(parent_id, customer_id)
     
-    # C. INVOICE WEIGHT BASIS TESTS
-    if not test_invoice_shipped_basis(so_id):
-        print("\n⚠️ INVOICE SHIPPED BASIS TEST FAILED")
+    # Test H: Delete link
+    results["H_delete_link"] = test_h_delete_link(parent_id, customer_id, cookies=cookies)
     
-    if not test_invoice_received_basis(customer_id, product_id):
-        print("\n⚠️ INVOICE RECEIVED BASIS TEST FAILED")
+    # Summary
+    log("\n" + "=" * 80)
+    log("TEST SUMMARY")
+    log("=" * 80)
     
-    print("\n" + "="*80)
-    print("ALL TESTS COMPLETED")
-    print("="*80)
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+    
+    for test_name, result in results.items():
+        status = "✅ PASS" if result else "❌ FAIL"
+        log(f"{status}: {test_name}")
+    
+    log("\n" + "=" * 80)
+    log(f"TOTAL: {passed}/{total} tests passed ({passed*100//total}%)")
+    log("=" * 80)
+    
+    if passed == total:
+        log("\n🎉 ALL TESTS PASSED!")
+        sys.exit(0)
+    else:
+        log(f"\n⚠️  {total - passed} test(s) failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

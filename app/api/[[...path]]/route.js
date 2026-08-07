@@ -597,7 +597,31 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const rows = db.select().from(s.contactCustomers).where(eq(s.contactCustomers.parentContactId, id)).orderBy(desc(s.contactCustomers.createdAt)).all();
-      return json({ data: rows });
+      // Enrich linked customers with LIVE data from the referenced contact (not a copy)
+      const enriched = rows.map(r => {
+        if (r.linkedContactId) {
+          const c = db.select().from(s.contacts).where(eq(s.contacts.id, r.linkedContactId)).get();
+          if (c) {
+            return {
+              ...r,
+              linkedContact: {
+                id: c.id, code: c.code, displayName: c.displayName,
+                companyName: c.companyName, phone: c.phone, picName: c.picName,
+                address: c.address, city: c.city, contactType: c.contactType,
+              },
+              // surface live values for display convenience
+              name: c.displayName || r.name,
+              phone: c.phone || r.phone,
+              address: c.address || r.address,
+              city: c.city || r.city,
+              picName: c.picName || r.picName,
+            };
+          }
+          return { ...r, linkedContact: null, linkedMissing: true };
+        }
+        return r;
+      });
+      return json({ data: enriched });
     }
     // POST /contacts/:id/customers
     if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'customers' && method === 'POST') {
@@ -607,10 +631,33 @@ async function handleRoute(request, { params }) {
       const parent = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
       if (!parent) return err('Kontak tidak ditemukan', 404);
       const body = await request.json();
-      if (!body.name) return err('name required');
       const now = new Date();
+
+      // Mode "Pilih dari Kontak": tautkan ke kontak Customer yang sudah ada (bukan salinan)
+      if (body.linkedContactId) {
+        const linked = db.select().from(s.contacts).where(eq(s.contacts.id, body.linkedContactId)).get();
+        if (!linked) return err('Kontak yang dipilih tidak ditemukan', 404);
+        if (linked.id === id) return err('Tidak boleh menautkan kontak ke dirinya sendiri', 400);
+        // cegah duplikat tautan ke kontak yang sama
+        const dup = db.select().from(s.contactCustomers)
+          .where(and(eq(s.contactCustomers.parentContactId, id), eq(s.contactCustomers.linkedContactId, body.linkedContactId)))
+          .get();
+        if (dup) return err('Kontak ini sudah tertaut sebagai pelanggan', 400);
+        const row = {
+          id: uuidv4(), parentContactId: id, linkedContactId: linked.id,
+          // simpan snapshot minimal sebagai fallback; sumber data hidup dari kontak tertaut
+          name: linked.displayName || linked.companyName || 'Kontak',
+          phone: linked.phone || null, address: linked.address || null,
+          city: linked.city || null, picName: linked.picName || null,
+          notes: body.notes || null, status: 'active', createdAt: now, updatedAt: now,
+        };
+        db.insert(s.contactCustomers).values(row).run();
+        return json({ data: { ...row, linkedContact: { id: linked.id, code: linked.code, displayName: linked.displayName, phone: linked.phone, contactType: linked.contactType } } }, { status: 201 });
+      }
+
+      if (!body.name) return err('name required');
       const row = {
-        id: uuidv4(), parentContactId: id,
+        id: uuidv4(), parentContactId: id, linkedContactId: null,
         name: body.name, phone: body.phone || null, address: body.address || null,
         city: body.city || null, picName: body.picName || null, notes: body.notes || null,
         status: 'active', createdAt: now, updatedAt: now,
