@@ -121,8 +121,10 @@ frontend:
         agent: "main"
         comment: |
           BUG (user): "PDF Invoice tidak bisa". Root cause: jsPDF v4.2.1 no longer exposes the constructor as the ESM DEFAULT export. `import jsPDF from 'jspdf'` yielded an object (not a constructor) so `new jsPDF()` threw "jsPDF is not a constructor" and ALL PDF buttons failed with an error toast.
-          FIX: changed to NAMED import `import { jsPDF } from 'jspdf'`. Verified in Node ESM: constructor works, produces valid PDF (~5KB), autoTable + doc.lastAutoTable.finalY work.
-          TEST (browser): login admin@lpi.co.id/admin123 → open Invoiced SO (SO/202608/0006) → click "PDF Invoice" → expect PDF download + success toast, NO error toast, NO console "jsPDF is not a constructor". Also test "PDF SO" button.
+          FIX 1: changed to NAMED import `import { jsPDF } from 'jspdf'`. Verified in Node ESM: constructor works.
+          BUG 2 (still reported after FIX 1): "Invalid argument passed to jsPDF.f3". Root cause: in generateInvoicePDF the drawRow() helper called doc.setTextColor(opts.color) with an ARRAY [r,g,b] as a single argument (used for TOTAL and Outstanding rows). jsPDF v4 rejects array-as-single-arg → f3 error.
+          FIX 2: drawRow now detects Array.isArray(color) → doc.setTextColor(r,g,b) (three args), else setTextColor(gray). Re-verified with the ACTUAL module + realistic SO data in Node: generateInvoicePDF=12143 bytes, generateSOPDF & generateSuratJalanPDF also OK.
+          TEST (browser): login admin@lpi.co.id/admin123 → open Invoiced SO (SO/202608/0006) → click "PDF Invoice" → expect PDF download + success toast, NO error toast (no "jsPDF is not a constructor", no "Invalid argument passed to jsPDF.f3"). Also test "PDF SO".
 
 
 backend:
