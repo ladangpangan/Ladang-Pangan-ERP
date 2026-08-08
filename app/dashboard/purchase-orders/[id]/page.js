@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
 import { generatePOPDF } from '@/lib/pdf/invoice';
+import { pkgLabel, pkgShort } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const PO_FLOW = {
@@ -220,8 +221,8 @@ function ItemsTab({ po, onSaved, canEdit }) {
               const susut = Math.max(0, Number(it.weightSupplier || 0) - Number(it.weightRph || 0));
               return (
                 <TableRow key={it.id}>
-                  <TableCell><div className="font-medium">{it.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{it.product?.sku}</div></TableCell>
-                  <TableCell className="text-right">{it.quantity}</TableCell>
+                  <TableCell><div className="font-medium">{it.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{it.product?.sku}{it.product?.packagingType ? ` · ${pkgLabel(it.product.packagingType)}` : ''}</div></TableCell>
+                  <TableCell className="text-right">{it.quantity} {it.product?.packagingType ? pkgShort(it.product.packagingType) : ''}</TableCell>
                   <TableCell className="text-right">{it.weight}</TableCell>
                   <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                   {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-20 ml-auto" value={it.headSupplier || 0} onChange={e => upd(i, 'headSupplier', Number(e.target.value))} /></TableCell>}

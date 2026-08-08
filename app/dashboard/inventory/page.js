@@ -18,6 +18,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { pkgLabel } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -145,7 +146,7 @@ export default function InventoryPage() {
                   <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}</TableCell>
                   <TableCell><div className="font-medium">{r.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div></TableCell>
                   <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
-                  <TableCell><Badge variant="outline" className="text-xs">{r.packagingType}</Badge></TableCell>
+                  <TableCell><Badge variant="outline" className="text-xs">{pkgLabel(r.packagingType)}</Badge></TableCell>
                   <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
                   <TableCell className="text-right">{r.quantity}</TableCell>
                   <TableCell className="text-sm">{r.expiredDate ? <><div>{format(new Date(r.expiredDate), 'dd MMM yyyy')}</div>{r.daysToExpire !== null && <div className={`text-xs ${r.daysToExpire < 0 ? 'text-red-600 font-bold' : r.daysToExpire <= 7 ? 'text-amber-600' : 'text-muted-foreground'}`}>{r.daysToExpire < 0 ? `Expired ${-r.daysToExpire}d` : `${r.daysToExpire}d`}</div>}</> : '-'}</TableCell>
@@ -153,7 +154,7 @@ export default function InventoryPage() {
                   <TableCell><Badge className={r.status === 'active' ? 'bg-emerald-100 text-emerald-700' : r.status === 'damaged' ? 'bg-red-100 text-red-700' : r.status === 'opened' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}>{r.status}</Badge></TableCell>
                   <TableCell className="space-x-1">
                     <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
-                    {canOperate && r.packagingType === 'karung' && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
+                    {canOperate && (r.packagingType === 'karung' || r.packagingType === 'colly') && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
                   </TableCell>
                 </TableRow>
               ))}
@@ -265,7 +266,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
                           <div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div>
                         </TableCell>
                         <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
-                        <TableCell><Badge variant="outline" className="text-xs">{r.packagingType}</Badge></TableCell>
+                        <TableCell><Badge variant="outline" className="text-xs">{pkgLabel(r.packagingType)}</Badge></TableCell>
                         <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
                         <TableCell className="text-sm">
                           {r.expiredDate ? (
@@ -286,7 +287,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
                         </TableCell>
                         <TableCell className="space-x-1">
                           <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
-                          {canOperate && r.packagingType === 'karung' && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
+                          {canOperate && (r.packagingType === 'karung' || r.packagingType === 'colly') && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
                         </TableCell>
                       </TableRow>
                     ))}

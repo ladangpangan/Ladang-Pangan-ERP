@@ -8534,3 +8534,365 @@ agent_communication:
       Receipts use REAL SHIPPED weight as basis, NOT original SO weight.
       Test coverage: 7/7 steps (100%)
 
+
+#====================================================================================================
+# Testing Agent Task - Kemasan & Qty di Transaksi (SO/PO/Inventory/Tally)
+#====================================================================================================
+
+backend:
+  - task: "Inbound inventory menyimpan quantity (jumlah kemasan) & packagingType master (colly/pack/keranjang/kardus)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (POST /api/inventory/inbound), /app/app/tally/inbound/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Tally inbound kini mengirim quantity (jumlah kemasan, tidak lagi hardcoded 1) dan packagingType dari master produk. Uji POST /api/inventory/inbound dengan items [{productId, weight, quantity:5, packagingType:'colly', expiredDate}] lalu verifikasi GET /api/inventory/stocks mengembalikan quantity=5 dan packagingType='colly'. Gunakan produk yang ada (mis. set packaging_type produk lewat PATCH /api/products/:id ke 'colly')."
+
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ TASK 1 VERIFIED - ALL TESTS PASSED (5/5 steps, 100%)
+          
+          Comprehensive backend testing completed for inbound inventory quantity & packagingType feature.
+          The implementation correctly stores quantity (jumlah kemasan) and packagingType from the request.
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Product Setup:
+             - Used existing product: RCP-PR1 - Rcp Prod
+             - Product ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          
+          ✅ STEP 2 — Product packagingType Configuration:
+             - PATCH /api/products/{id} with {"packagingType":"colly"} → 200
+             - Product updated successfully with packagingType='colly' ✓
+          
+          ✅ STEP 3 — Cold Storage Setup:
+             - Created new cold storage: CS-TEST-190627
+             - Cold Storage ID: 863922da-9b92-411f-8d65-2a1ffe8671bf
+          
+          ✅ STEP 4 — **CRITICAL TEST** — Inbound with quantity=5, packagingType='colly':
+             - POST /api/inventory/inbound with body:
+               {
+                 "coldStorageId": "863922da-9b92-411f-8d65-2a1ffe8671bf",
+                 "referenceType": "MANUAL",
+                 "items": [{
+                   "productId": "0e36919c-39bc-4861-a991-220bb9e88725",
+                   "weight": 30,
+                   "quantity": 5,
+                   "packagingType": "colly",
+                   "expiredDate": "2026-12-31"
+                 }]
+               }
+             - Result: 201 Created ✓
+             - Transaction ID: 2c793ecb-125f-44fc-a951-0a5b8a8dc9cf
+             - Stocks created: 1
+             - Stock ID: bb7bea50-b243-4e29-9409-1c6b6c90b748
+             - Kode Simpan: 2608080001
+             - Response contains weight=30, quantity=5 ✓
+          
+          ✅ STEP 5 — **CRITICAL VERIFICATION** — Stock Data Verification:
+             - GET /api/inventory/stocks?status=active → 200
+             - Found stock with kodeSimpan: 2608080001 ✓
+             
+             **ACTUAL VALUES OBSERVED:**
+             - kodeSimpan: 2608080001
+             - weight: 30 kg ✓
+             - quantity: 5 ✓
+             - packagingType: 'colly' ✓
+             - status: active ✓
+             
+             **CRITICAL VERIFICATION #1:**
+             ✅ quantity = 5 (matches request, NOT hardcoded 1)
+             ✅ This proves inbound stores the REAL quantity from request
+             
+             **CRITICAL VERIFICATION #2:**
+             ✅ packagingType = 'colly' (matches request)
+             ✅ This proves inbound stores the packagingType from request
+             
+             **CRITICAL VERIFICATION #3:**
+             ✅ weight = 30 kg (matches request)
+             ✅ All three fields (weight, quantity, packagingType) stored correctly
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (STEP 4 & 5)**:
+          - POST /api/inventory/inbound accepts quantity and packagingType in items array
+          - Implementation at lines 3330-3336 in route.js:
+            * Line 3334: `packagingType: it.packagingType || 'karung'` (stores from request)
+            * Line 3335: `quantity: Number(it.quantity || 0)` (stores from request)
+          - Stock record created with correct values
+          - GET /api/inventory/stocks returns all fields including quantity and packagingType
+          
+          ✅ **Data Integrity**:
+          - inventory_stock table correctly stores packagingType field
+          - inventory_stock table correctly stores quantity field
+          - No data corruption or calculation errors
+          - Stock status set to 'active' correctly
+          
+          ✅ **API Response**:
+          - POST /api/inventory/inbound returns 201 with transaction ID and stocks array
+          - Stocks array contains created stock with id, kodeSimpan, weight, quantity
+          - GET /api/inventory/stocks returns enriched data with all stock fields
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Product:
+          - SKU: RCP-PR1
+          - Name: Rcp Prod
+          - ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          - packagingType: colly (after PATCH)
+          
+          Cold Storage:
+          - Code: CS-TEST-190627
+          - ID: 863922da-9b92-411f-8d65-2a1ffe8671bf
+          
+          Inbound Transaction:
+          - Transaction ID: 2c793ecb-125f-44fc-a951-0a5b8a8dc9cf
+          - Reference Type: MANUAL
+          - Items: 1 item (weight=30, quantity=5, packagingType='colly')
+          
+          Stock Created:
+          - Stock ID: bb7bea50-b243-4e29-9409-1c6b6c90b748
+          - Kode Simpan: 2608080001
+          - Product ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          - Cold Storage ID: 863922da-9b92-411f-8d65-2a1ffe8671bf
+          - Weight: 30 kg
+          - Quantity: 5 (NOT hardcoded 1)
+          - packagingType: 'colly' (NOT default 'karung')
+          - Status: active
+          - Expired Date: 2026-12-31
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All inbound inventory quantity & packagingType features working correctly.
+          Inbound stores REAL quantity from request (not hardcoded 1).
+          Inbound stores packagingType from request (not just default 'karung').
+          Stock data persisted correctly in database.
+          Stock data retrieved correctly via API.
+          
+          Test Coverage: 5/5 steps passed (100%)
+          - Product setup ✓
+          - Product packagingType configuration ✓
+          - Cold storage setup ✓
+          - Inbound creation with quantity & packagingType ✓
+          - Stock data verification ✓
+
+
+  - task: "Split karung/colly diizinkan (bukan hanya 'karung')"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (POST /api/inventory/split-karung)"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Kondisi split diubah agar menerima packagingType 'karung' ATAU 'colly'. Buat stok inbound packagingType 'colly', lalu POST /api/inventory/split-karung {stockId, packs:[{weight,quantity}]} harus sukses (tidak error 'Hanya karung yang bisa displit')."
+
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ TASK 2 VERIFIED - ALL TESTS PASSED (5/5 steps, 100%)
+          
+          Comprehensive backend testing completed for split-karung/colly feature.
+          The implementation correctly allows splitting 'colly' packagingType (not just 'karung').
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Stock Verification:
+             - Used stock from TASK 1: bb7bea50-b243-4e29-9409-1c6b6c90b748
+             - Kode Simpan: 2608080001
+             - packagingType: 'colly' ✓
+             - status: 'active' ✓
+             - weight: 30 kg
+             - quantity: 5
+          
+          ✅ STEP 2 — **CRITICAL TEST** — Split colly into packs:
+             - POST /api/inventory/split-karung with body:
+               {
+                 "stockId": "bb7bea50-b243-4e29-9409-1c6b6c90b748",
+                 "packs": [
+                   {"weight": 15, "quantity": 1},
+                   {"weight": 15, "quantity": 1}
+                 ]
+               }
+             - Result: 201 Created ✓
+             - **Expected: 200/201 success (NOT 400 "Hanya karung yang bisa displit")**
+             - **ACTUAL: 201 success** ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Split-karung ACCEPTED 'colly' packagingType
+             ✅ NO rejection error "Hanya karung yang bisa displit"
+             ✅ This proves the endpoint allows BOTH 'karung' AND 'colly'
+          
+          ✅ STEP 3 — Response Verification:
+             - Response contains 'childStockIds' field ✓
+             - Number of child stocks created: 2 ✓
+             - Child stock IDs:
+               * f7f84f84-4a3c-49b8-b035-2297951c35ea
+               * a27c6324-3a4e-4eb5-9c19-aa1272ff3888
+          
+          ✅ STEP 4 — Parent Stock Status Verification:
+             - GET /api/inventory/stocks?status=opened → 200
+             - Parent stock found in 'opened' status ✓
+             - Parent stock no longer in 'active' status ✓
+             - **Parent stock correctly marked as 'opened' after split**
+          
+          ✅ STEP 5 — Child Stocks Verification:
+             - GET /api/inventory/stocks?status=active → 200
+             - Found 2 child stocks in active status ✓
+             
+             **Child Stock 1:**
+             - Kode Simpan: 2608080002
+             - packagingType: 'pack' ✓
+             - weight: 15 kg ✓
+             - quantity: 1 ✓
+             - parentStockId: bb7bea50-b243-4e29-9409-1c6b6c90b748 ✓
+             
+             **Child Stock 2:**
+             - Kode Simpan: 2608080003
+             - packagingType: 'pack' ✓
+             - weight: 15 kg ✓
+             - quantity: 1 ✓
+             - parentStockId: bb7bea50-b243-4e29-9409-1c6b6c90b748 ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Child stocks created with packagingType='pack' (correct)
+             ✅ Child stocks have correct parentStockId reference
+             ✅ Child stocks have correct weight and quantity from request
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (STEP 2)**:
+          - POST /api/inventory/split-karung accepts 'colly' packagingType
+          - Implementation at line 3451 in route.js:
+            * `if (parent.packagingType !== 'karung' && parent.packagingType !== 'colly') return err('Hanya karung/colly yang bisa displit');`
+            * Condition allows BOTH 'karung' AND 'colly'
+            * Error message updated to "Hanya karung/colly yang bisa displit"
+          - Split operation successful with 201 status
+          - No rejection error for 'colly' packagingType
+          
+          ✅ **Parent Stock Handling**:
+          - Parent stock status changed from 'active' to 'opened'
+          - Implementation at line 3476 in route.js:
+            * `db.update(s.inventoryStock).set({ status: 'opened', openedAt: new Date(), updatedAt: new Date() })`
+          - Parent stock no longer counted in active inventory
+          - openedAt timestamp recorded
+          
+          ✅ **Child Stocks Creation**:
+          - 2 child stocks created as requested in packs array
+          - Each child stock has:
+            * Unique ID and kodeSimpan
+            * packagingType='pack' (not 'colly' or 'karung')
+            * parentStockId reference to parent stock
+            * weight and quantity from request
+            * Same productId, coldStorageId, zoneId as parent
+            * Same expiredDate, sourceBatch, sourceType as parent
+            * status='active'
+          - Implementation at lines 3456-3473 in route.js
+          
+          ✅ **Data Integrity**:
+          - Parent-child relationship correctly established via parentStockId
+          - Child stocks inherit product and location from parent
+          - Child stocks get new unique kodeSimpan values
+          - Total weight preserved: parent 30kg → children 15kg + 15kg = 30kg
+          - No data corruption or calculation errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Parent Stock (before split):
+          - Stock ID: bb7bea50-b243-4e29-9409-1c6b6c90b748
+          - Kode Simpan: 2608080001
+          - packagingType: 'colly'
+          - status: 'active'
+          - weight: 30 kg
+          - quantity: 5
+          
+          Parent Stock (after split):
+          - status: 'opened' (changed from 'active')
+          - openedAt: timestamp recorded
+          
+          Child Stock 1:
+          - Stock ID: f7f84f84-4a3c-49b8-b035-2297951c35ea
+          - Kode Simpan: 2608080002
+          - packagingType: 'pack'
+          - status: 'active'
+          - weight: 15 kg
+          - quantity: 1
+          - parentStockId: bb7bea50-b243-4e29-9409-1c6b6c90b748
+          
+          Child Stock 2:
+          - Stock ID: a27c6324-3a4e-4eb5-9c19-aa1272ff3888
+          - Kode Simpan: 2608080003
+          - packagingType: 'pack'
+          - status: 'active'
+          - weight: 15 kg
+          - quantity: 1
+          - parentStockId: bb7bea50-b243-4e29-9409-1c6b6c90b748
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All split-karung/colly features working correctly.
+          Split-karung accepts 'colly' packagingType (not just 'karung').
+          Parent stock correctly marked as 'opened'.
+          Child stocks created with correct packagingType='pack'.
+          Parent-child relationship correctly established.
+          
+          Test Coverage: 5/5 steps passed (100%)
+          - Stock verification ✓
+          - Split colly into packs ✓
+          - Response verification ✓
+          - Parent stock status verification ✓
+          - Child stocks verification ✓
+
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Inbound inventory menyimpan quantity (jumlah kemasan) & packagingType master (colly/pack/keranjang/kardus)"
+    - "Split karung/colly diizinkan (bukan hanya 'karung')"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Perubahan menampilkan Jenis Kemasan & Qty kemasan (dari master produk) di form SO, PO, Inventory, dan Tally. Backend: POST /api/inventory/inbound sekarang meneruskan quantity riil + packagingType; split-karung menerima 'colly'. Mohon uji dua task backend di atas. Credentials: admin@lpi.co.id / admin123."
+
+    -agent: "testing"
+    -message: |
+      ✅ BACKEND TESTING COMPLETE - ALL TESTS PASSED (2/2 tasks, 100%)
+      
+      **TASK 1: Inbound inventory stores quantity & packagingType** ✅
+      - POST /api/inventory/inbound with quantity=5, packagingType='colly' → 201 Created
+      - Stock verified with correct quantity (5) and packagingType ('colly')
+      - Implementation at lines 3334-3335 in route.js working correctly
+      - Test coverage: 5/5 steps passed (100%)
+      
+      **TASK 2: Split karung/colly is allowed** ✅
+      - POST /api/inventory/split-karung with 'colly' packagingType → 201 Created
+      - Split operation successful (NOT rejected with "Hanya karung yang bisa displit")
+      - Implementation at line 3451 in route.js working correctly
+      - Parent stock marked as 'opened', 2 child stocks created with packagingType='pack'
+      - Test coverage: 5/5 steps passed (100%)
+      
+      **KEY FINDINGS:**
+      ✅ Inbound stores REAL quantity from request (not hardcoded 1)
+      ✅ Inbound stores packagingType from request (not just default 'karung')
+      ✅ Split-karung accepts BOTH 'karung' AND 'colly' packagingType
+      ✅ All data integrity checks passed
+      ✅ All API responses correct
+      
+      **NO CRITICAL ISSUES FOUND**
+      Both features working as designed. Ready for production use.
+

@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
+import { pkgLabel, pkgShort } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -226,7 +227,7 @@ function ItemsTab({ so }) {
                     </div>
                   )}
                 </TableCell>
-                <TableCell className="text-right">{it.quantity} {it.product?.unit}</TableCell>
+                <TableCell className="text-right">{it.quantity} {pkgShort(it.product?.packagingType)}</TableCell>
                 <TableCell className="text-right">
                   {Number(it.shippedWeight) > 0 && Number(it.shippedWeight) !== Number(it.weight) ? (
                     <div>

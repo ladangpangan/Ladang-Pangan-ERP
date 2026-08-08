@@ -19,6 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { pkgLabel, pkgShort } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -239,20 +240,30 @@ function CreatePODialog({ onSaved }) {
           <Button size="sm" variant="outline" onClick={addItem}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
         </div>
         <div className="border rounded-lg divide-y">
-          {form.items.map((it, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 p-3 items-center">
-              <div className="col-span-4">
-                <Select value={it.productId} onValueChange={v => updItem(i, 'productId', v)}>
-                  <SelectTrigger><SelectValue placeholder="Produk" /></SelectTrigger>
-                  <SelectContent>{(prods?.data || []).map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
-                </Select>
+          {form.items.map((it, i) => {
+            const prod = (prods?.data || []).find(p => p.id === it.productId);
+            return (
+            <div key={i} className="p-3 space-y-1">
+              <div className="grid grid-cols-12 gap-2 items-center">
+                <div className="col-span-4">
+                  <Select value={it.productId} onValueChange={v => updItem(i, 'productId', v)}>
+                    <SelectTrigger><SelectValue placeholder="Produk" /></SelectTrigger>
+                    <SelectContent>{(prods?.data || []).map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="col-span-2">
+                  <Input type="number" placeholder={`Qty (${pkgShort(prod?.packagingType)})`} value={it.quantity} onChange={e => updItem(i, 'quantity', Number(e.target.value))} />
+                </div>
+                <Input className="col-span-2" type="number" placeholder="Berat (kg)" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
+                <Input className="col-span-3" type="number" placeholder="Harga/kg" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
+                <Button size="icon" variant="ghost" className="col-span-1" onClick={() => removeItem(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
               </div>
-              <Input className="col-span-2" type="number" placeholder="Qty" value={it.quantity} onChange={e => updItem(i, 'quantity', Number(e.target.value))} />
-              <Input className="col-span-2" type="number" placeholder="Berat (kg)" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
-              <Input className="col-span-3" type="number" placeholder="Harga/kg" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
-              <Button size="icon" variant="ghost" className="col-span-1" onClick={() => removeItem(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+              {prod?.packagingType && (
+                <div className="text-[11px] text-muted-foreground pl-1">Kemasan: <b>{pkgLabel(prod.packagingType)}</b> · Qty = jumlah hitungan kemasan</div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
         <div className="text-sm text-muted-foreground">Estimasi subtotal: <b>Rp {form.items.reduce((a, it) => a + (Number(it.unitPrice) * Number(it.weight)), 0).toLocaleString('id-ID')}</b> + Ongkir Rp {Number(form.additionalCost).toLocaleString('id-ID')}</div>
       </div>

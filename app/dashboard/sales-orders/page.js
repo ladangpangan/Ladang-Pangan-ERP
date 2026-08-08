@@ -20,6 +20,7 @@ import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, Ale
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { pkgLabel, pkgShort } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -35,7 +36,7 @@ export const SO_STATUS_COLOR = {
 const PAY_COLOR = { unpaid: 'bg-slate-100 text-slate-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700' };
 const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 
-const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, discount: 0, expiredDate: null });
+const emptyItem = () => ({ stockId: '', productId: '', productName: '', packagingType: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
   fulfillmentType: 'stock', supplierId: '',
@@ -162,6 +163,7 @@ function CreateSODialog({ onSaved }) {
       stockId: stk.id,
       productId: stk.productId,
       productName: product.name || '',
+      packagingType: stk.packagingType || product.packagingType || '',
       kodeSimpan: stk.kodeSimpan,
       csLabel: csZone,
       availableWeight: avail,
@@ -359,7 +361,7 @@ function CreateSODialog({ onSaved }) {
                   <div className="flex-1 min-w-0">
                     <Label className="text-xs text-muted-foreground">Kode Simpan / Produk</Label>
                     {isDropship ? (
-                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
+                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
                         <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                         <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                       </Select>
@@ -370,6 +372,7 @@ function CreateSODialog({ onSaved }) {
                           <div className="text-sm font-semibold truncate">{it.productName}</div>
                           <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
                             <Badge variant="outline" className="font-mono text-[10px]">{it.kodeSimpan}</Badge>
+                            {it.packagingType && <Badge variant="outline" className="text-[10px]">{pkgLabel(it.packagingType)}</Badge>}
                             {it.csLabel && <span>{it.csLabel}</span>}
                             <span>Tersedia: <b className="text-emerald-700">{Number(it.availableWeight).toFixed(1)} kg</b></span>
                             {it.expiredDate && <span>Exp: {format(new Date(it.expiredDate), 'dd MMM yyyy')}</span>}
@@ -405,8 +408,9 @@ function CreateSODialog({ onSaved }) {
                       {overweight && <p className="text-[10px] text-red-600 mt-0.5">Melebihi stok!</p>}
                     </div>
                     <div>
-                      <Label className="text-xs">Qty (pack)</Label>
+                      <Label className="text-xs">Qty ({pkgShort(it.packagingType)})</Label>
                       <Input type="number" value={it.quantity} onChange={e => updItem(i, { quantity: Number(e.target.value) })} />
+                      {it.packagingType && <p className="text-[10px] text-muted-foreground mt-0.5">Jumlah {pkgLabel(it.packagingType)}</p>}
                     </div>
                     {isDropship && (
                       <div>
