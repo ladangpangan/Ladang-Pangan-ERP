@@ -2329,13 +2329,14 @@ async function handleRoute(request, { params }) {
       const body = await request.json();
       if (!Array.isArray(body.items) || body.items.length === 0) return err('items required (per produk)');
 
-      // Aggregate SO items by productId → orderedWeight + avgUnitPrice (weighted by weight)
+      // Aggregate SO items by productId → basis = berat KIRIM riil (shipped) bila ada, jatuh ke berat SO
       const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
       const perProduct = {};
       for (const it of soItems) {
         if (!perProduct[it.productId]) perProduct[it.productId] = { orderedWeight: 0, totalValue: 0 };
-        perProduct[it.productId].orderedWeight += Number(it.weight || 0);
-        perProduct[it.productId].totalValue += Number(it.weight || 0) * Number(it.unitPrice || 0);
+        const effW = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
+        perProduct[it.productId].orderedWeight += effW;
+        perProduct[it.productId].totalValue += effW * Number(it.unitPrice || 0);
       }
       // avgUnitPrice = totalValue / orderedWeight
       for (const pid in perProduct) {

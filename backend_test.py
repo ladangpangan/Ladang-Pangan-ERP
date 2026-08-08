@@ -1,407 +1,309 @@
 #!/usr/bin/env python3
 """
-Backend test for Contact Document Uploads (Feature B only)
-Re-testing after variable-shadowing bug fix (path → nodePath)
+Backend test for Receipt (Penerimaan) bugfix: 
+Receipts must use REAL SHIPPED weight (from Surat Jalan) as basis, not original SO weight.
 """
 
 import requests
 import json
-import io
-from typing import Dict, Any
+import sys
+from datetime import datetime
 
 BASE_URL = "http://localhost:3000/api"
 
 # Test credentials
-ADMIN_CREDS = {"email": "admin@lpi.co.id", "password": "admin123"}
-OPERATOR_CREDS = {"email": "operator@lpi.co.id", "password": "operator123"}
-DIREKTUR_CREDS = {"email": "direktur@lpi.co.id", "password": "direktur123"}
+ADMIN_EMAIL = "admin@lpi.co.id"
+ADMIN_PASSWORD = "admin123"
 
-def login(email: str, password: str) -> requests.Session:
-    """Login and return authenticated session"""
-    print(f"Logging in as {email}...")
-    auth_url = "http://localhost:3000/api/auth/sign-in/email"
-    
+def login(email, password):
+    """Login and return session"""
     session = requests.Session()
-    try:
-        resp = session.post(
-            auth_url,
-            json={"email": email, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=10
-        )
-        if resp.status_code == 200:
-            # Fix Secure cookie issue for HTTP localhost testing
-            # The cookie has Secure=True but we're using HTTP, so we need to override it
-            for cookie in session.cookies:
-                cookie.secure = False
-            print(f"✅ Login successful for {email}")
-            return session
-        else:
-            print(f"❌ Login failed for {email}: {resp.status_code} - {resp.text[:200]}")
-            return session
-    except Exception as e:
-        print(f"❌ Login error for {email}: {e}")
-        return session
+    
+    # Disable SSL verification warnings for localhost
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    resp = session.post(
+        f"{BASE_URL}/auth/sign-in/email",
+        json={"email": email, "password": password},
+        headers={"Content-Type": "application/json"},
+        verify=False
+    )
+    
+    print(f"Login response status: {resp.status_code}")
+    print(f"Login response cookies: {session.cookies.get_dict()}")
+    
+    if resp.status_code != 200:
+        print(f"❌ Login failed: {resp.status_code} {resp.text}")
+        sys.exit(1)
+    
+    # Check if we got the session cookie
+    if 'better-auth.session_token' not in session.cookies:
+        print(f"❌ No session cookie received")
+        print(f"Response headers: {resp.headers}")
+        sys.exit(1)
+    
+    print(f"✅ Logged in as {email}")
+    return session
 
-def test_feature_b_document_uploads():
-    """Test Feature B: Contact Document Uploads"""
+def test_receipt_shipped_weight_basis():
+    """
+    Test that receipts use REAL SHIPPED weight as basis, not original SO weight.
+    
+    Steps:
+    1. Create product PR (POST /api/products)
+    2. Create customer CUST (POST /api/contacts)
+    3. Create SO (non-dropship) with item weight=100, unitPrice=50000 → total 5,000,000
+    4. Advance status Draft→Confirmed→Packed
+    5. Create Surat Jalan with shippedWeight=80 → SO total should become 4,000,000
+    6. Create receipt with receivedWeight=75 → verify orderedWeight (basis) == 80, shrinkageWeight == 5
+    7. Try receipt with receivedWeight=85 (>80) → should be rejected with error about exceeding 80 kg
+    """
+    
+    session = login(ADMIN_EMAIL, ADMIN_PASSWORD)
     
     print("\n" + "="*80)
-    print("FEATURE B: CONTACT DOCUMENT UPLOADS - TESTING AFTER BUG FIX")
+    print("TEST: Receipt (Penerimaan) uses REAL SHIPPED weight as basis")
     print("="*80)
     
-    # Login as admin
-    admin_session = login(ADMIN_CREDS["email"], ADMIN_CREDS["password"])
+    # Step 1: Create product
+    print("\n--- STEP 1: Create Product ---")
+    product_data = {
+        "sku": "RCP-PR1",
+        "name": "Rcp Prod",
+        "unit": "kg",
+        "basePrice": 50000
+    }
+    resp = session.post(f"{BASE_URL}/products", json=product_data, verify=False)
+    print(f"Create product response: {resp.status_code}")
+    if resp.status_code != 201:
+        print(f"❌ Failed to create product: {resp.status_code} {resp.text}")
+        return False
+    product = resp.json()["data"]
+    product_id = product["id"]
+    print(f"✅ Product created: {product['sku']} (ID: {product_id})")
     
-    # SETUP: Create a contact P
-    print("\n--- SETUP: Create test contact ---")
-    try:
-        import time
-        contact_data = {
-            "categories": ["Customer"],
-            "displayName": "Doc Owner FINAL",
-            "code": f"DOC-FINAL-{int(time.time()) % 100000}"
-        }
-        resp = admin_session.post(f"{BASE_URL}/contacts", json=contact_data, timeout=10)
-        print(f"POST /api/contacts: {resp.status_code}")
-        
-        if resp.status_code == 201:
-            contact = resp.json().get("data", {})
-            contact_id = contact.get("id")
-            print(f"✅ Contact created: ID={contact_id}, Code={contact.get('code')}")
-        else:
-            print(f"❌ Failed to create contact: {resp.text[:200]}")
-            return
-    except Exception as e:
-        print(f"❌ Setup error: {e}")
-        return
+    # Step 2: Create customer
+    print("\n--- STEP 2: Create Customer ---")
+    customer_data = {
+        "categories": ["Customer"],
+        "displayName": "Rcp Cust",
+        "code": "CUST-RCP1"
+    }
+    resp = session.post(f"{BASE_URL}/contacts", json=customer_data, verify=False)
+    if resp.status_code != 201:
+        print(f"❌ Failed to create customer: {resp.status_code} {resp.text}")
+        return False
+    customer = resp.json()["data"]
+    customer_id = customer["id"]
+    print(f"✅ Customer created: {customer['displayName']} (ID: {customer_id})")
     
-    # Test counters
-    tests_passed = 0
-    tests_failed = 0
+    # Step 3: Create SO with item weight=100, unitPrice=50000
+    print("\n--- STEP 3: Create Sales Order ---")
+    so_data = {
+        "customerId": customer_id,
+        "orderDate": datetime.now().isoformat(),
+        "fulfillmentType": "stock",  # non-dropship
+        "items": [
+            {
+                "productId": product_id,
+                "quantity": 1,
+                "weight": 100,
+                "unitPrice": 50000
+            }
+        ]
+    }
+    resp = session.post(f"{BASE_URL}/sales-orders", json=so_data, verify=False)
+    if resp.status_code != 201:
+        print(f"❌ Failed to create SO: {resp.status_code} {resp.text}")
+        return False
+    so = resp.json()["data"]
+    so_id = so["id"]
+    so_number = so["soNumber"]
+    print(f"✅ SO created: {so_number} (ID: {so_id})")
+    print(f"   Initial totalAmount: Rp {so['totalAmount']:,}")
     
-    # B1: Upload with valid docType='NPWP'
-    print("\n--- B1: Upload document with docType='NPWP' ---")
-    try:
-        # Create a small PNG-like file (just some bytes)
-        file_bytes = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
-        
-        files = {'file': ('npwp.png', io.BytesIO(file_bytes), 'image/png')}
-        data = {'docType': 'NPWP'}
-        
-        resp = admin_session.post(
-            f"{BASE_URL}/contacts/{contact_id}/documents",
-            files=files,
-            data=data,
-            timeout=10
-        )
-        
-        print(f"POST /api/contacts/{contact_id}/documents: {resp.status_code}")
-        
-        if resp.status_code == 201:
-            doc = resp.json().get("data", {})
-            doc_id_b1 = doc.get("id")
-            
-            # Verify response fields
-            checks = [
-                ("docType", doc.get("docType") == "NPWP"),
-                ("size > 0", doc.get("size", 0) > 0),
-                ("fileName present", bool(doc.get("fileName"))),
-                ("storedName present", bool(doc.get("storedName"))),
-            ]
-            
-            all_passed = all(check[1] for check in checks)
-            
-            for check_name, passed in checks:
-                status = "✓" if passed else "✗"
-                print(f"  {status} {check_name}: {doc.get(check_name.split()[0]) if ' ' not in check_name else 'checked'}")
-            
-            if all_passed:
-                print(f"✅ B1 PASSED: Document uploaded successfully")
-                print(f"   - docId: {doc_id_b1}")
-                print(f"   - docType: {doc.get('docType')}")
-                print(f"   - size: {doc.get('size')} bytes")
-                print(f"   - fileName: {doc.get('fileName')}")
-                tests_passed += 1
-            else:
-                print(f"❌ B1 FAILED: Response validation failed")
-                tests_failed += 1
-        else:
-            print(f"❌ B1 FAILED: Expected 201, got {resp.status_code}")
-            print(f"   Response: {resp.text[:300]}")
-            tests_failed += 1
-            doc_id_b1 = None
-    except Exception as e:
-        print(f"❌ B1 FAILED: Exception - {e}")
-        tests_failed += 1
-        doc_id_b1 = None
+    if so["totalAmount"] != 5000000:
+        print(f"❌ FAIL: Expected SO total 5,000,000, got {so['totalAmount']}")
+        return False
+    print(f"✅ SO total correct: Rp 5,000,000 (50000 × 100kg)")
     
-    # B2: GET list of documents
-    print("\n--- B2: GET list of documents ---")
-    try:
-        resp = admin_session.get(f"{BASE_URL}/contacts/{contact_id}/documents", timeout=10)
-        print(f"GET /api/contacts/{contact_id}/documents: {resp.status_code}")
-        
-        if resp.status_code == 200:
-            docs = resp.json().get("data", [])
-            found = any(d.get("id") == doc_id_b1 for d in docs) if doc_id_b1 else False
-            
-            if found:
-                print(f"✅ B2 PASSED: Document list contains uploaded doc")
-                print(f"   - Total documents: {len(docs)}")
-                tests_passed += 1
-            else:
-                print(f"❌ B2 FAILED: Uploaded document not found in list")
-                print(f"   - Documents returned: {len(docs)}")
-                tests_failed += 1
-        else:
-            print(f"❌ B2 FAILED: Expected 200, got {resp.status_code}")
-            print(f"   Response: {resp.text[:300]}")
-            tests_failed += 1
-    except Exception as e:
-        print(f"❌ B2 FAILED: Exception - {e}")
-        tests_failed += 1
+    # Get SO item ID
+    resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", verify=False)
+    if resp.status_code != 200:
+        print(f"❌ Failed to get SO detail: {resp.status_code}")
+        return False
+    so_detail = resp.json()["data"]
+    so_item_id = so_detail["items"][0]["id"]
+    print(f"   SO item ID: {so_item_id}")
     
-    # B3: GET document file
-    print("\n--- B3: GET document file (stream) ---")
-    if doc_id_b1:
-        try:
-            resp = admin_session.get(
-                f"{BASE_URL}/contacts/{contact_id}/documents/{doc_id_b1}/file",
-                timeout=10
-            )
-            print(f"GET /api/contacts/{contact_id}/documents/{doc_id_b1}/file: {resp.status_code}")
-            
-            if resp.status_code == 200:
-                content_type = resp.headers.get("Content-Type", "")
-                content_length = len(resp.content)
-                
-                checks = [
-                    ("Status 200", True),
-                    ("Non-empty body", content_length > 0),
-                    ("Has Content-Type", bool(content_type)),
-                ]
-                
-                all_passed = all(check[1] for check in checks)
-                
-                for check_name, passed in checks:
-                    status = "✓" if passed else "✗"
-                    print(f"  {status} {check_name}")
-                
-                print(f"   - Content-Type: {content_type}")
-                print(f"   - Content-Length: {content_length} bytes")
-                
-                if all_passed:
-                    print(f"✅ B3 PASSED: Document file retrieved successfully")
-                    tests_passed += 1
-                else:
-                    print(f"❌ B3 FAILED: Validation failed")
-                    tests_failed += 1
-            else:
-                print(f"❌ B3 FAILED: Expected 200, got {resp.status_code}")
-                print(f"   Response: {resp.text[:300]}")
-                tests_failed += 1
-        except Exception as e:
-            print(f"❌ B3 FAILED: Exception - {e}")
-            tests_failed += 1
-    else:
-        print("⏭️  B3 SKIPPED: No document ID from B1")
-        tests_failed += 1
+    # Step 4: Advance status Draft→Confirmed→Packed
+    print("\n--- STEP 4: Advance SO Status ---")
     
-    # B4: Upload with invalid docType (should be coerced to 'Lainnya')
-    print("\n--- B4: Upload with invalid docType='RandomType' ---")
-    try:
-        file_bytes = b'Test file content for invalid docType'
-        files = {'file': ('test.txt', io.BytesIO(file_bytes), 'text/plain')}
-        data = {'docType': 'RandomType'}
-        
-        resp = admin_session.post(
-            f"{BASE_URL}/contacts/{contact_id}/documents",
-            files=files,
-            data=data,
-            timeout=10
-        )
-        
-        print(f"POST /api/contacts/{contact_id}/documents: {resp.status_code}")
-        
-        if resp.status_code == 201:
-            doc = resp.json().get("data", {})
-            doc_id_b4 = doc.get("id")
-            doc_type = doc.get("docType")
-            
-            if doc_type == "Lainnya":
-                print(f"✅ B4 PASSED: Invalid docType coerced to 'Lainnya'")
-                print(f"   - docId: {doc_id_b4}")
-                print(f"   - docType: {doc_type}")
-                tests_passed += 1
-            else:
-                print(f"❌ B4 FAILED: Expected docType='Lainnya', got '{doc_type}'")
-                tests_failed += 1
-        else:
-            print(f"❌ B4 FAILED: Expected 201, got {resp.status_code}")
-            print(f"   Response: {resp.text[:300]}")
-            tests_failed += 1
-            doc_id_b4 = None
-    except Exception as e:
-        print(f"❌ B4 FAILED: Exception - {e}")
-        tests_failed += 1
-        doc_id_b4 = None
+    # Draft → Confirmed
+    resp = session.post(
+        f"{BASE_URL}/sales-orders/{so_id}/status",
+        json={"status": "Confirmed"},
+        verify=False
+    )
+    if resp.status_code != 200:
+        print(f"❌ Failed to advance to Confirmed: {resp.status_code} {resp.text}")
+        return False
+    print(f"✅ SO advanced to Confirmed")
     
-    # B5: Upload with NO file (should fail with 400)
-    print("\n--- B5: Upload with NO file (only docType) ---")
-    try:
-        data = {'docType': 'NPWP'}
-        # No files parameter
-        
-        resp = admin_session.post(
-            f"{BASE_URL}/contacts/{contact_id}/documents",
-            data=data,
-            timeout=10
-        )
-        
-        print(f"POST /api/contacts/{contact_id}/documents: {resp.status_code}")
-        
-        if resp.status_code == 400:
-            error_msg = resp.json().get("error", "")
-            print(f"✅ B5 PASSED: Upload without file rejected with 400")
-            print(f"   - Error message: {error_msg}")
-            tests_passed += 1
-        else:
-            print(f"❌ B5 FAILED: Expected 400, got {resp.status_code}")
-            print(f"   Response: {resp.text[:300]}")
-            tests_failed += 1
-    except Exception as e:
-        print(f"❌ B5 FAILED: Exception - {e}")
-        tests_failed += 1
+    # Confirmed → Packed
+    resp = session.post(
+        f"{BASE_URL}/sales-orders/{so_id}/status",
+        json={"status": "Packed"},
+        verify=False
+    )
+    if resp.status_code != 200:
+        print(f"❌ Failed to advance to Packed: {resp.status_code} {resp.text}")
+        return False
+    print(f"✅ SO advanced to Packed")
     
-    # B6: DELETE document
-    print("\n--- B6: DELETE document ---")
-    if doc_id_b1:
-        try:
-            # Delete the document
-            resp = admin_session.delete(
-                f"{BASE_URL}/contacts/{contact_id}/documents/{doc_id_b1}",
-                timeout=10
-            )
-            print(f"DELETE /api/contacts/{contact_id}/documents/{doc_id_b1}: {resp.status_code}")
-            
-            if resp.status_code == 200:
-                # Verify it's no longer in the list
-                resp_list = admin_session.get(f"{BASE_URL}/contacts/{contact_id}/documents", timeout=10)
-                docs = resp_list.json().get("data", [])
-                still_exists = any(d.get("id") == doc_id_b1 for d in docs)
-                
-                if not still_exists:
-                    print(f"✅ B6 PASSED: Document deleted successfully")
-                    print(f"   - Document no longer in list")
-                    tests_passed += 1
-                else:
-                    print(f"❌ B6 FAILED: Document still exists in list after deletion")
-                    tests_failed += 1
-            else:
-                print(f"❌ B6 FAILED: Expected 200, got {resp.status_code}")
-                print(f"   Response: {resp.text[:300]}")
-                tests_failed += 1
-        except Exception as e:
-            print(f"❌ B6 FAILED: Exception - {e}")
-            tests_failed += 1
-    else:
-        print("⏭️  B6 SKIPPED: No document ID from B1")
-        tests_failed += 1
+    # Step 5: Create Surat Jalan with shippedWeight=80
+    print("\n--- STEP 5: Create Surat Jalan with shippedWeight=80 ---")
+    sj_data = {
+        "items": [
+            {
+                "itemId": so_item_id,
+                "shippedWeight": 80
+            }
+        ]
+    }
+    resp = session.post(f"{BASE_URL}/sales-orders/{so_id}/surat-jalan", json=sj_data, verify=False)
+    if resp.status_code != 201:
+        print(f"❌ Failed to create Surat Jalan: {resp.status_code} {resp.text}")
+        return False
+    sj = resp.json()["data"]
+    print(f"✅ Surat Jalan created: {sj['sjNumber']}")
     
-    # B7: RBAC tests
-    print("\n--- B7: RBAC tests ---")
+    # Verify SO total recomputed to 4,000,000 (50000 × 80)
+    resp = session.get(f"{BASE_URL}/sales-orders/{so_id}", verify=False)
+    if resp.status_code != 200:
+        print(f"❌ Failed to get SO detail: {resp.status_code}")
+        return False
+    so_detail = resp.json()["data"]
+    print(f"   SO totalAmount after SJ: Rp {so_detail['totalAmount']:,}")
     
-    # B7.1: Operator POST (should fail with 403)
-    print("\n  B7.1: Operator POST (should be 403)")
-    try:
-        operator_session = login(OPERATOR_CREDS["email"], OPERATOR_CREDS["password"])
-        
-        file_bytes = b'Operator test file'
-        files = {'file': ('operator.txt', io.BytesIO(file_bytes), 'text/plain')}
-        data = {'docType': 'NPWP'}
-        
-        resp = operator_session.post(
-            f"{BASE_URL}/contacts/{contact_id}/documents",
-            files=files,
-            data=data,
-            timeout=10
-        )
-        
-        print(f"  POST as operator: {resp.status_code}")
-        
-        if resp.status_code == 403:
-            print(f"  ✅ B7.1 PASSED: Operator POST correctly denied (403)")
-            tests_passed += 1
-        else:
-            print(f"  ❌ B7.1 FAILED: Expected 403, got {resp.status_code}")
-            tests_failed += 1
-    except Exception as e:
-        print(f"  ❌ B7.1 FAILED: Exception - {e}")
-        tests_failed += 1
+    if so_detail["totalAmount"] != 4000000:
+        print(f"❌ FAIL: Expected SO total 4,000,000 after SJ, got {so_detail['totalAmount']}")
+        return False
+    print(f"✅ SO total recomputed correctly: Rp 4,000,000 (50000 × 80kg shipped)")
     
-    # B7.2: Direktur POST (should fail with 403)
-    print("\n  B7.2: Direktur POST (should be 403)")
-    try:
-        direktur_session = login(DIREKTUR_CREDS["email"], DIREKTUR_CREDS["password"])
-        
-        file_bytes = b'Direktur test file'
-        files = {'file': ('direktur.txt', io.BytesIO(file_bytes), 'text/plain')}
-        data = {'docType': 'NPWP'}
-        
-        resp = direktur_session.post(
-            f"{BASE_URL}/contacts/{contact_id}/documents",
-            files=files,
-            data=data,
-            timeout=10
-        )
-        
-        print(f"  POST as direktur: {resp.status_code}")
-        
-        if resp.status_code == 403:
-            print(f"  ✅ B7.2 PASSED: Direktur POST correctly denied (403)")
-            tests_passed += 1
-        else:
-            print(f"  ❌ B7.2 FAILED: Expected 403, got {resp.status_code}")
-            tests_failed += 1
-    except Exception as e:
-        print(f"  ❌ B7.2 FAILED: Exception - {e}")
-        tests_failed += 1
+    # Verify item shippedWeight recorded
+    item_shipped_weight = so_detail["items"][0].get("shippedWeight")
+    print(f"   Item shippedWeight: {item_shipped_weight} kg")
+    if item_shipped_weight != 80:
+        print(f"❌ FAIL: Expected shippedWeight 80, got {item_shipped_weight}")
+        return False
+    print(f"✅ Item shippedWeight recorded correctly: 80 kg")
     
-    # B7.3: Direktur GET (should succeed with 200)
-    print("\n  B7.3: Direktur GET list (should be 200)")
-    try:
-        resp = direktur_session.get(f"{BASE_URL}/contacts/{contact_id}/documents", timeout=10)
-        print(f"  GET as direktur: {resp.status_code}")
-        
-        if resp.status_code == 200:
-            docs = resp.json().get("data", [])
-            print(f"  ✅ B7.3 PASSED: Direktur GET correctly allowed (200)")
-            print(f"     - Documents visible: {len(docs)}")
-            tests_passed += 1
-        else:
-            print(f"  ❌ B7.3 FAILED: Expected 200, got {resp.status_code}")
-            tests_failed += 1
-    except Exception as e:
-        print(f"  ❌ B7.3 FAILED: Exception - {e}")
-        tests_failed += 1
+    # Step 6: CRITICAL TEST - Create receipt with receivedWeight=75
+    print("\n--- STEP 6: CRITICAL TEST - Create Receipt with receivedWeight=75 ---")
+    print("   Expected: orderedWeight (basis) = 80 (SHIPPED weight, NOT 100)")
+    print("   Expected: shrinkageWeight = 5 (80 - 75)")
     
-    # Summary
+    receipt_data = {
+        "items": [
+            {
+                "productId": product_id,
+                "receivedWeight": 75
+            }
+        ]
+    }
+    resp = session.post(f"{BASE_URL}/sales-orders/{so_id}/receipts", json=receipt_data, verify=False)
+    if resp.status_code != 201:
+        print(f"❌ Failed to create receipt: {resp.status_code} {resp.text}")
+        return False
+    receipt = resp.json()["data"]
+    print(f"✅ Receipt created: {receipt['receiptNumber']}")
+    
+    # Verify receipt line values
+    receipt_item = receipt["items"][0]
+    ordered_weight = receipt_item["orderedWeight"]
+    received_weight = receipt_item["receivedWeight"]
+    shrinkage_weight = receipt_item["shrinkageWeight"]
+    
+    print(f"\n   ACTUAL VALUES:")
+    print(f"   - orderedWeight (basis): {ordered_weight} kg")
+    print(f"   - receivedWeight: {received_weight} kg")
+    print(f"   - shrinkageWeight: {shrinkage_weight} kg")
+    
+    # CRITICAL VERIFICATION
+    if ordered_weight != 80:
+        print(f"\n❌ FAIL: orderedWeight (basis) should be 80 (SHIPPED weight), got {ordered_weight}")
+        print(f"   This means the receipt is using ORIGINAL SO weight (100) instead of SHIPPED weight (80)")
+        return False
+    print(f"\n✅ PASS: orderedWeight (basis) = 80 kg (SHIPPED weight, NOT original 100 kg)")
+    
+    if shrinkage_weight != 5:
+        print(f"❌ FAIL: shrinkageWeight should be 5 (80-75), got {shrinkage_weight}")
+        return False
+    print(f"✅ PASS: shrinkageWeight = 5 kg (80 - 75)")
+    
+    # Step 7: Over-cap test - Try to create receipt with receivedWeight=85 (>80 shipped)
+    print("\n--- STEP 7: Over-cap Test - receivedWeight=85 (exceeds shipped 80) ---")
+    print("   Expected: 400 rejection with error about exceeding 80 kg")
+    
+    receipt_data_overcap = {
+        "items": [
+            {
+                "productId": product_id,
+                "receivedWeight": 85
+            }
+        ]
+    }
+    resp = session.post(f"{BASE_URL}/sales-orders/{so_id}/receipts", json=receipt_data_overcap, verify=False)
+    
+    if resp.status_code == 201:
+        print(f"❌ FAIL: Receipt with receivedWeight=85 should be REJECTED, but got 201")
+        return False
+    
+    if resp.status_code != 400:
+        print(f"❌ FAIL: Expected 400 rejection, got {resp.status_code}")
+        return False
+    
+    error_message = resp.json().get("error", "")
+    print(f"\n   ACTUAL ERROR MESSAGE:")
+    print(f"   {error_message}")
+    
+    # Verify error message mentions 80 kg (shipped weight), not 100 kg
+    if "80" not in error_message:
+        print(f"\n❌ FAIL: Error message should reference 80 kg (shipped weight), not 100 kg")
+        print(f"   This means validation is using ORIGINAL SO weight instead of SHIPPED weight")
+        return False
+    
+    if "85" not in error_message:
+        print(f"❌ FAIL: Error message should mention received weight 85 kg")
+        return False
+    
+    print(f"\n✅ PASS: Receipt correctly rejected with error referencing 80 kg (shipped weight)")
+    
     print("\n" + "="*80)
-    print("FEATURE B TEST SUMMARY")
+    print("✅ ALL TESTS PASSED")
     print("="*80)
-    total_tests = tests_passed + tests_failed
-    print(f"Total tests: {total_tests}")
-    print(f"✅ Passed: {tests_passed}")
-    print(f"❌ Failed: {tests_failed}")
-    print(f"Success rate: {(tests_passed/total_tests*100) if total_tests > 0 else 0:.1f}%")
+    print("\nSUMMARY:")
+    print("✅ Step 1: Product created")
+    print("✅ Step 2: Customer created")
+    print("✅ Step 3: SO created with weight=100, total=5,000,000")
+    print("✅ Step 4: SO advanced Draft→Confirmed→Packed")
+    print("✅ Step 5: Surat Jalan created with shippedWeight=80, SO total→4,000,000")
+    print("✅ Step 6: Receipt created with receivedWeight=75")
+    print("   - orderedWeight (basis) = 80 kg (SHIPPED weight, NOT 100)")
+    print("   - shrinkageWeight = 5 kg (80 - 75)")
+    print("✅ Step 7: Receipt with receivedWeight=85 rejected (exceeds 80 kg shipped)")
+    print("\n✅ BUGFIX VERIFIED: Receipts use REAL SHIPPED weight as basis")
     
-    if tests_failed == 0:
-        print("\n🎉 ALL TESTS PASSED - Feature B is working correctly!")
-    else:
-        print(f"\n⚠️  {tests_failed} test(s) failed - see details above")
-    
-    print("="*80)
+    return True
 
 if __name__ == "__main__":
-    test_feature_b_document_uploads()
+    try:
+        success = test_receipt_shipped_weight_basis()
+        sys.exit(0 if success else 1)
+    except Exception as e:
+        print(f"\n❌ TEST FAILED WITH EXCEPTION: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
