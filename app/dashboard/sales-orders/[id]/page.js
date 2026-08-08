@@ -227,7 +227,16 @@ function ItemsTab({ so }) {
                   )}
                 </TableCell>
                 <TableCell className="text-right">{it.quantity} {it.product?.unit}</TableCell>
-                <TableCell className="text-right">{it.weight} kg</TableCell>
+                <TableCell className="text-right">
+                  {Number(it.shippedWeight) > 0 && Number(it.shippedWeight) !== Number(it.weight) ? (
+                    <div>
+                      <div className="font-semibold text-emerald-700">{it.shippedWeight} kg <span className="text-[10px] font-normal text-muted-foreground">kirim</span></div>
+                      <div className="text-[11px] text-muted-foreground line-through">{it.weight} kg SO</div>
+                    </div>
+                  ) : (
+                    <>{it.weight} kg</>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                 <TableCell className="text-right text-red-600">-Rp {Number(it.discount || 0).toLocaleString('id-ID')}</TableCell>
                 <TableCell className="text-right font-semibold">Rp {Number(it.subtotal).toLocaleString('id-ID')}</TableCell>
