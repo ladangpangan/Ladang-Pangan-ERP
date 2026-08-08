@@ -109,6 +109,204 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "BUGFIX: Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): confirming real shipped weight (hari-H) at Packed/Surat Jalan did not change the SO or the linked dropship PO — stayed at original SO weight.
+          FIX in POST /sales-orders/:id/surat-jalan: after recording per-item shippedWeight to sales_order_items.shipped_weight, if any shipped weight was recorded:
+          (1) Recompute SO item subtotals + SO totalAmount using EFFECTIVE weight = shippedWeight if >0 else ordered weight. So SO total now reflects real shipped weight immediately at SJ time.
+          (2) For dropship SO (fulfillmentType='dropship' with autoPoId): sum effective shipped weight per productId, update the linked PO items' weight to match, then recalcPoHpp(autoPoId) → PO totalAmount reflects real shipped weight × buy price.
+          TEST:
+          A) STOCK SO: create SO (stock or non-dropship) with item weight=100, unitPrice=50000 → total 5,000,000. Advance Draft→Confirmed→Packed. POST surat-jalan with items:[{itemId, shippedWeight:90}] → verify SO totalAmount recomputed to 4,500,000 (50000×90) and item.shippedWeight=90.
+          B) DROPSHIP SO: create dropship SO (supplierId set) item weight=100 unitPrice(sell)=50000 buyPrice=40000 → SO total 5,000,000, auto-PO total 4,000,000. Advance to Packed. POST surat-jalan items:[{itemId, shippedWeight:80}] → verify: SO totalAmount=4,000,000 (50000×80); GET auto-PO → PO item weight=80 and PO totalAmount=3,200,000 (40000×80). Confirms real shipped weight flows to BOTH SO and PO.
+          C) No shippedWeight provided in SJ → SO/PO unchanged (no crash).
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (3/3, 100%)
+          
+          Comprehensive backend testing completed for the Surat Jalan shipped weight bugfix.
+          The fix ensures real shipped weight recorded in Surat Jalan updates BOTH the Sales Order total
+          AND (for dropship) the linked auto-PO.
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST A — NON-DROPSHIP SO SHIPPED WEIGHT → SO TOTAL (PASSED):
+             Setup:
+             - Product: SJW-PR1, basePrice=50000, unit=kg
+             - Customer: SJ Cust (CUST-002)
+             
+             Step 1: Create SO WITHOUT dropship (fulfillmentType='stock')
+               - Item: weight=100, unitPrice=50000
+               - SO Number: SO/202608/0007
+               - Initial totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+             
+             Step 2: Advance SO status Draft→Confirmed→Packed ✓
+             
+             Step 3: POST /api/sales-orders/{id}/surat-jalan
+               - Body: {items:[{itemId, shippedWeight:90}]}
+               - SJ Number: SJ/202608/0003
+               - Result: 201 Created ✓
+             
+             Step 4: Verify SO totalAmount recomputed
+               - Item shippedWeight: 90 kg ✓
+               - SO totalAmount: Rp 4,500,000 (50000 × 90kg) ✓
+               - Expected: Rp 4,500,000 ✓
+               - **CRITICAL**: SO total reflects real shipped weight (90kg), NOT ordered weight (100kg)
+          
+          ✅ TEST B — DROPSHIP SO SHIPPED WEIGHT → SO TOTAL AND AUTO-PO (PASSED):
+             Setup:
+             - Product: SJW-PR2, basePrice=50000, unit=kg
+             - Customer: SJ Cust 2 (CUST-003)
+             - Supplier: SJ Supplier (SUP-001)
+             
+             Step 1: Create dropship SO
+               - fulfillmentType: 'dropship'
+               - supplierId: set
+               - Item: weight=100, unitPrice=50000 (sell), buyPrice=40000 (buy)
+               - SO Number: SO/202608/0008
+               - SO totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+               - autoPoId: f4bb7603-0e6d-470e-9d55-890d8b554f59 ✓
+             
+             Step 1b: Verify auto-PO initial state
+               - PO Number: PO/202608/0006
+               - PO totalAmount: Rp 4,000,000 (40000 × 100kg) ✓
+               - Expected: Rp 4,000,000 ✓
+             
+             Step 2: Advance SO status Draft→Confirmed→Packed ✓
+             
+             Step 3: POST /api/sales-orders/{id}/surat-jalan
+               - Body: {items:[{itemId, shippedWeight:80}]}
+               - SJ Number: SJ/202608/0004
+               - Result: 201 Created ✓
+             
+             Step 4: **CRITICAL CHECK** - Verify SO totalAmount recomputed
+               - Item shippedWeight: 80 kg ✓
+               - SO totalAmount: Rp 4,000,000 (50000 × 80kg) ✓
+               - Expected: Rp 4,000,000 ✓
+               - **SO total reflects real shipped weight (80kg), NOT ordered weight (100kg)**
+             
+             Step 5: **CRITICAL CHECK** - Verify PO item weight and totalAmount updated
+               - PO item weight: 80 kg ✓
+               - Expected: 80 kg (NOT 100kg) ✓
+               - PO totalAmount: Rp 3,200,000 (40000 × 80kg) ✓
+               - Expected: Rp 3,200,000 ✓
+               - **THIS IS THE CORE BUGFIX**: Real shipped weight (80kg) flowed to BOTH SO and PO
+               - **BUG FIXED**: Previously PO stayed at original weight (100kg), now syncs to shipped weight (80kg)
+          
+          ✅ TEST C — NO SHIPPED WEIGHT IN SJ (PASSED):
+             Setup:
+             - Product: SJW-PR3, basePrice=50000, unit=kg
+             - Customer: SJ Cust 3 (CUST-004)
+             
+             Step 1: Create SO
+               - Item: weight=100, unitPrice=50000
+               - SO Number: SO/202608/0009
+               - Initial totalAmount: Rp 5,000,000 ✓
+             
+             Step 2: Advance SO status Draft→Confirmed→Packed ✓
+             
+             Step 3: POST /api/sales-orders/{id}/surat-jalan with NO items array
+               - SJ Number: SJ/202608/0005
+               - Result: 201 Created ✓
+               - **No crash, no error** ✓
+             
+             Step 4: Verify SO totalAmount unchanged
+               - SO totalAmount: Rp 5,000,000 ✓
+               - Expected: Rp 5,000,000 (unchanged) ✓
+               - **Backward compatibility maintained**: No items → no recomputation
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified (TEST B)**:
+          - Real shipped weight (80kg) recorded in Surat Jalan
+          - SO totalAmount recomputed: 5,000,000 → 4,000,000 (50000 × 80)
+          - PO item weight updated: 100kg → 80kg
+          - PO totalAmount recomputed: 4,000,000 → 3,200,000 (40000 × 80)
+          - **Shipped weight flows to BOTH SO and PO** ✓
+          - Implementation at lines 2142-2169 in route.js:
+            * Lines 2144-2154: Recompute SO totals using effective weight (shippedWeight || weight)
+            * Lines 2156-2169: For dropship SO, sync PO item weights to shipped weight, then recalcPoHpp()
+          
+          ✅ **Non-Dropship SO (TEST A)**:
+          - Real shipped weight (90kg) recorded in Surat Jalan
+          - SO totalAmount recomputed: 5,000,000 → 4,500,000 (50000 × 90)
+          - Item shippedWeight correctly recorded
+          - **SO total reflects real shipped weight, NOT ordered weight** ✓
+          
+          ✅ **Backward Compatibility (TEST C)**:
+          - Surat Jalan created without items array
+          - No crash, no error
+          - SO totalAmount unchanged
+          - **Existing code without shippedWeight continues to work** ✓
+          
+          ✅ **Data Integrity**:
+          - sales_order_items.shipped_weight correctly recorded
+          - SO totalAmount recomputed using effective weight (shippedWeight || weight)
+          - PO item weight synced to shipped weight for dropship SO
+          - PO totalAmount recomputed via recalcPoHpp() using updated weights
+          - No data corruption or calculation errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          TEST A (Non-dropship SO):
+          - Product: SJW-PR1, basePrice=50000
+          - Customer: CUST-002
+          - SO: SO/202608/0007
+            * Ordered weight: 100kg
+            * Shipped weight: 90kg
+            * Initial SO total: Rp 5,000,000 (50000 × 100)
+            * Final SO total: Rp 4,500,000 (50000 × 90)
+          - SJ: SJ/202608/0003
+          
+          TEST B (Dropship SO):
+          - Product: SJW-PR2, basePrice=50000
+          - Customer: CUST-003
+          - Supplier: SUP-001
+          - SO: SO/202608/0008
+            * Ordered weight: 100kg
+            * Shipped weight: 80kg
+            * unitPrice (sell): 50000
+            * buyPrice (buy): 40000
+            * Initial SO total: Rp 5,000,000 (50000 × 100)
+            * Final SO total: Rp 4,000,000 (50000 × 80)
+            * autoPoId: f4bb7603-0e6d-470e-9d55-890d8b554f59
+          - PO: PO/202608/0006
+            * Initial PO item weight: 100kg
+            * Final PO item weight: 80kg
+            * Initial PO total: Rp 4,000,000 (40000 × 100)
+            * Final PO total: Rp 3,200,000 (40000 × 80)
+          - SJ: SJ/202608/0004
+          
+          TEST C (No shipped weight):
+          - Product: SJW-PR3, basePrice=50000
+          - Customer: CUST-004
+          - SO: SO/202608/0009
+            * Weight: 100kg
+            * SO total: Rp 5,000,000 (unchanged)
+          - SJ: SJ/202608/0005 (no items array)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All Surat Jalan shipped weight bugfix features working correctly.
+          Core bugfix verified: real shipped weight updates BOTH SO and PO.
+          Non-dropship SO total correctly recomputed.
+          Backward compatibility maintained.
+          
+          Test Coverage: 3/3 tests passed (100%)
+          - TEST A: Non-dropship SO shipped weight → SO total ✓
+          - TEST B: Dropship SO shipped weight → SO total AND auto-PO ✓
+          - TEST C: No shipped weight in SJ (no crash) ✓
+
   - task: "BUGFIX: Dropship SO auto-PO buy price (buyPrice) can differ from sell price (unitPrice)"
     implemented: true
     working: true
@@ -6921,11 +7119,12 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Multi-category contacts (categories array) - TESTED & WORKING"
+    - "BUGFIX: Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO - TESTED & WORKING"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
   _archived_focus:
+    - "Multi-category contacts (categories array) - TESTED & WORKING"
     - "Google Maps link (mapsUrl) on contacts + end-customers - TESTED & WORKING"
     - "End-Customer link to existing Customer contact (linkedContactId) - TESTED & WORKING"
     - "Dropship SO UI + SJ shipped weight + Invoice weight basis (BLOCKED BY BUG)"
@@ -7710,4 +7909,78 @@ agent_communication:
       **NO CRITICAL ISSUES FOUND**
       All dropship SO buyPrice bugfix features working correctly.
       Test coverage: 2/2 (100%)
+
+
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE FOR SURAT JALAN SHIPPED WEIGHT BUGFIX
+      
+      **SUMMARY:**
+      ✅ Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO - ALL WORKING (3/3 tests, 100%)
+      
+      **DETAILED TEST RESULTS:**
+      
+      ✅ TEST A: NON-DROPSHIP SO SHIPPED WEIGHT → SO TOTAL
+         - Created SO (fulfillmentType='stock') with weight=100kg, unitPrice=50000
+         - Initial SO totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+         - Advanced SO: Draft → Confirmed → Packed ✓
+         - Created Surat Jalan with shippedWeight=90kg ✓
+         - **RESULT**: SO totalAmount recomputed to Rp 4,500,000 (50000 × 90kg) ✓
+         - Item shippedWeight correctly recorded as 90kg ✓
+         - **CRITICAL**: SO total reflects real shipped weight (90kg), NOT ordered weight (100kg)
+      
+      ✅ TEST B: DROPSHIP SO SHIPPED WEIGHT → SO TOTAL AND AUTO-PO
+         - Created dropship SO with weight=100kg, unitPrice=50000 (sell), buyPrice=40000 (buy)
+         - Initial SO totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+         - Initial PO totalAmount: Rp 4,000,000 (40000 × 100kg) ✓
+         - Advanced SO: Draft → Confirmed → Packed ✓
+         - Created Surat Jalan with shippedWeight=80kg ✓
+         - **RESULT (SO)**: SO totalAmount recomputed to Rp 4,000,000 (50000 × 80kg) ✓
+         - **RESULT (PO)**: PO item weight updated to 80kg ✓
+         - **RESULT (PO)**: PO totalAmount recomputed to Rp 3,200,000 (40000 × 80kg) ✓
+         - **THIS IS THE CORE BUGFIX**: Real shipped weight (80kg) flowed to BOTH SO and PO
+         - **BUG FIXED**: Previously PO stayed at original weight (100kg), now syncs to shipped weight (80kg)
+      
+      ✅ TEST C: NO SHIPPED WEIGHT IN SJ
+         - Created SO with weight=100kg, unitPrice=50000
+         - Initial SO totalAmount: Rp 5,000,000 ✓
+         - Advanced SO: Draft → Confirmed → Packed ✓
+         - Created Surat Jalan with NO items array ✓
+         - **RESULT**: No crash, no error ✓
+         - SO totalAmount unchanged at Rp 5,000,000 ✓
+         - **Backward compatibility maintained**: No items → no recomputation
+      
+      **KEY FINDINGS:**
+      
+      ✅ Core bugfix verified (TEST B):
+         - Real shipped weight (80kg) recorded in Surat Jalan
+         - SO totalAmount recomputed: 5,000,000 → 4,000,000 (50000 × 80)
+         - PO item weight updated: 100kg → 80kg
+         - PO totalAmount recomputed: 4,000,000 → 3,200,000 (40000 × 80)
+         - **Shipped weight flows to BOTH SO and PO** ✓
+      
+      ✅ Non-dropship SO (TEST A):
+         - Real shipped weight (90kg) recorded in Surat Jalan
+         - SO totalAmount recomputed: 5,000,000 → 4,500,000 (50000 × 90)
+         - **SO total reflects real shipped weight, NOT ordered weight** ✓
+      
+      ✅ Backward compatibility (TEST C):
+         - Surat Jalan created without items array
+         - No crash, no error
+         - SO totalAmount unchanged
+         - **Existing code without shippedWeight continues to work** ✓
+      
+      ✅ Implementation verified at lines 2142-2169 in route.js:
+         - Lines 2144-2154: Recompute SO totals using effective weight (shippedWeight || weight)
+         - Lines 2156-2169: For dropship SO, sync PO item weights to shipped weight, then recalcPoHpp()
+      
+      **ACTUAL VALUES OBSERVED:**
+      - TEST A: SO total 5,000,000 → 4,500,000 (90kg shipped vs 100kg ordered)
+      - TEST B: SO total 5,000,000 → 4,000,000 (80kg shipped), PO total 4,000,000 → 3,200,000 (80kg synced)
+      - TEST C: SO total 5,000,000 (unchanged, no items array)
+      
+      **NO CRITICAL ISSUES FOUND**
+      All Surat Jalan shipped weight bugfix features working correctly.
+      Test coverage: 3/3 (100%)
 
