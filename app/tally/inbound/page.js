@@ -19,13 +19,15 @@ import {
   ArrowLeft, PackagePlus, Wifi, WifiOff, LogOut, Plus, X, Save, Loader2, Warehouse, CheckCircle2,
   ListChecks, ClipboardCheck, Package, FileText
 } from 'lucide-react';
+import { PACKAGING_TYPES, pkgLabel, pkgShort } from '@/lib/constants';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 
 const emptyDraft = () => ({
   productId: '',
   weight: '',
-  packagingType: 'karung',
+  packagingType: 'colly',
+  quantity: 1,
   expiredDate: '',
 });
 
@@ -100,6 +102,7 @@ export default function TallyInboundPage() {
       productName: product?.name,
       productSku: product?.sku,
       weight: Number(draft.weight),
+      quantity: Number(draft.quantity || 1),
     }]);
     setDraft(emptyDraft());
     toast.success(`+ ${product?.name} ${draft.weight} kg dicatat`);
@@ -146,7 +149,7 @@ export default function TallyInboundPage() {
       items: staged.map(it => ({
         productId: it.productId,
         weight: Number(it.weight),
-        quantity: 1, // legacy required field; hardcoded 1 (packaging container count)
+        quantity: Number(it.quantity || 1), // jumlah hitungan kemasan
         packagingType: it.packagingType,
         expiredDate: it.expiredDate || undefined,
       })),
@@ -378,7 +381,7 @@ export default function TallyInboundPage() {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Produk</Label>
-            <Select value={draft.productId} onValueChange={(v) => setDraft({ ...draft, productId: v })}>
+            <Select value={draft.productId} onValueChange={(v) => { const p = products.find(x => x.id === v); setDraft({ ...draft, productId: v, packagingType: p?.packagingType || draft.packagingType }); }}>
               <SelectTrigger>
                 <SelectValue placeholder={refProductIds ? `Pilih dari ${refType} (${availableProducts.length} produk)` : 'Pilih produk'} />
               </SelectTrigger>
@@ -403,22 +406,22 @@ export default function TallyInboundPage() {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1.5">
-              <Label className="text-xs">Packaging</Label>
+              <Label className="text-xs">Jenis Kemasan</Label>
               <Select value={draft.packagingType} onValueChange={(v) => setDraft({ ...draft, packagingType: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="karung">Karung</SelectItem>
-                  <SelectItem value="box">Box</SelectItem>
-                  <SelectItem value="pack">Pack</SelectItem>
-                  <SelectItem value="drum">Drum</SelectItem>
-                  <SelectItem value="lain">Lainnya</SelectItem>
+                  {PACKAGING_TYPES.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Kadaluarsa</Label>
-              <Input type="date" value={draft.expiredDate} onChange={(e) => setDraft({ ...draft, expiredDate: e.target.value })} />
+              <Label className="text-xs">Qty ({pkgShort(draft.packagingType)})</Label>
+              <Input type="number" inputMode="numeric" min="1" value={draft.quantity} onChange={(e) => setDraft({ ...draft, quantity: e.target.value })} placeholder="Jumlah kemasan" />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Kadaluarsa</Label>
+            <Input type="date" value={draft.expiredDate} onChange={(e) => setDraft({ ...draft, expiredDate: e.target.value })} />
           </div>
         </CardContent>
       </Card>
@@ -486,7 +489,7 @@ export default function TallyInboundPage() {
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-sm truncate">{it.productName}</div>
                     <div className="text-xs text-muted-foreground">
-                      <span className="font-mono">{it.productSku}</span> · {it.packagingType}
+                      <span className="font-mono">{it.productSku}</span> · {pkgLabel(it.packagingType)} × {Number(it.quantity || 1)}
                       {it.expiredDate && ` · Exp ${format(new Date(it.expiredDate), 'dd MMM yy')}`}
                     </div>
                   </div>

@@ -3448,7 +3448,7 @@ async function handleRoute(request, { params }) {
       // body: { stockId, packs: [{ weight, quantity }] }
       const parent = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, body.stockId)).get();
       if (!parent) return err('Stock not found', 404);
-      if (parent.packagingType !== 'karung') return err('Hanya karung yang bisa displit');
+      if (parent.packagingType !== 'karung' && parent.packagingType !== 'colly') return err('Hanya karung/colly yang bisa displit');
       if (parent.status !== 'active') return err('Karung tidak aktif');
       const packs = body.packs || [];
       if (packs.length === 0) return err('packs required');
