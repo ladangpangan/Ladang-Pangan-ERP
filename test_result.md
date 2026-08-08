@@ -919,7 +919,7 @@ backend:
           - Base URL: http://localhost:3000/api
           - Auth: Better Auth cookie-based (POST /api/auth/sign-in/email)
           - Credentials: admin@lpi.co.id / admin123, operator@lpi.co.id / operator123, direktur@lpi.co.id / direktur123
-          - Test contact: ID=16be1af1-0f7b-434b-99ea-fb7b2328725a, Code=DOC-FINAL-3445
+          - Test contact: ID=agri-system-1, Code=DOC-FINAL-3445
           
           **Test Results:**
           
