@@ -109,6 +109,193 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "BUGFIX: Dropship SO auto-PO buy price (buyPrice) can differ from sell price (unitPrice)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js, /app/app/dashboard/sales-orders/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (reported by user): dropship transaction had buy price == sell price, so no margin. The auto-created PO mirrored the SO unitPrice exactly.
+          FIX: SO POST dropship items now accept optional per-item `buyPrice`. The auto-PO (Produk Jadi) line uses buyPrice as its unitPrice (fallback to item.unitPrice if buyPrice not provided → backward compatible). SO item still stores the SELL price (unitPrice) → SO total unchanged (based on sell price). PO total = buyPrice × weight.
+          Frontend: dropship item entry now shows separate "Harga Beli / kg" (to supplier/PO) and "Harga Jual / kg" (to buyer/SO) + live Margin display. buyPrice sent in payload for dropship only.
+          TEST (backend): Create dropship SO with items where unitPrice(sell)=50000 and buyPrice=40000, weight=100. Verify: (1) SO totalAmount based on SELL price (50000×100=5,000,000). (2) auto-PO created (poType='Produk Jadi', Draft, isDropship). (3) auto-PO item unitPrice == 40000 (BUY price, NOT 50000). (4) auto-PO totalAmount == 40000×100=4,000,000 (or HPP-based; verify item unitPrice is buy). (5) Backward compat: dropship SO WITHOUT buyPrice → auto-PO item unitPrice falls back to sell unitPrice.
+
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (2/2, 100%)
+          
+          Comprehensive backend testing completed for the dropship SO buyPrice bugfix.
+          The fix allows auto-created PO buy price (buyPrice) to DIFFER from SO sell price (unitPrice),
+          enabling margin in dropship transactions.
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Dropship SO with buyPrice < sellPrice (MARGIN SCENARIO):
+             Setup:
+             - Product: DS-PR1, basePrice=50000, unit=kg
+             - Supplier: DS Supplier
+             - Customer: DS Customer
+             
+             Step 1: POST /api/sales-orders with dropship SO
+               - fulfillmentType: 'dropship'
+               - supplierId: set
+               - items: [{productId, quantity:1, weight:100, unitPrice:50000, buyPrice:40000}]
+               - Result: 201 Created
+             
+             Step 2: Verify SO totalAmount based on SELL price
+               - SO Number: SO/202608/0004
+               - SO totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+               - Expected: Rp 5,000,000 ✓
+               - **CRITICAL**: SO uses SELL price (unitPrice) for customer billing
+             
+             Step 3: Verify autoPoId is non-null
+               - autoPoId: 942de846-9a9f-4c29-a5c1-b554a92a5d60 ✓
+               - Auto-PO creation successful ✓
+             
+             Step 4: GET /api/purchase-orders/{autoPoId} - Verify auto-PO properties
+               - PO Number: PO/202608/0004
+               - poType: 'Produk Jadi' ✓
+               - pipelineStatus: 'Draft' ✓
+               - isDropship: true ✓
+               - items count: 1 ✓
+             
+             Step 5: **CRITICAL CHECK** - Verify PO item unitPrice is BUY price
+               - PO item unitPrice: Rp 40,000 ✓
+               - Expected: Rp 40,000 (BUY price, NOT 50,000 sell price) ✓
+               - **THIS IS THE CORE BUGFIX**: PO uses buyPrice, NOT unitPrice
+               - **BUG FIXED**: Previously PO mirrored SO unitPrice (50000), now uses buyPrice (40000)
+             
+             Step 6: Verify PO totalAmount based on BUY price
+               - PO totalAmount/HPP: Rp 4,000,000 (40000 × 100kg) ✓
+               - Expected: Rp 4,000,000 ✓
+             
+             Step 7: Verify margin preserved
+               - SO total (sell): Rp 5,000,000
+               - PO total (buy): Rp 4,000,000
+               - Margin: Rp 1,000,000 (10000 per kg × 100kg) ✓
+               - **Margin calculation working correctly**
+          
+          ✅ TEST 2 — Backward compatibility (no buyPrice provided):
+             Setup:
+             - Product: DS-PR2, basePrice=60000, unit=kg
+             - Supplier: DS Supplier 2
+             - Customer: DS Customer 2
+             
+             Step 1: POST /api/sales-orders with dropship SO WITHOUT buyPrice
+               - fulfillmentType: 'dropship'
+               - supplierId: set
+               - items: [{productId, quantity:1, weight:50, unitPrice:60000}]
+               - **NO buyPrice field** (testing fallback behavior)
+               - Result: 201 Created ✓
+             
+             Step 2: Verify SO totalAmount
+               - SO Number: SO/202608/0005
+               - SO totalAmount: Rp 3,000,000 (60000 × 50kg) ✓
+               - Expected: Rp 3,000,000 ✓
+             
+             Step 3: Verify autoPoId is non-null
+               - autoPoId: 88a30838-47fe-46ef-811e-9a3df2fc40ac ✓
+               - Auto-PO creation successful ✓
+             
+             Step 4: GET /api/purchase-orders/{autoPoId} - Verify fallback behavior
+               - PO Number: PO/202608/0005
+               - PO item unitPrice: Rp 60,000 ✓
+               - Expected: Rp 60,000 (falls back to SELL price when buyPrice not provided) ✓
+               - **BACKWARD COMPATIBILITY VERIFIED**: No buyPrice → uses unitPrice
+               - **No crash, no error, existing code still works**
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified**:
+          - When buyPrice is provided, auto-PO uses buyPrice (NOT unitPrice)
+          - SO totalAmount based on SELL price (unitPrice) for customer billing
+          - PO totalAmount based on BUY price (buyPrice) for supplier payment
+          - Margin preserved: (unitPrice - buyPrice) × weight
+          - Implementation at lines 1743-1749 in route.js:
+            ```javascript
+            const buy = (it.buyPrice !== undefined && it.buyPrice !== null && it.buyPrice !== '')
+              ? Number(it.buyPrice)
+              : Number(it.unitPrice || 0);
+            db.insert(s.purchaseOrderItems).values({
+              id: uuidv4(), purchaseOrderId: poId, productId: it.productId,
+              quantity: Number(it.quantity || 0), weight: Number(it.weight || 0), unitPrice: buy,
+            }).run();
+            ```
+          
+          ✅ **Backward Compatibility**:
+          - When buyPrice is NOT provided (undefined/null/empty), falls back to unitPrice
+          - Existing dropship SO code without buyPrice continues to work
+          - No breaking changes to existing functionality
+          - Fallback logic: `it.buyPrice !== undefined && it.buyPrice !== null && it.buyPrice !== '' ? Number(it.buyPrice) : Number(it.unitPrice || 0)`
+          
+          ✅ **Auto-PO Creation**:
+          - Auto-PO created successfully for dropship SO
+          - poType: 'Produk Jadi' (finished goods)
+          - pipelineStatus: 'Draft' (requires approval/confirmation)
+          - isDropship: true (marked as dropship PO)
+          - dropshipCustomerId: set to SO customerId
+          - autoPoId linked back to SO
+          
+          ✅ **Data Integrity**:
+          - SO items store SELL price (unitPrice) for customer billing
+          - PO items store BUY price (buyPrice or fallback unitPrice) for supplier payment
+          - SO totalAmount calculation: unitPrice × weight (unchanged)
+          - PO totalAmount calculation: buyPrice × weight (new behavior)
+          - No data corruption or calculation errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          TEST 1 (Margin scenario):
+          - Product: DS-PR1-189013-793, basePrice=50000
+          - Supplier: TEST-SUP-189054-666
+          - Customer: TEST-CUS-189102-841
+          - SO: SO/202608/0004
+            * unitPrice (sell): 50000
+            * buyPrice (buy): 40000
+            * weight: 100kg
+            * SO totalAmount: Rp 5,000,000 (50000 × 100)
+            * autoPoId: 942de846-9a9f-4c29-a5c1-b554a92a5d60
+          - PO: PO/202608/0004
+            * poType: 'Produk Jadi'
+            * pipelineStatus: 'Draft'
+            * isDropship: true
+            * item unitPrice: 40000 (BUY price, NOT 50000)
+            * PO totalAmount: Rp 4,000,000 (40000 × 100)
+          - Margin: Rp 1,000,000 (10000 per kg × 100kg)
+          
+          TEST 2 (Backward compatibility):
+          - Product: DS-PR2-189349-871, basePrice=60000
+          - Supplier: TEST-SUP-189410-553
+          - Customer: TEST-CUS-189433-951
+          - SO: SO/202608/0005
+            * unitPrice (sell): 60000
+            * buyPrice: NOT PROVIDED (testing fallback)
+            * weight: 50kg
+            * SO totalAmount: Rp 3,000,000 (60000 × 50)
+            * autoPoId: 88a30838-47fe-46ef-811e-9a3df2fc40ac
+          - PO: PO/202608/0005
+            * item unitPrice: 60000 (fallback to SELL price)
+            * Backward compatible: no crash, no error
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All dropship SO buyPrice bugfix features working correctly.
+          Core bugfix verified: PO uses buyPrice when provided, NOT unitPrice.
+          Margin calculation working correctly.
+          Backward compatibility maintained.
+          Auto-PO creation working as designed.
+          
+          Test Coverage: 2/2 tests passed (100%)
+          - TEST 1: Dropship SO with buyPrice < sellPrice (margin scenario) ✓
+          - TEST 2: Backward compatibility (no buyPrice provided) ✓
+
+
   - task: "Auto-generate contact code + Contact document uploads (NPWP/Akta/SK/KTP)"
     implemented: true
     working: true
@@ -7469,3 +7656,58 @@ agent_communication:
       **NO CRITICAL ISSUES FOUND**
       All multi-category contacts features working correctly.
       Test Coverage: 8/8 (100%)
+
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE FOR DROPSHIP SO BUYPRICE BUGFIX
+      
+      **SUMMARY:**
+      ✅ Dropship SO buyPrice bugfix - ALL WORKING (2/2 tests, 100%)
+      
+      **DETAILED TEST RESULTS:**
+      
+      ✅ TEST 1: Dropship SO with buyPrice < sellPrice (margin scenario)
+         - Created dropship SO with unitPrice=50000 (sell), buyPrice=40000 (buy), weight=100kg
+         - SO totalAmount: Rp 5,000,000 (based on SELL price 50000 × 100) ✓
+         - autoPoId: non-null ✓
+         - Auto-PO: poType="Produk Jadi", pipelineStatus="Draft", isDropship=true ✓
+         - **CRITICAL**: PO item unitPrice = 40000 (BUY price, NOT 50000 sell price) ✓
+         - PO totalAmount: Rp 4,000,000 (based on BUY price 40000 × 100) ✓
+         - Margin preserved: Rp 1,000,000 (10000 per kg × 100kg) ✓
+      
+      ✅ TEST 2: Backward compatibility (no buyPrice provided)
+         - Created dropship SO WITHOUT buyPrice field, unitPrice=60000, weight=50kg
+         - SO totalAmount: Rp 3,000,000 (60000 × 50) ✓
+         - autoPoId: non-null ✓
+         - PO item unitPrice: 60000 (falls back to SELL price when buyPrice not provided) ✓
+         - Backward compatibility maintained: no crash, no error ✓
+      
+      **KEY FINDINGS:**
+      
+      ✅ Core bugfix verified:
+         - When buyPrice provided: PO uses buyPrice (NOT unitPrice)
+         - SO totalAmount based on SELL price (unitPrice) for customer billing
+         - PO totalAmount based on BUY price (buyPrice) for supplier payment
+         - Margin preserved: (unitPrice - buyPrice) × weight
+      
+      ✅ Backward compatibility:
+         - When buyPrice NOT provided: falls back to unitPrice
+         - Existing code without buyPrice continues to work
+         - No breaking changes
+      
+      ✅ Implementation verified at lines 1743-1749 in route.js:
+         ```javascript
+         const buy = (it.buyPrice !== undefined && it.buyPrice !== null && it.buyPrice !== "")
+           ? Number(it.buyPrice)
+           : Number(it.unitPrice || 0);
+         ```
+      
+      **ACTUAL VALUES OBSERVED:**
+      - TEST 1: SO total Rp 5,000,000 (sell), PO total Rp 4,000,000 (buy), margin Rp 1,000,000
+      - TEST 2: SO total Rp 3,000,000, PO total Rp 3,000,000 (fallback to sell price)
+      
+      **NO CRITICAL ISSUES FOUND**
+      All dropship SO buyPrice bugfix features working correctly.
+      Test coverage: 2/2 (100%)
+
