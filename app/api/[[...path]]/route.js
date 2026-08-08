@@ -1740,9 +1740,12 @@ async function handleRoute(request, { params }) {
             createdBy: session.user.email, createdAt: nowP, updatedAt: nowP,
           }).run();
           for (const it of body.items) {
+            const buy = (it.buyPrice !== undefined && it.buyPrice !== null && it.buyPrice !== '')
+              ? Number(it.buyPrice)
+              : Number(it.unitPrice || 0);
             db.insert(s.purchaseOrderItems).values({
               id: uuidv4(), purchaseOrderId: poId, productId: it.productId,
-              quantity: Number(it.quantity || 0), weight: Number(it.weight || 0), unitPrice: Number(it.unitPrice || 0),
+              quantity: Number(it.quantity || 0), weight: Number(it.weight || 0), unitPrice: buy,
             }).run();
           }
           recalcPoHpp(poId);

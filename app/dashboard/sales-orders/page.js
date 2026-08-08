@@ -35,7 +35,7 @@ export const SO_STATUS_COLOR = {
 const PAY_COLOR = { unpaid: 'bg-slate-100 text-slate-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700' };
 const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 
-const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, discount: 0, expiredDate: null });
+const emptyItem = () => ({ stockId: '', productId: '', productName: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
   fulfillmentType: 'stock', supplierId: '',
@@ -225,6 +225,7 @@ function CreateSODialog({ onSaved }) {
           quantity: Number(it.quantity || 0),
           weight: Number(it.weight || 0),
           unitPrice: Number(it.unitPrice || 0),
+          buyPrice: isDropship ? Number(it.buyPrice || 0) : undefined,
           discount: itemDiscount(it),
         })),
       };
@@ -358,7 +359,7 @@ function CreateSODialog({ onSaved }) {
                   <div className="flex-1 min-w-0">
                     <Label className="text-xs text-muted-foreground">Kode Simpan / Produk</Label>
                     {isDropship ? (
-                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', unitPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
+                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
                         <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                         <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                       </Select>
@@ -390,7 +391,7 @@ function CreateSODialog({ onSaved }) {
                 </div>
 
                 {(it.stockId || (isDropship && it.productId)) && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pl-6">
+                  <div className={cn('grid grid-cols-2 gap-2 pl-6', isDropship ? 'md:grid-cols-5' : 'md:grid-cols-4')}>
                     <div>
                       <Label className="text-xs">Berat Dijual (kg) *</Label>
                       <Input
@@ -407,16 +408,27 @@ function CreateSODialog({ onSaved }) {
                       <Label className="text-xs">Qty (pack)</Label>
                       <Input type="number" value={it.quantity} onChange={e => updItem(i, { quantity: Number(e.target.value) })} />
                     </div>
+                    {isDropship && (
+                      <div>
+                        <Label className="text-xs">Harga Beli / kg</Label>
+                        <Input type="number" value={it.buyPrice} onChange={e => updItem(i, { buyPrice: Number(e.target.value) })} placeholder="dari supplier" />
+                        <p className="text-[10px] text-muted-foreground mt-0.5">ke supplier (PO)</p>
+                      </div>
+                    )}
                     <div>
-                      <Label className="text-xs">Harga / kg</Label>
+                      <Label className="text-xs">{isDropship ? 'Harga Jual / kg' : 'Harga / kg'}</Label>
                       <Input type="number" value={it.unitPrice} onChange={e => updItem(i, { unitPrice: Number(e.target.value) })} />
+                      {isDropship && <p className="text-[10px] text-muted-foreground mt-0.5">ke pembeli</p>}
                     </div>
                     <div>
                       <Label className="text-xs">Diskon (Rp)</Label>
                       <Input type="number" value={agentPct > 0 ? itemDiscount(it) : it.discount} readOnly={agentPct > 0} onChange={e => updItem(i, { discount: Number(e.target.value) })} className={cn(agentPct > 0 && 'bg-teal-50')} />
                       {agentPct > 0 && <p className="text-[10px] text-teal-600 mt-0.5">Diskon Agen {agentPct}%</p>}
                     </div>
-                    <div className="col-span-2 md:col-span-4 text-right text-sm text-muted-foreground">
+                    <div className={cn('text-right text-sm text-muted-foreground col-span-2', isDropship ? 'md:col-span-5' : 'md:col-span-4')}>
+                      {isDropship && (
+                        <span className="mr-4">Margin: <b className={cn((Number(it.unitPrice) - Number(it.buyPrice)) >= 0 ? 'text-emerald-700' : 'text-red-600')}>Rp {((Number(it.unitPrice) - Number(it.buyPrice)) * Number(it.weight || 0)).toLocaleString('id-ID')}</b></span>
+                      )}
                       Subtotal: <b className="text-emerald-700">Rp {(Number(it.unitPrice) * Number(it.weight) - itemDiscount(it)).toLocaleString('id-ID')}</b>
                     </div>
                   </div>
