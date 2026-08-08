@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
-import path from 'path';
+import nodePath from 'path';
 import { eq, and, like, or, desc, sql, inArray, isNotNull } from 'drizzle-orm';
 import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
@@ -84,13 +84,13 @@ function generateContactCode(db, category) {
 }
 
 // Root dir for uploaded contact documents (persistent, same volume as erp.db)
-const CONTACT_DOCS_ROOT = path.join(process.cwd(), 'data', 'uploads', 'contacts');
+const CONTACT_DOCS_ROOT = nodePath.join(process.cwd(), 'data', 'uploads', 'contacts');
 const ALLOWED_DOC_TYPES = ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya'];
 
 // Safely resolve a stored document path inside CONTACT_DOCS_ROOT (guards against path traversal).
 function path_join_safe(contactId, storedName) {
-  const base = path.join(CONTACT_DOCS_ROOT, String(contactId));
-  const resolved = path.join(base, path.basename(String(storedName)));
+  const base = nodePath.join(CONTACT_DOCS_ROOT, String(contactId));
+  const resolved = nodePath.join(base, nodePath.basename(String(storedName)));
   if (!resolved.startsWith(base)) return null;
   return resolved;
 }
@@ -819,11 +819,11 @@ async function handleRoute(request, { params }) {
       const bytes = Buffer.from(await file.arrayBuffer());
       if (bytes.length === 0) return err('File kosong');
       if (bytes.length > 10 * 1024 * 1024) return err('Ukuran file maksimal 10MB');
-      const dir = path.join(CONTACT_DOCS_ROOT, id);
+      const dir = nodePath.join(CONTACT_DOCS_ROOT, id);
       try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
       const safeName = String(file.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
       const storedName = `${uuidv4()}_${safeName}`;
-      fs.writeFileSync(path.join(dir, storedName), bytes);
+      fs.writeFileSync(nodePath.join(dir, storedName), bytes);
       const now = new Date();
       const row = {
         id: uuidv4(), contactId: id, docType,
