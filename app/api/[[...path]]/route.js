@@ -993,8 +993,26 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
       const id = path[1];
-      db.delete(s.products).where(eq(s.products.id, id)).run();
-      return json({ ok: true });
+      const prod = db.select().from(s.products).where(eq(s.products.id, id)).get();
+      if (!prod) return err('Produk tidak ditemukan', 404);
+      // Cek referensi di transaksi — produk yang sudah dipakai tidak boleh dihapus (jaga integritas data)
+      const refs = [
+        ['Sales Order', db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.productId, id)).all().length],
+        ['Purchase Order', db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.productId, id)).all().length],
+        ['Inventory (stok)', db.select().from(s.inventoryStock).where(eq(s.inventoryStock.productId, id)).all().length],
+        ['Work Order', db.select().from(s.woOutputs).where(eq(s.woOutputs.productId, id)).all().length],
+        ['Penerimaan', db.select().from(s.salesOrderReceiptItems).where(eq(s.salesOrderReceiptItems.productId, id)).all().length],
+      ].filter(([, n]) => n > 0);
+      if (refs.length > 0) {
+        const detail = refs.map(([name, n]) => `${name} (${n})`).join(', ');
+        return err(`Produk "${prod.name}" sudah dipakai di transaksi: ${detail}. Produk tidak dapat dihapus. Ubah statusnya menjadi "Inactive" untuk menonaktifkan.`, 409);
+      }
+      try {
+        db.delete(s.products).where(eq(s.products.id, id)).run();
+        return json({ ok: true });
+      } catch (e) {
+        return err('Gagal menghapus produk: ' + (e.message || 'terkait data lain'), 409);
+      }
     }
 
     // ---------- COLD STORAGES ----------
