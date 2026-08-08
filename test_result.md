@@ -108,6 +108,23 @@ user_problem_statement: |
   Phase 1 (foundation): DB schema (all Section 6 tables), Authentication (4 roles), Master Data (contacts, products, cold storage, zones).
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
+frontend:
+  - task: "BUGFIX: PDF Invoice/SO/Surat Jalan generation (jsPDF v4 named import)"
+    implemented: true
+    working: "NA"
+    file: "/app/lib/pdf/invoice.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): "PDF Invoice tidak bisa". Root cause: jsPDF v4.2.1 no longer exposes the constructor as the ESM DEFAULT export. `import jsPDF from 'jspdf'` yielded an object (not a constructor) so `new jsPDF()` threw "jsPDF is not a constructor" and ALL PDF buttons failed with an error toast.
+          FIX: changed to NAMED import `import { jsPDF } from 'jspdf'`. Verified in Node ESM: constructor works, produces valid PDF (~5KB), autoTable + doc.lastAutoTable.finalY work.
+          TEST (browser): login admin@lpi.co.id/admin123 → open Invoiced SO (SO/202608/0006) → click "PDF Invoice" → expect PDF download + success toast, NO error toast, NO console "jsPDF is not a constructor". Also test "PDF SO" button.
+
+
 backend:
   - task: "BUGFIX: Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO"
     implemented: true
