@@ -2130,11 +2130,42 @@ async function handleRoute(request, { params }) {
       };
       db.insert(s.suratJalan).values(sj).run();
       // Catat berat kirim RIIL per item (hari-H) ke sales_order_items
+      let anyShipped = false;
       if (Array.isArray(body.items)) {
         for (const it of body.items) {
           if (it.itemId && it.shippedWeight !== undefined && it.shippedWeight !== null && it.shippedWeight !== '') {
             db.update(s.salesOrderItems).set({ shippedWeight: Number(it.shippedWeight) }).where(eq(s.salesOrderItems.id, it.itemId)).run();
+            anyShipped = true;
           }
+        }
+      }
+      // Berat kirim RIIL mempengaruhi SO (total) DAN PO dropship terkait.
+      if (anyShipped) {
+        // 1) Recompute SO totals memakai berat kirim riil (fallback berat pesanan bila belum diisi)
+        const soItemsNow = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+        let subT = 0, discT = 0;
+        for (const it of soItemsNow) {
+          const eff = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || it.quantity || 0);
+          const line = Number(it.unitPrice) * eff;
+          const disc = Number(it.discount || 0);
+          subT += line; discT += disc;
+          db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
+        }
+        db.update(s.salesOrder).set({ totalAmount: subT - discT, discountTotal: discT, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
+        // 2) Untuk SO Dropship, sinkronkan berat PO otomatis ke berat kirim riil lalu hitung ulang HPP/total PO
+        if (so.fulfillmentType === 'dropship' && so.autoPoId) {
+          const shippedByProduct = {};
+          for (const it of soItemsNow) {
+            const eff = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
+            shippedByProduct[it.productId] = (shippedByProduct[it.productId] || 0) + eff;
+          }
+          const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, so.autoPoId)).all();
+          for (const pit of poItems) {
+            if (shippedByProduct[pit.productId] !== undefined) {
+              db.update(s.purchaseOrderItems).set({ weight: shippedByProduct[pit.productId] }).where(eq(s.purchaseOrderItems.id, pit.id)).run();
+            }
+          }
+          recalcPoHpp(so.autoPoId);
         }
       }
       // Auto-transition Packed -> Shipped when SJ created + create Shipping concern
