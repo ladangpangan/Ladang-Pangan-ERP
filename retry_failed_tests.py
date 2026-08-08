@@ -6,7 +6,7 @@ Retry failed Purchase Order tests
 import requests
 import time
 
-BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
+BASE_URL = "https://agri-system-1.preview.emergentagent.com/api"
 
 def login_admin():
     session = requests.Session()

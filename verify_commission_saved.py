@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "https://resume-project-90.preview.emergentagent.com/api"
+BASE_URL = "https://agri-system-1.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login
