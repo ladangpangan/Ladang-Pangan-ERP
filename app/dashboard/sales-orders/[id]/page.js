@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
@@ -347,22 +347,28 @@ function SjTab({ so, onSaved, canOperate }) {
                   {sj.shipToName && <div className="text-xs text-teal-700 mt-0.5">Kirim ke: {sj.shipToName}{sj.shipToAddress ? ` · ${sj.shipToAddress}` : ''}</div>}
                 </div>
                 <Badge>{sj.status}</Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    try {
-                      const doc = generateSuratJalanPDF(sj, so);
-                      doc.save(`SJ-${sj.sjNumber}.pdf`);
-                      toast.success('PDF Surat Jalan berhasil diunduh');
-                    } catch (e) {
-                      console.error('PDF SJ error:', e);
-                      toast.error('Gagal PDF SJ: ' + (e.message || 'unknown'));
-                    }
-                  }}
-                >
-                  <FileDown className="w-4 h-4 mr-1" /> PDF
-                </Button>
+                {(() => {
+                  const mapsUrl = sj.shipToCustomerId
+                    ? (endCustomers.find(c => c.id === sj.shipToCustomerId)?.mapsUrl || null)
+                    : (so.customer?.mapsUrl || null);
+                  const buildDoc = () => generateSuratJalanPDF({ ...sj, mapsUrl }, so);
+                  return (
+                    <>
+                      <Button size="sm" variant="ghost" onClick={() => {
+                        try { const url = buildDoc().output('bloburl'); window.open(url, '_blank'); }
+                        catch (e) { console.error('View SJ error:', e); toast.error('Gagal menampilkan SJ: ' + (e.message || 'unknown')); }
+                      }}>
+                        <Eye className="w-4 h-4 mr-1" /> Lihat
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => {
+                        try { buildDoc().save(`SJ-${sj.sjNumber}.pdf`); toast.success('PDF Surat Jalan berhasil diunduh'); }
+                        catch (e) { console.error('PDF SJ error:', e); toast.error('Gagal PDF SJ: ' + (e.message || 'unknown')); }
+                      }}>
+                        <FileDown className="w-4 h-4 mr-1" /> PDF
+                      </Button>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>}
@@ -530,8 +536,9 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
           orderedWeight: 0,
           totalValue: 0,
         };
-        map[pid].orderedWeight += Number(it.weight || 0);
-        map[pid].totalValue += Number(it.weight || 0) * Number(it.unitPrice || 0);
+        const effW = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
+        map[pid].orderedWeight += effW;
+        map[pid].totalValue += effW * Number(it.unitPrice || 0);
       }
       const arr = Object.values(map).map(m => ({
         ...m,

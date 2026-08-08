@@ -242,6 +242,189 @@ frontend:
 
 
 backend:
+  - task: "BUGFIX: Receipt (Penerimaan) basis uses real shipped weight (not original SO weight)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): Penerimaan (sales-order receipts) referenced ORIGINAL SO weight, not the real shipped weight. Also PDF SO/Invoice used original SO weight (fixed client-side in /app/lib/pdf/invoice.js to use shippedWeight||weight).
+          FIX (backend, POST /sales-orders/:id/receipts): perProduct aggregation now uses EFFECTIVE weight = shippedWeight if >0 else ordered weight (both for orderedWeight basis and avgUnitPrice/totalValue). So shrinkage = shippedWeight - receivedWeight, and the "melebihi berat SO" cap is now the shipped weight.
+          TEST: Create SO item weight=100 unitPrice=50000. Advance Draft→Confirmed→Packed. Create Surat Jalan with shippedWeight=80 (SO total→4,000,000). Then POST /sales-orders/:id/receipts items:[{productId, receivedWeight:75}] → verify line orderedWeight (basis) == 80 (the SHIPPED weight, NOT 100), shrinkageWeight == 5 (80-75). Also verify receivedWeight=85 (>80 shipped) is REJECTED with "melebihi berat SO (80 kg)".
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (7/7 steps, 100%)
+          
+          Comprehensive backend testing completed for the Receipt (Penerimaan) bugfix.
+          The fix ensures receipts use REAL SHIPPED weight from Surat Jalan as the basis,
+          NOT the original SO weight.
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Product Created:
+             - SKU: RCP-PR1
+             - Name: Rcp Prod
+             - Unit: kg
+             - Base Price: Rp 50,000
+             - Product ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          
+          ✅ STEP 2 — Customer Created:
+             - Display Name: Rcp Cust
+             - Code: CUST-RCP1
+             - Categories: ['Customer']
+             - Customer ID: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406
+          
+          ✅ STEP 3 — Sales Order Created:
+             - SO Number: SO/202608/0012
+             - SO ID: f25ca76e-04ca-412c-aa3d-7340764c1f9f
+             - Item: weight=100 kg, unitPrice=50000
+             - Initial totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+             - **VERIFIED**: SO total based on original ordered weight
+          
+          ✅ STEP 4 — SO Status Advanced:
+             - Draft → Confirmed ✓
+             - Confirmed → Packed ✓
+             - SO ready for Surat Jalan creation
+          
+          ✅ STEP 5 — Surat Jalan Created with shippedWeight=80:
+             - SJ Number: SJ/202608/0010
+             - Item shippedWeight: 80 kg (NOT 100 kg) ✓
+             - SO totalAmount AFTER SJ: Rp 4,000,000 (50000 × 80kg) ✓
+             - **VERIFIED**: SO total recomputed using SHIPPED weight (80 kg)
+             - **CRITICAL**: SO total changed from 5,000,000 → 4,000,000
+          
+          ✅ STEP 6 — **CRITICAL TEST** — Receipt Created with receivedWeight=75:
+             - Receipt Number: RCP/202608/0005
+             - Receipt created successfully (201) ✓
+             
+             **ACTUAL VALUES OBSERVED:**
+             - orderedWeight (basis): 80 kg ✓
+             - receivedWeight: 75 kg ✓
+             - shrinkageWeight: 5 kg ✓
+             
+             **CRITICAL VERIFICATION #1:**
+             ✅ orderedWeight (basis) = 80 kg (SHIPPED weight from Surat Jalan)
+             ✅ NOT 100 kg (original SO weight)
+             ✅ This proves the receipt is using the REAL SHIPPED weight as the basis
+             
+             **CRITICAL VERIFICATION #2:**
+             ✅ shrinkageWeight = 5 kg (80 - 75)
+             ✅ Shrinkage calculated correctly based on SHIPPED weight
+             ✅ If it used original SO weight, shrinkage would be 25 kg (100 - 75)
+          
+          ✅ STEP 7 — **OVER-CAP TEST** — Receipt with receivedWeight=85 REJECTED:
+             - Attempted to create receipt with receivedWeight=85 kg
+             - Expected: 400 rejection (85 > 80 shipped weight)
+             - Result: 400 Bad Request ✓
+             
+             **ACTUAL ERROR MESSAGE:**
+             "Berat diterima (85 kg) melebihi berat SO (80 kg) untuk produk ini"
+             
+             **CRITICAL VERIFICATION #3:**
+             ✅ Error message references 80 kg (SHIPPED weight)
+             ✅ NOT 100 kg (original SO weight)
+             ✅ Validation correctly uses SHIPPED weight as the cap
+             ✅ Receipt correctly rejected when exceeding SHIPPED weight
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified (STEP 6)**:
+          - Receipt basis (orderedWeight) uses SHIPPED weight (80 kg), NOT original SO weight (100 kg)
+          - Implementation at lines 2332-2345 in route.js:
+            * Line 2337: `const effW = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);`
+            * Uses shippedWeight if > 0, else falls back to weight
+            * Line 2338: `perProduct[it.productId].orderedWeight += effW;`
+            * Aggregates effective weight (shipped) as the basis
+          - Line 2369: `orderedWeight: pp.orderedWeight` (the effective/shipped weight)
+          - Line 2359: `const shrinkageWeight = pp.orderedWeight - receivedWeight;` (shrinkage based on shipped weight)
+          
+          ✅ **Validation Verified (STEP 7)**:
+          - Validation at lines 2356-2358 in route.js:
+            * `if (receivedWeight > pp.orderedWeight + 0.0001)`
+            * Uses pp.orderedWeight (the effective/shipped weight) as the cap
+            * Error message: "Berat diterima (${receivedWeight} kg) melebihi berat SO (${pp.orderedWeight} kg)"
+          - Correctly rejects receivedWeight > shipped weight (80 kg)
+          - Error message correctly references shipped weight (80 kg), not original (100 kg)
+          
+          ✅ **Shrinkage Calculation**:
+          - Shrinkage = orderedWeight (basis) - receivedWeight
+          - With shipped weight basis: 80 - 75 = 5 kg ✓
+          - If it used original SO weight: 100 - 75 = 25 kg (WRONG)
+          - Shrinkage correctly calculated based on SHIPPED weight
+          
+          ✅ **SO Total Recomputation (STEP 5)**:
+          - SO total recomputed when Surat Jalan created with shippedWeight
+          - Initial: 5,000,000 (50000 × 100 kg ordered)
+          - After SJ: 4,000,000 (50000 × 80 kg shipped)
+          - This is the prerequisite for the receipt bugfix to work
+          
+          ✅ **Data Integrity**:
+          - sales_order_items.shipped_weight correctly recorded (80 kg)
+          - Receipt items use shipped_weight as orderedWeight basis
+          - Shrinkage calculation accurate
+          - Validation cap uses shipped_weight
+          - No data corruption or calculation errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Product:
+          - SKU: RCP-PR1
+          - ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          - Base Price: Rp 50,000
+          
+          Customer:
+          - Code: CUST-RCP1
+          - ID: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406
+          
+          Sales Order:
+          - SO Number: SO/202608/0012
+          - SO ID: f25ca76e-04ca-412c-aa3d-7340764c1f9f
+          - Item ID: e277b52c-be59-4f3b-8fc7-bafc7085ff35
+          - Ordered weight: 100 kg
+          - Shipped weight: 80 kg
+          - Unit price: Rp 50,000
+          - Initial SO total: Rp 5,000,000 (50000 × 100)
+          - Final SO total: Rp 4,000,000 (50000 × 80)
+          
+          Surat Jalan:
+          - SJ Number: SJ/202608/0010
+          - Shipped weight: 80 kg
+          
+          Receipt:
+          - Receipt Number: RCP/202608/0005
+          - orderedWeight (basis): 80 kg (SHIPPED, NOT 100)
+          - receivedWeight: 75 kg
+          - shrinkageWeight: 5 kg (80 - 75)
+          
+          Over-cap Test:
+          - Attempted receivedWeight: 85 kg
+          - Result: 400 Bad Request
+          - Error: "Berat diterima (85 kg) melebihi berat SO (80 kg) untuk produk ini"
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All receipt bugfix features working correctly.
+          Receipts use REAL SHIPPED weight as basis, NOT original SO weight.
+          Shrinkage calculation accurate.
+          Validation correctly enforces shipped weight cap.
+          Error messages reference correct weight values.
+          
+          Test Coverage: 7/7 steps passed (100%)
+          - Product creation ✓
+          - Customer creation ✓
+          - SO creation with ordered weight ✓
+          - SO status advancement ✓
+          - Surat Jalan with shipped weight ✓
+          - Receipt with shipped weight basis ✓
+          - Over-cap validation ✓
+
   - task: "BUGFIX: Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO"
     implemented: true
     working: true
@@ -7252,11 +7435,12 @@ metadata:
 
 test_plan:
   current_focus:
-    - "BUGFIX: Real shipped weight (Surat Jalan) UI verification - IN PROGRESS"
+    - "All backend APIs tested and working correctly"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
   _archived_focus:
+    - "BUGFIX: Receipt (Penerimaan) basis uses real shipped weight - BACKEND TESTED & WORKING"
     - "BUGFIX: Real shipped weight (Surat Jalan) updates SO total + syncs dropship PO - BACKEND TESTED & WORKING"
     - "Multi-category contacts (categories array) - TESTED & WORKING"
     - "Google Maps link (mapsUrl) on contacts + end-customers - TESTED & WORKING"
@@ -8255,3 +8439,98 @@ agent_communication:
       All PDF generation features working correctly.
       Both root causes fixed and verified.
       Test coverage: 3/3 (100%)
+
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE FOR RECEIPT (PENERIMAAN) BUGFIX
+      
+      **SUMMARY:**
+      ✅ Receipt (Penerimaan) uses REAL SHIPPED weight as basis - ALL WORKING (7/7 steps, 100%)
+      
+      **DETAILED TEST RESULTS:**
+      
+      ✅ STEP 1: Product Created
+         - SKU: RCP-PR1, Name: Rcp Prod, Unit: kg, Base Price: Rp 50,000
+         - Product ID: 0e36919c-39bc-4861-a991-220bb9e88725
+      
+      ✅ STEP 2: Customer Created
+         - Display Name: Rcp Cust, Code: CUST-RCP1
+         - Customer ID: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406
+      
+      ✅ STEP 3: Sales Order Created
+         - SO Number: SO/202608/0012
+         - Item: weight=100 kg, unitPrice=50000
+         - Initial totalAmount: Rp 5,000,000 (50000 × 100kg) ✓
+      
+      ✅ STEP 4: SO Status Advanced
+         - Draft → Confirmed → Packed ✓
+      
+      ✅ STEP 5: Surat Jalan Created with shippedWeight=80
+         - SJ Number: SJ/202608/0010
+         - Item shippedWeight: 80 kg ✓
+         - SO totalAmount AFTER SJ: Rp 4,000,000 (50000 × 80kg) ✓
+         - **CRITICAL**: SO total changed from 5,000,000 → 4,000,000
+      
+      ✅ STEP 6: **CRITICAL TEST** — Receipt Created with receivedWeight=75
+         - Receipt Number: RCP/202608/0005
+         - **ACTUAL VALUES:**
+           * orderedWeight (basis): 80 kg ✓
+           * receivedWeight: 75 kg ✓
+           * shrinkageWeight: 5 kg ✓
+         - **CRITICAL VERIFICATION #1:**
+           ✅ orderedWeight (basis) = 80 kg (SHIPPED weight, NOT 100 kg original)
+           ✅ This proves the receipt uses REAL SHIPPED weight as basis
+         - **CRITICAL VERIFICATION #2:**
+           ✅ shrinkageWeight = 5 kg (80 - 75)
+           ✅ If it used original SO weight, shrinkage would be 25 kg (100 - 75)
+      
+      ✅ STEP 7: **OVER-CAP TEST** — Receipt with receivedWeight=85 REJECTED
+         - Attempted receivedWeight: 85 kg (exceeds 80 kg shipped)
+         - Result: 400 Bad Request ✓
+         - **ACTUAL ERROR MESSAGE:**
+           "Berat diterima (85 kg) melebihi berat SO (80 kg) untuk produk ini"
+         - **CRITICAL VERIFICATION #3:**
+           ✅ Error message references 80 kg (SHIPPED weight, NOT 100 kg original)
+           ✅ Validation correctly uses SHIPPED weight as the cap
+      
+      **KEY FINDINGS:**
+      
+      ✅ Core bugfix verified (STEP 6):
+         - Receipt basis (orderedWeight) uses SHIPPED weight (80 kg), NOT original SO weight (100 kg)
+         - Implementation at lines 2332-2345 in route.js:
+           * Line 2337: `const effW = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);`
+           * Uses shippedWeight if > 0, else falls back to weight
+         - Shrinkage calculation: orderedWeight (basis) - receivedWeight = 80 - 75 = 5 kg
+      
+      ✅ Validation verified (STEP 7):
+         - Validation at lines 2356-2358 in route.js uses pp.orderedWeight (effective/shipped weight) as cap
+         - Correctly rejects receivedWeight > shipped weight (80 kg)
+         - Error message correctly references shipped weight (80 kg), not original (100 kg)
+      
+      ✅ SO total recomputation (STEP 5):
+         - SO total recomputed when Surat Jalan created with shippedWeight
+         - Initial: 5,000,000 (50000 × 100 kg ordered)
+         - After SJ: 4,000,000 (50000 × 80 kg shipped)
+         - This is the prerequisite for the receipt bugfix to work
+      
+      **ACTUAL VALUES OBSERVED:**
+      - Product: RCP-PR1 (ID: 0e36919c-39bc-4861-a991-220bb9e88725)
+      - Customer: CUST-RCP1 (ID: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406)
+      - SO: SO/202608/0012 (ID: f25ca76e-04ca-412c-aa3d-7340764c1f9f)
+        * Ordered weight: 100 kg
+        * Shipped weight: 80 kg
+        * Initial SO total: Rp 5,000,000 (50000 × 100)
+        * Final SO total: Rp 4,000,000 (50000 × 80)
+      - SJ: SJ/202608/0010 (shipped weight: 80 kg)
+      - Receipt: RCP/202608/0005
+        * orderedWeight (basis): 80 kg (SHIPPED, NOT 100)
+        * receivedWeight: 75 kg
+        * shrinkageWeight: 5 kg (80 - 75)
+      - Over-cap test: receivedWeight=85 kg → 400 error "melebihi berat SO (80 kg)"
+      
+      **NO CRITICAL ISSUES FOUND**
+      All receipt bugfix features working correctly.
+      Receipts use REAL SHIPPED weight as basis, NOT original SO weight.
+      Test coverage: 7/7 steps (100%)
+
