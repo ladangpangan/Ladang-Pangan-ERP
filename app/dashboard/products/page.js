@@ -19,6 +19,19 @@ const fetcher = (url) => fetch(url).then(r => r.json());
 
 const CATEGORIES = ['Live Bird', 'Karkas', 'Boneless', 'Parting', 'Retail', 'Others'];
 const UNITS = ['kg', 'ekor', 'pack', 'pcs', 'box'];
+const WEIGHT_UNITS = [
+  { value: 'kg', label: 'Kg (Kilogram)' },
+  { value: 'gram', label: 'Gram' },
+  { value: 'ton', label: 'Tonase (Ton)' },
+];
+const PACKAGING_TYPES = [
+  { value: 'colly', label: 'Colly (Karung)' },
+  { value: 'pack', label: 'Pack' },
+  { value: 'keranjang', label: 'Keranjang' },
+  { value: 'kardus', label: 'Kardus' },
+];
+const WEIGHT_UNIT_LABEL = { kg: 'Kg', gram: 'Gram', ton: 'Ton' };
+const PACKAGING_LABEL = { colly: 'Colly (Karung)', pack: 'Pack', keranjang: 'Keranjang', kardus: 'Kardus' };
 const CAT_COLOR = {
   'Live Bird': 'bg-amber-100 text-amber-700',
   'Karkas': 'bg-red-100 text-red-700',
@@ -28,7 +41,7 @@ const CAT_COLOR = {
   'Others': 'bg-slate-100 text-slate-700',
 };
 
-const emptyForm = { sku: '', name: '', category: 'Karkas', unit: 'kg', basePrice: 0, minStock: 0, shelfLifeDays: 0, description: '', status: 'active' };
+const emptyForm = { sku: '', name: '', category: 'Karkas', unit: 'kg', weightUnit: 'kg', packagingType: 'colly', basePrice: 0, minStock: 0, shelfLifeDays: 0, description: '', status: 'active' };
 
 export default function ProductsPage() {
   const [cat, setCat] = useState('all');
@@ -90,10 +103,16 @@ export default function ProductsPage() {
                   <SelectContent>{CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </F>
-              <F label="Satuan">
-                <Select value={form.unit} onValueChange={v => setForm({ ...form, unit: v })}>
+              <F label="Satuan Berat">
+                <Select value={form.weightUnit || 'kg'} onValueChange={v => setForm({ ...form, weightUnit: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{UNITS.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}</SelectContent>
+                  <SelectContent>{WEIGHT_UNITS.map(u => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}</SelectContent>
+                </Select>
+              </F>
+              <F label="Jenis Kemasan">
+                <Select value={form.packagingType || 'colly'} onValueChange={v => setForm({ ...form, packagingType: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{PACKAGING_TYPES.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
                 </Select>
               </F>
               <F label="Harga Dasar (Rp)"><Input type="number" value={form.basePrice} onChange={e => setForm({ ...form, basePrice: Number(e.target.value) })} /></F>
@@ -106,6 +125,9 @@ export default function ProductsPage() {
                 </Select>
               </F>
               <F label="Deskripsi" className="sm:col-span-2"><Textarea rows={2} value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} /></F>
+              <div className="sm:col-span-2 text-xs text-muted-foreground bg-muted/50 rounded-md p-2.5">
+                <span className="font-medium text-foreground">Catatan:</span> <span className="font-medium">Satuan Berat</span> dipakai untuk timbangan (default Kg). <span className="font-medium">Jenis Kemasan</span> adalah wadah produk (Colly/Karung, Pack, Keranjang, Kardus). Pada transaksi, <span className="font-medium">Qty</span> = jumlah hitungan kemasan (mis. 10 Colly).
+              </div>
             </div>
             <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
           </DialogContent>
@@ -131,21 +153,22 @@ export default function ProductsPage() {
           <Table>
             <TableHeader><TableRow>
               <TableHead>SKU</TableHead><TableHead>Nama</TableHead><TableHead>Kategori</TableHead>
-              <TableHead>Satuan</TableHead><TableHead className="text-right">Harga</TableHead>
+              <TableHead>Satuan Berat</TableHead><TableHead>Kemasan</TableHead><TableHead className="text-right">Harga</TableHead>
               <TableHead className="text-right">Min Stock</TableHead><TableHead>Shelf Life</TableHead>
               <TableHead>Status</TableHead><TableHead className="text-right">Aksi</TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Belum ada produk</TableCell></TableRow>}
+              {isLoading && <TableRow><TableCell colSpan={10} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">Belum ada produk</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id}>
                   <TableCell className="font-mono text-xs">{r.sku}</TableCell>
                   <TableCell className="font-medium">{r.name}</TableCell>
                   <TableCell><Badge variant="secondary" className={CAT_COLOR[r.category] || ''}>{r.category}</Badge></TableCell>
-                  <TableCell>{r.unit}</TableCell>
+                  <TableCell>{WEIGHT_UNIT_LABEL[r.weightUnit] || r.weightUnit || r.unit || 'Kg'}</TableCell>
+                  <TableCell>{r.packagingType ? <Badge variant="outline">{PACKAGING_LABEL[r.packagingType] || r.packagingType}</Badge> : <span className="text-muted-foreground">-</span>}</TableCell>
                   <TableCell className="text-right">Rp {Number(r.basePrice).toLocaleString('id-ID')}</TableCell>
-                  <TableCell className="text-right">{r.minStock} {r.unit}</TableCell>
+                  <TableCell className="text-right">{r.minStock} {WEIGHT_UNIT_LABEL[r.weightUnit] || r.unit}</TableCell>
                   <TableCell>{r.shelfLifeDays ? `${r.shelfLifeDays} hari` : '-'}</TableCell>
                   <TableCell><Badge variant={r.status === 'active' ? 'default' : 'secondary'}>{r.status}</Badge></TableCell>
                   <TableCell className="text-right space-x-1">
