@@ -2,7 +2,7 @@
 ================================================================================
 BACKEND API TESTING: Agen & Dropshipper + Commission + End-Customers
 ================================================================================
-Base URL: https://agri-system-1.preview.emergentagent.com/api
+Base URL: https://erp-mapper-1.preview.emergentagent.com/api
 Test started at: 2026-08-07 08:37:55
 
 ================================================================================

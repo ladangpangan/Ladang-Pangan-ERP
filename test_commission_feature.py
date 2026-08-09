@@ -8,7 +8,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "https://agri-system-1.preview.emergentagent.com/api"
+BASE_URL = "https://erp-mapper-1.preview.emergentagent.com/api"
 
 def login(email, password):
     """Login and return session"""
