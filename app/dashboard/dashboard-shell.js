@@ -13,7 +13,7 @@ import {
 import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
-  FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers, Sparkles
+  FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -22,7 +22,6 @@ import FloatingAIAssistant from '@/components/floating-ai-assistant';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
-  { href: '/dashboard/ai-assistant', label: 'Asisten AI', icon: Sparkles, roles: ['admin','supervisor','direktur'] },
   {
     section: 'Master Data',
     items: [
