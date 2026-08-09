@@ -18,6 +18,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 import { id as idLocale } from 'date-fns/locale';
+import FloatingAIAssistant from '@/components/floating-ai-assistant';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
@@ -160,6 +161,11 @@ export default function DashboardShell({ user, children }) {
         </header>
         <main className="p-6">{children}</main>
       </div>
+
+      {/* Floating AI Assistant — for management roles, hidden on the full AI page */}
+      {['admin', 'supervisor', 'direktur'].includes(role) && pathname !== '/dashboard/ai-assistant' && (
+        <FloatingAIAssistant />
+      )}
     </div>
   );
 }
