@@ -205,7 +205,7 @@ export default function AIAssistantChat({ compact = false, onNavigate }) {
               {Array.isArray(m.uiComponents) && m.uiComponents.map((uc) => (
                 uc.type === 'order_builder' ? (
                   <div key={uc.id} className="w-full">
-                    <OrderBuilder orderType={uc.orderType} onNavigate={onNavigate} />
+                    <OrderBuilder orderType={uc.orderType} prefill={uc.prefill} onNavigate={onNavigate} />
                   </div>
                 ) : null
               ))}

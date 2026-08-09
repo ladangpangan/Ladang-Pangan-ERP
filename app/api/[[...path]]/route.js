@@ -199,9 +199,28 @@ async function handleRoute(request, { params }) {
       const agents = rows.filter(r => inCat(r, 'Agen') || r.isAgent).map(map);
       const prods = db.select().from(s.products).where(isNull(s.products.archivedAt)).orderBy(s.products.name).all();
       const products = prods.map(p => ({ id: p.id, label: `${p.name} (${p.sku})`, name: p.name, sku: p.sku, basePrice: p.basePrice, unit: p.unit }));
+      // Available stock (kode simpan) for stock-based SO — available = weight - reserved by Draft SOs
+      const prodMap = {}; prods.forEach(p => { prodMap[p.id] = p; });
+      const csRows = db.select({ id: s.coldStorages.id, code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).all();
+      const csMap = {}; csRows.forEach(c => { csMap[c.id] = c; });
+      const stockRows = db.select().from(s.inventoryStock).where(and(isNull(s.inventoryStock.archivedAt), eq(s.inventoryStock.status, 'active'))).all();
+      const resRows = db.select({ sid: s.salesOrderItems.stockCodeId, w: sql`coalesce(sum(${s.salesOrderItems.weight}),0)` })
+        .from(s.salesOrderItems).innerJoin(s.salesOrder, eq(s.salesOrder.id, s.salesOrderItems.salesOrderId))
+        .where(eq(s.salesOrder.pipelineStatus, 'Draft')).groupBy(s.salesOrderItems.stockCodeId).all();
+      const resMap = {}; resRows.forEach(r => { if (r.sid) resMap[r.sid] = Number(r.w || 0); });
+      const stocks = stockRows.map(st => {
+        const avail = Math.round((Number(st.weight || 0) - (resMap[st.id] || 0)) * 100) / 100;
+        const p = prodMap[st.productId]; const cs = csMap[st.coldStorageId];
+        return {
+          id: st.id, productId: st.productId, productName: p ? p.name : null,
+          kodeSimpan: st.kodeSimpan, coldStorage: cs ? cs.code : null,
+          available: avail, hppPerKg: st.hppPerKg || 0,
+          label: `${st.kodeSimpan} · ${p ? p.name : '-'}${cs ? ' · ' + cs.code : ''} · sisa ${avail} kg`,
+        };
+      }).filter(x => x.available > 0.0001);
       return json({
         ok: true,
-        customers, suppliers, dropshippers, agents, products,
+        customers, suppliers, dropshippers, agents, products, stocks,
         poTypes: ['Live Bird', 'Packaging', 'Bahan Baku', 'Produk Jadi', 'Operasional'],
         fulfillmentTypes: [{ value: 'stock', label: 'Dari Stok' }, { value: 'dropship', label: 'Dropship (langsung dari supplier)' }],
       });

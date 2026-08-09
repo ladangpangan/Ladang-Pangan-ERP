@@ -15,10 +15,10 @@ const nf = new Intl.NumberFormat('id-ID');
 const money = (n) => 'Rp' + nf.format(Math.round(Number(n || 0)));
 
 function newItem() {
-  return { key: Math.random().toString(36).slice(2), productId: '', weight: '', quantity: '', unitPrice: '', discount: '' };
+  return { key: Math.random().toString(36).slice(2), productId: '', stockId: '', weight: '', quantity: '', unitPrice: '', discount: '' };
 }
 
-export default function OrderBuilder({ orderType: initialType = null, onNavigate, onDone }) {
+export default function OrderBuilder({ orderType: initialType = null, prefill = null, onNavigate, onDone }) {
   const [orderType, setOrderType] = useState(initialType);
   const [opts, setOpts] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -26,14 +26,24 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
   const [result, setResult] = useState(null); // {ok, message, link, number}
   const [errorMsg, setErrorMsg] = useState('');
 
-  // form state
-  const [contactId, setContactId] = useState('');       // customer (SO) or supplier (PO)
-  const [fulfillmentType, setFulfillmentType] = useState('stock');
+  // form state (seeded from AI prefill when available)
+  const [contactId, setContactId] = useState(prefill?.contactId || '');       // customer (SO) or supplier (PO)
+  const [fulfillmentType, setFulfillmentType] = useState(prefill?.fulfillmentType || 'stock');
   const [dropshipSupplierId, setDropshipSupplierId] = useState('');
   const [dropshipperId, setDropshipperId] = useState('');
   const [poType, setPoType] = useState('Bahan Baku');
   const [notes, setNotes] = useState('');
-  const [items, setItems] = useState([newItem()]);
+  const [items, setItems] = useState(() => {
+    if (Array.isArray(prefill?.items) && prefill.items.length) {
+      return prefill.items.map(it => ({
+        key: Math.random().toString(36).slice(2),
+        productId: it.productId || '', stockId: '',
+        weight: it.weight || '', quantity: it.quantity || '',
+        unitPrice: it.unitPrice || '', discount: it.discount || '',
+      }));
+    }
+    return [newItem()];
+  });
 
   useEffect(() => {
     let alive = true;
@@ -61,8 +71,20 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
   const onSelectProduct = (key, productId) => {
     const p = productMap[productId];
     setItems(prev => prev.map(it => it.key === key
-      ? { ...it, productId, unitPrice: (it.unitPrice === '' || it.unitPrice == null) ? (p ? String(p.basePrice || '') : '') : it.unitPrice }
+      ? { ...it, productId, stockId: '', unitPrice: (it.unitPrice === '' || it.unitPrice == null) ? (p ? String(p.basePrice || '') : '') : it.unitPrice }
       : it));
+  };
+
+  const stocksFor = (pid) => (opts?.stocks || []).filter(st => !pid || st.productId === pid);
+  const stockById = (id) => (opts?.stocks || []).find(st => st.id === id) || null;
+  const onSelectStock = (key, stockId) => {
+    const st = stockById(stockId);
+    setItems(prev => prev.map(it => {
+      if (it.key !== key) return it;
+      const pid = st ? st.productId : it.productId;
+      const p = productMap[pid];
+      return { ...it, stockId, productId: pid, unitPrice: (it.unitPrice === '' || it.unitPrice == null) ? (p ? String(p.basePrice || '') : '') : it.unitPrice };
+    }));
   };
 
   const lineTotal = (it) => {
@@ -87,6 +109,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
     try {
       const payloadItems = validItems.map(it => ({
         productId: it.productId,
+        stockId: it.stockId || undefined,
         weight: Number(it.weight || 0),
         quantity: Number(it.quantity || 0),
         unitPrice: Number(it.unitPrice || 0),
@@ -264,6 +287,23 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+                {isSO && fulfillmentType === 'stock' && (
+                  <div>
+                    <Select value={it.stockId} onValueChange={(v) => onSelectStock(it.key, v)}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Kode simpan / stok (opsional)" /></SelectTrigger>
+                      <SelectContent className="z-[80]">
+                        {stocksFor(it.productId).length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">Tidak ada stok tersedia</div>}
+                        {stocksFor(it.productId).map(st => <SelectItem key={st.id} value={st.id}>{st.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    {it.stockId && stockById(it.stockId) && (
+                      <div className={cn('text-[11px] mt-1', Number(it.weight || 0) > stockById(it.stockId).available ? 'text-red-600' : 'text-muted-foreground')}>
+                        Sisa tersedia: {stockById(it.stockId).available} kg
+                        {Number(it.weight || 0) > stockById(it.stockId).available ? ' — berat melebihi stok!' : ''}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <Input type="number" placeholder="Berat (kg)" className="h-8 text-xs" value={it.weight} onChange={(e) => updateItem(it.key, { weight: e.target.value })} />
                   <Input type="number" placeholder="Jumlah (unit)" className="h-8 text-xs" value={it.quantity} onChange={(e) => updateItem(it.key, { quantity: e.target.value })} />
