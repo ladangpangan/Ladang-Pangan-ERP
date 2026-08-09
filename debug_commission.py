@@ -1,7 +1,7 @@
 import requests
 import json
 
-BASE_URL = "https://agri-system-1.preview.emergentagent.com/api"
+BASE_URL = "https://erp-mapper-1.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login
