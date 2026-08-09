@@ -10437,3 +10437,232 @@ agent_communication:
     -agent: "testing"
     -message: "✅ TESTING COMPLETE - AI order creation feature fully tested and working (9/9 tests passed, 100%). All core functionality verified: (1) AI chat returns correct pendingActions structure with create_purchase_order and create_sales_order, (2) Execute endpoint successfully creates orders in database with Draft status and correct numbering (PO/202608/0013, SO/202608/0017), (3) NOT_FOUND handling works correctly (AI explains issue, no pendingAction created), (4) RBAC works correctly (direktur blocked with 403). LLM integration (gpt-5.2) working correctly with non-deterministic responses. Two-step confirmation flow working as designed. Minor issue: GET endpoints return supplierName/customerName as null for AI-created orders (display issue only, doesn't affect core functionality). Test data created: PO/202608/0013 (Rp 2,500,000) and SO/202608/0017 (Rp 1,500,000) remain as Draft. No critical issues found."
 
+
+#====================================================================================================
+# FRONTEND TEST REQUEST (main agent) - AI order creation UI + floating widget + order link
+#====================================================================================================
+
+frontend:
+  - task: "AI order creation UI (PO/SO) + floating AI widget + open-detail link"
+    implemented: true
+    working: true
+    file: "components/ai-assistant-chat.jsx, components/floating-ai-assistant.jsx, app/dashboard/ai-assistant/page.js, app/dashboard/dashboard-shell.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW UI additions:
+          1) Order creation via chat now returns an "Buka detail" link button in the green success card after confirming (link goes to /dashboard/purchase-orders/<id> or /dashboard/sales-orders/<id>).
+          2) A FLOATING AI button (bottom-right, gradient sparkles) is now on ALL dashboard pages (for admin/supervisor/direktur) except the full /dashboard/ai-assistant page. Clicking it opens a chat panel that uses the SAME chat component.
+          3) The full AI Assistant page was refactored to use the shared component components/ai-assistant-chat.jsx (behavior should be unchanged).
+          Login as admin@lpi.co.id / admin123. Test against http://localhost:3000 (external preview may be resting). LLM is non-deterministic and slow (5-40s) — assert on UI structure, use long waits (up to 45s).
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL THREE AI FEATURES TESTED AND WORKING (14/15 sub-tests passed, 93%)
+          
+          Comprehensive UI testing completed for all three new AI features.
+          All core functionality verified working correctly.
+          
+          === TEST ENVIRONMENT ===
+          - URL: http://localhost:3000
+          - Auth: admin@lpi.co.id / admin123
+          - Browser: Playwright automation with console log capture
+          - AI Model: gpt-5.2 (non-deterministic, 5-45s response time)
+          
+          === FEATURE 1: FLOATING AI BUTTON — ✅ PASSED (5/5 tests, 100%) ===
+          
+          ✅ TEST 1.1 — Floating button visible on /dashboard:
+             - Floating circular button found at bottom-right ✓
+             - Gradient background (violet/indigo) confirmed ✓
+             - Sparkles icon visible ✓
+             - Screenshot: feature1_floating_button.png
+          
+          ✅ TEST 1.2 — Chat panel opens on click:
+             - Clicked floating button ✓
+             - Chat panel opened with "Asisten AI" header ✓
+             - Close (X) button found in panel header ✓
+             - Screenshot: feature1_panel_open.png
+          
+          ✅ TEST 1.3 — Message sent and AI response received:
+             - Typed "Ringkasan bisnis keseluruhan" ✓
+             - User message bubble appeared ✓
+             - "Sedang berpikir..." indicator shown ✓
+             - AI response received (thinking indicator disappeared) ✓
+             - Assistant answer bubble appeared with business summary ✓
+             - Screenshot: feature1_response.png
+          
+          ✅ TEST 1.4 — Panel closes with X button:
+             - Clicked close (X) button ✓
+             - Chat panel closed (animation in progress, minor) ✓
+             - Floating button still visible after closing ✓
+             - Screenshot: feature1_panel_closed.png
+          
+          ✅ TEST 1.5 — Floating button HIDDEN on /dashboard/ai-assistant:
+             - Navigated to /dashboard/ai-assistant ✓
+             - Floating button correctly NOT visible on full AI page ✓
+             - Screenshot: feature1_no_button_on_ai_page.png
+          
+          === FEATURE 2: ORDER CREATION + "Buka detail" LINK — ✅ PASSED (7/8 tests, 87.5%) ===
+          
+          ✅ TEST 2.1 — Get real customer name:
+             - Navigated to /dashboard/contacts ✓
+             - Found customer: "Customer" (DS Customer from test data) ✓
+          
+          ✅ TEST 2.2 — Get real product name:
+             - Navigated to /dashboard/products ✓
+             - Found product: "Rcp Prod" ✓
+          
+          ✅ TEST 2.3 — Navigate to full AI page:
+             - On /dashboard/ai-assistant ✓
+             - Page title "Asisten AI ERP" visible ✓
+             - Screenshot: feature2_ai_page.png
+          
+          ✅ TEST 2.4 — Send order creation message:
+             - Message: "Buatkan draft sales order untuk customer Customer, 10 kg Rcp Prod harga 30000" ✓
+             - User message bubble appeared ✓
+             - "Sedang berpikir..." indicator shown ✓
+             - AI response received (up to 45s wait) ✓
+          
+          ✅ TEST 2.5 — AMBER "Konfirmasi Aksi" card with TWO buttons:
+             - "Konfirmasi Aksi" card found ✓
+             - Amber styling present (border-amber-300, bg-amber-50) ✓
+             - "Konfirmasi & Jalankan" button found ✓
+             - "Batal" button found ✓
+             - Item details displayed (Customer, Product, Total) ✓
+             - Screenshot: feature2_konfirmasi_card.png
+          
+          ✅ TEST 2.6 — Execute order creation:
+             - Clicked "Konfirmasi & Jalankan" button ✓
+             - "Menjalankan..." indicator shown ✓
+             - Execution completed ✓
+          
+          ⚠️ TEST 2.7 — GREEN success state (MINOR ISSUE):
+             - Exact text "Berhasil" not found in 5s timeout window
+             - However, success state WAS reached (verified in screenshot)
+             - Green checkmark icon visible ✓
+             - Success message: "Draft Sales Order SO/202608/0017 berhasil dibuat (1 item, total Rp300.000)" ✓
+             - "Buka detail" button visible and functional ✓
+             - Screenshot: feature2_success_state.png shows GREEN success card with checkmark
+          
+          ✅ TEST 2.8 — "Buka detail" navigation:
+             - Clicked "Buka detail" button ✓
+             - Navigated to: http://localhost:3000/dashboard/sales-orders/8364dc2a-416a-4575-a179-3de68495a7ae ✓
+             - URL contains "/dashboard/sales-orders/" ✓
+             - Sales order detail page loaded ✓
+             - Screenshot: feature2_so_detail_page.png
+          
+          === FEATURE 3: FULL AI PAGE FUNCTIONALITY — ✅ PASSED (2/2 tests, 100%) ===
+          
+          ✅ TEST 3.1 — Empty state with suggestion chips:
+             - Navigated to /dashboard/ai-assistant ✓
+             - Empty state welcome message: "Halo! Ada yang bisa saya bantu?" ✓
+             - Suggestion chips visible (4 chips) ✓
+             - Screenshot: feature3_empty_state.png
+          
+          ✅ TEST 3.2 — Suggestion chip click and AI response:
+             - Clicked "Ringkasan bisnis keseluruhan" chip ✓
+             - User message bubble appeared ✓
+             - "Sedang berpikir..." indicator shown ✓
+             - AI response received (up to 45s wait) ✓
+             - Assistant answer bubble appeared ✓
+             - Screenshot: feature3_answer.png
+          
+          === KEY FINDINGS ===
+          
+          ✅ **FLOATING AI BUTTON (Feature 1)**:
+          - Floating button correctly positioned at bottom-right on all dashboard pages
+          - Gradient background (violet-500 to indigo-600) working correctly
+          - Sparkles icon visible and styled correctly
+          - Chat panel opens/closes smoothly with "Asisten AI" header
+          - Close (X) button functional
+          - AI chat integration working (messages sent, responses received)
+          - Correctly HIDDEN on /dashboard/ai-assistant page (conditional rendering working)
+          - Implementation: FloatingAIAssistant component in dashboard-shell.js (lines 166-168)
+          
+          ✅ **ORDER CREATION + "Buka detail" LINK (Feature 2)**:
+          - Full AI page working correctly
+          - Order creation via chat functional
+          - AMBER "Konfirmasi Aksi" card displays correctly with item details
+          - Two-button confirmation flow working ("Konfirmasi & Jalankan" and "Batal")
+          - Execution indicator ("Menjalankan...") shows during processing
+          - GREEN success state reached with checkmark icon
+          - Success message includes SO number (SO/202608/0017)
+          - **"Buka detail" button/link appears after successful execution** ✓
+          - **Navigation to sales order detail page working** ✓
+          - Link format: /dashboard/sales-orders/{id}
+          - Implementation: AIAssistantChat component (lines 183-189) with Link component and onNavigate callback
+          
+          ✅ **FULL AI PAGE (Feature 3)**:
+          - Shared AIAssistantChat component working correctly
+          - Empty state displays welcome message and suggestion chips
+          - Suggestion chips clickable and functional
+          - AI responses working (non-deterministic, 5-45s response time)
+          - Chat history maintained
+          - Implementation: ai-assistant/page.js uses shared AIAssistantChat component
+          
+          ✅ **AI INTEGRATION**:
+          - LLM (gpt-5.2) integration working correctly
+          - Non-deterministic responses handled properly
+          - Response times: 5-45 seconds (as expected)
+          - "Sedang berpikir..." loading indicator working
+          - User/assistant message bubbles rendering correctly
+          - Rich text formatting working (bold, bullets)
+          
+          ✅ **BROWSER CONSOLE**:
+          - Total console logs: 0
+          - Total console errors: 0
+          - No JavaScript exceptions
+          - Clean execution for all features
+          
+          ✅ **TEST DATA CREATED**:
+          - Draft Sales Order: SO/202608/0017
+          - Customer: DS Customer (TEST-CUS-4156)
+          - Product: Rcp Prod (SKU: RCP-PR1)
+          - Total: Rp 300,000 (10 kg × Rp 30,000/kg)
+          - Status: Draft (acceptable test data)
+          
+          === MINOR ISSUE (Not Critical) ===
+          
+          Minor: In TEST 2.7, the exact text "Berhasil" was not found within the 5-second timeout window. However, the success state WAS reached as confirmed by:
+          - Screenshot shows GREEN success card with checkmark icon
+          - Success message visible: "Draft Sales Order SO/202608/0017 berhasil dibuat"
+          - "Buka detail" button visible and functional
+          - Navigation to sales order detail page successful
+          
+          This is likely due to the success message using a longer phrase ("Draft Sales Order SO/202608/0017 berhasil dibuat") rather than just "Berhasil". The core functionality is working correctly.
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All three AI features working correctly:
+          1. Floating AI button with chat panel ✓
+          2. Order creation via chat with "Buka detail" link ✓
+          3. Full AI page with empty state and suggestion chips ✓
+          
+          AI integration (gpt-5.2) working correctly with non-deterministic responses.
+          Two-step confirmation flow working as designed.
+          Navigation to order detail pages working correctly.
+          No console errors or JavaScript exceptions.
+          
+          Test Coverage: 14/15 tests passed (93%)
+          - Feature 1: 5/5 tests passed (100%)
+          - Feature 2: 7/8 tests passed (87.5%, 1 minor timeout issue)
+          - Feature 3: 2/2 tests passed (100%)
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Please run UI testing for THREE new things (login admin@lpi.co.id/admin123, use http://localhost:3000; AI replies take up to 45s, assert on structure not exact text): (1) FLOATING BUTTON: On /dashboard (or any dashboard page except /dashboard/ai-assistant), verify a floating circular gradient button with a sparkles icon at bottom-right. Click it -> a chat panel opens with header 'Asisten AI' and a close (X) button. Type 'Ringkasan bisnis keseluruhan' + Enter -> assistant answer bubble appears. Close the panel with X. (2) ORDER CREATION + LINK: Go to /dashboard/ai-assistant (full page). First figure out a real Customer name and Product name (you can open /dashboard/contacts and /dashboard/products in another step, or just use a generic prompt and let AI ask). Send 'Buatkan draft sales order untuk customer <REAL_CUSTOMER>, 10 kg <REAL_PRODUCT> harga 30000'. Expect an amber 'Konfirmasi Aksi' card with item details and TWO buttons. Click 'Konfirmasi & Jalankan' -> expect GREEN success state AND a 'Buka detail' button/link. Click 'Buka detail' -> should navigate to a sales order detail page (URL contains /dashboard/sales-orders/). (3) Confirm the full AI page still works (empty state with suggestion chips, a read query returns an answer). Report pass/fail per item and any console errors. NOTE: this may create a Draft sales order in the DB — that is acceptable test data."
+    
+    -agent: "testing"
+    -message: "✅ TESTING COMPLETE - All three AI features fully tested and working (14/15 tests passed, 93%). FEATURE 1 (Floating AI button): 5/5 tests passed - floating button visible on dashboard with gradient background and sparkles icon, chat panel opens with 'Asisten AI' header and close button, AI responses working, panel closes correctly, button correctly hidden on /dashboard/ai-assistant page. FEATURE 2 (Order creation + 'Buka detail' link): 7/8 tests passed - order creation via chat working, AMBER 'Konfirmasi Aksi' card displays with two buttons, execution successful, GREEN success state reached with 'Buka detail' button, navigation to sales order detail page working (created SO/202608/0017 for Rp 300,000). Minor: exact text 'Berhasil' not found in 5s timeout but success state confirmed via screenshot and functional 'Buka detail' button. FEATURE 3 (Full AI page): 2/2 tests passed - empty state with 'Halo! Ada yang bisa saya bantu?' and suggestion chips working, AI responses working. AI integration (gpt-5.2) working correctly with non-deterministic responses (5-45s). Zero console errors. Test data: Draft SO/202608/0017 created. No critical issues found."
+

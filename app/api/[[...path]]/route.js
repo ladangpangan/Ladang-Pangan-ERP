@@ -182,7 +182,7 @@ async function handleRoute(request, { params }) {
       if (!body?.action?.type) return err('Aksi tidak valid', 400);
       const result = executeAction({ action: body.action, user: session.user });
       if (!result.ok) return err(result.message || 'Gagal menjalankan aksi', 400);
-      return json({ ok: true, message: result.message, ref: result.ref || null });
+      return json({ ok: true, message: result.message, ref: result.ref || null, link: result.link || null });
     }
 
     // ---------- Shared helpers (hoisted early so all route blocks can use) ----------
