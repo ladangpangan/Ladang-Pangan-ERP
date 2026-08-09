@@ -11423,3 +11423,177 @@ agent_communication:
           - Button enabled (form validation) ✓
           - Form submission (UI working) ✓
 
+
+#====================================================================================================
+# BUGFIX VERIFY (main agent) - SO/PO numbering gap-safe (max+1)
+#====================================================================================================
+
+backend:
+  - task: "BUGFIX: SO/PO number generation gap-safe (max+1 instead of count+1)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG: nextSoNumber/nextPoNumber used count(*)+1, which collides (UNIQUE constraint failed: sales_order.so_number) when there are gaps in numbering (e.g., after any deletion). This blocked order creation via the interactive builder. FIX: both now compute max(existing suffix)+1, which is gap-safe. Left the DB with SO max SO/202608/0015 and PO max PO/202608/0014 after cleaning test data.
+          VERIFY (admin@lpi.co.id/admin123):
+          1. GET /api/contacts -> pick a Customer id and a Supplier id; GET /api/products -> pick a product id.
+          2. POST /api/sales-orders { customerId, fulfillmentType:'stock', items:[{productId, weight:5, quantity:0, unitPrice:20000, discount:0}] } -> expect 201 (NO 500 / UNIQUE error), data.soNumber should be the next sequential (e.g. SO/202608/0016), data.id present.
+          3. POST /api/purchase-orders { supplierId, poType:'Bahan Baku', items:[{productId, weight:5, unitPrice:15000}] } -> expect 201, data.poNumber next sequential (e.g. PO/202608/0015).
+          4. Create a SECOND sales order the same way -> expect 201 with the NEXT number (no collision). This proves gap-safety.
+          Please DELETE the SO/PO you create at the end (hard delete rows + their *_items) so data stays clean, and report the numbers you got.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (4/4, 100%)
+          
+          Comprehensive backend testing completed for the SO/PO number generation bugfix.
+          The fix ensures nextSoNumber/nextPoNumber use max(suffix)+1 instead of count(*)+1,
+          which is gap-safe and prevents UNIQUE constraint collisions.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: admin@lpi.co.id / admin123 (Better Auth cookie-based)
+          - Test Method: curl (bash script)
+          - Database: SQLite at /app/data/erp.db
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Create First Sales Order (PASSED):
+             - POST /api/sales-orders with body:
+               * customerId: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406 (Customer)
+               * fulfillmentType: "stock"
+               * items: [{productId: 0e36919c-39bc-4861-a991-220bb9e88725, weight: 5, quantity: 0, unitPrice: 20000, discount: 0}]
+             - Response: HTTP 201 Created ✓
+             - SO Number: SO/202608/0016 ✓
+             - SO ID: e05f4eaa-76b7-4da7-b94b-5ad7698381e0 ✓
+             - Format: SO/YYYYMM/NNNN (correct) ✓
+             - **NO 500 error, NO UNIQUE constraint error** ✓
+          
+          ✅ TEST 2 — Create Second Sales Order (PASSED):
+             - POST /api/sales-orders with IDENTICAL body (same customer, product, items)
+             - Response: HTTP 201 Created ✓
+             - SO Number: SO/202608/0017 ✓
+             - SO ID: 31ffe9b5-076e-4b7b-ac96-08af57853aaf ✓
+             - **NO 500 error, NO UNIQUE constraint error** ✓
+             - **CRITICAL**: Second SO created successfully without collision
+          
+          ✅ TEST 3 — Gap-Safety Verification (PASSED):
+             - First SO Number: SO/202608/0016
+             - Second SO Number: SO/202608/0017
+             - **VERIFICATION**: SO/202608/0016 != SO/202608/0017 ✓
+             - **CRITICAL**: Numbers are DIFFERENT and SEQUENTIAL ✓
+             - **This proves gap-safety**: max(suffix)+1 works correctly
+             - **No collision occurred**: Both orders created with unique numbers
+          
+          ✅ TEST 4 — Create Purchase Order (PASSED):
+             - POST /api/purchase-orders with body:
+               * supplierId: 0b69c8b3-23e7-4937-8be2-2810448256b9 (Supplier)
+               * poType: "Bahan Baku"
+               * items: [{productId: 0e36919c-39bc-4861-a991-220bb9e88725, weight: 5, unitPrice: 15000}]
+             - Response: HTTP 201 Created ✓
+             - PO Number: PO/202608/0015 ✓
+             - PO ID: d8962bcd-71e6-4191-9c72-a870bfe8e1b8 ✓
+             - Format: PO/YYYYMM/NNNN (correct) ✓
+             - **NO 500 error, NO UNIQUE constraint error** ✓
+          
+          ✅ CLEANUP — Database Cleanup (PASSED):
+             - Deleted SO e05f4eaa-76b7-4da7-b94b-5ad7698381e0: 1 items, 1 order ✓
+             - Deleted SO 31ffe9b5-076e-4b7b-ac96-08af57853aaf: 1 items, 1 order ✓
+             - Deleted PO d8962bcd-71e6-4191-9c72-a870bfe8e1b8: 1 items, 1 order ✓
+             - All test records hard-deleted from database ✓
+             - Database remains clean for future tests ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified**:
+          - nextSoNumber now uses max(suffix)+1 instead of count(*)+1
+          - nextPoNumber now uses max(suffix)+1 instead of count(*)+1
+          - Gap-safe numbering working correctly
+          - No UNIQUE constraint collisions when creating multiple orders
+          - Sequential numbering maintained: SO/202608/0016 → SO/202608/0017
+          
+          ✅ **UNIQUE Constraint Issue Resolved**:
+          - Previous bug: count(*)+1 caused collisions when gaps existed in numbering
+          - Previous error: "UNIQUE constraint failed: sales_order.so_number" (HTTP 500)
+          - After fix: NO 500 errors, NO UNIQUE constraint errors
+          - Both SO and PO creation return HTTP 201 consistently
+          
+          ✅ **Gap-Safety Proven**:
+          - Created two SOs back-to-back with identical payloads
+          - First SO: SO/202608/0016
+          - Second SO: SO/202608/0017 (NEXT sequential number)
+          - No collision, no error
+          - This proves the fix handles gaps in numbering correctly
+          
+          ✅ **Number Format**:
+          - SO format: SO/YYYYMM/NNNN (e.g., SO/202608/0016)
+          - PO format: PO/YYYYMM/NNNN (e.g., PO/202608/0015)
+          - Both formats correct and consistent
+          
+          ✅ **Data Integrity**:
+          - All created orders have valid IDs (UUID format)
+          - All orders created with correct status (Draft)
+          - Database cleanup successful (no orphaned records)
+          - Foreign key constraints respected (items deleted before orders)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test Data:
+          - Customer ID: 5cb90f58-17c1-4da9-85f4-4c3f8a46b406
+          - Supplier ID: 0b69c8b3-23e7-4937-8be2-2810448256b9
+          - Product ID: 0e36919c-39bc-4861-a991-220bb9e88725
+          
+          Sales Order #1:
+          - SO Number: SO/202608/0016
+          - SO ID: e05f4eaa-76b7-4da7-b94b-5ad7698381e0
+          - HTTP Status: 201 Created
+          - Items: 1 (weight: 5 kg, unitPrice: 20000)
+          
+          Sales Order #2:
+          - SO Number: SO/202608/0017
+          - SO ID: 31ffe9b5-076e-4b7b-ac96-08af57853aaf
+          - HTTP Status: 201 Created
+          - Items: 1 (weight: 5 kg, unitPrice: 20000)
+          
+          Purchase Order:
+          - PO Number: PO/202608/0015
+          - PO ID: d8962bcd-71e6-4191-9c72-a870bfe8e1b8
+          - HTTP Status: 201 Created
+          - Items: 1 (weight: 5 kg, unitPrice: 15000)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All SO/PO number generation bugfix features working correctly.
+          Gap-safe numbering implemented successfully.
+          No UNIQUE constraint collisions.
+          Sequential numbering maintained.
+          Database cleanup successful.
+          
+          Test Coverage: 4/4 tests passed (100%)
+          - TEST 1: Create first SO ✓
+          - TEST 2: Create second SO (gap-safety) ✓
+          - TEST 3: Verify no collision ✓
+          - TEST 4: Create PO ✓
+          - CLEANUP: Database cleanup ✓
+
+test_plan:
+  current_focus:
+    - "BUGFIX: SO/PO number generation gap-safe (max+1 instead of count+1)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Bugfix verification: SO/PO numbering changed from count+1 to max+1 to fix UNIQUE constraint collisions on order creation. Please verify POST /api/sales-orders and POST /api/purchase-orders now return 201 (no 500 UNIQUE error) and produce sequential numbers, including creating TWO sales orders back-to-back to prove no collision. Clean up (hard delete) the orders you create afterward. Login admin@lpi.co.id/admin123."
+    
+    -agent: "testing"
+    -message: "✅ BUGFIX VERIFIED - ALL TESTS PASSED (4/4, 100%). SO/PO number generation bugfix is working correctly. Test results: (1) ✅ Created first SO: SO/202608/0016 (HTTP 201), (2) ✅ Created second SO: SO/202608/0017 (HTTP 201, DIFFERENT from first), (3) ✅ Gap-safety verified: SO/202608/0016 != SO/202608/0017 (no collision), (4) ✅ Created PO: PO/202608/0015 (HTTP 201), (5) ✅ Cleanup successful: all test records deleted from database. KEY FINDINGS: No UNIQUE constraint collisions, sequential numbering maintained, gap-safe numbering working correctly (max(suffix)+1 instead of count(*)+1). The bugfix resolves the issue where order creation failed with 'UNIQUE constraint failed: sales_order.so_number' (HTTP 500) when gaps existed in numbering. Backend APIs are working correctly. Main agent should summarize and finish."
+
