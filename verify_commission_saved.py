@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "https://erp-mapper-1.preview.emergentagent.com/api"
+BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login

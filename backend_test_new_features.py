@@ -10,7 +10,7 @@ import json
 import sys
 from datetime import datetime, timedelta
 
-BASE_URL = "https://erp-mapper-1.preview.emergentagent.com/api"
+BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 
