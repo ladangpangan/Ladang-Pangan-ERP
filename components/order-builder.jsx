@@ -60,10 +60,9 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
 
   const onSelectProduct = (key, productId) => {
     const p = productMap[productId];
-    updateItem(key, { productId, unitPrice: (items.find(i => i.key === key)?.unitPrice || (p ? String(p.basePrice || '') : '')) });
-    // auto-fill price only if empty
-    const cur = items.find(i => i.key === key);
-    if (p && (!cur || cur.unitPrice === '')) updateItem(key, { productId, unitPrice: String(p.basePrice || '') });
+    setItems(prev => prev.map(it => it.key === key
+      ? { ...it, productId, unitPrice: (it.unitPrice === '' || it.unitPrice == null) ? (p ? String(p.basePrice || '') : '') : it.unitPrice }
+      : it));
   };
 
   const lineTotal = (it) => {
@@ -189,7 +188,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
             <label className="text-xs font-medium">{isPO ? 'Supplier' : 'Customer'} <span className="text-red-500">*</span></label>
             <Select value={contactId} onValueChange={setContactId}>
               <SelectTrigger className="h-9 bg-white"><SelectValue placeholder={`Pilih ${isPO ? 'supplier' : 'customer'}...`} /></SelectTrigger>
-              <SelectContent>
+              <SelectContent className="z-[80]">
                 {contactOptions.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">Tidak ada data</div>}
                 {contactOptions.map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
               </SelectContent>
@@ -203,7 +202,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
                 <label className="text-xs font-medium">Jenis Pemenuhan</label>
                 <Select value={fulfillmentType} onValueChange={setFulfillmentType}>
                   <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="z-[80]">
                     {(opts?.fulfillmentTypes || []).map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -214,7 +213,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
                     <label className="text-xs font-medium">Supplier (dropship) <span className="text-red-500">*</span></label>
                     <Select value={dropshipSupplierId} onValueChange={setDropshipSupplierId}>
                       <SelectTrigger className="h-9 bg-white"><SelectValue placeholder="Pilih supplier..." /></SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="z-[80]">
                         {(opts?.suppliers || []).map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -223,7 +222,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
                     <label className="text-xs font-medium">Dropshipper (opsional)</label>
                     <Select value={dropshipperId} onValueChange={setDropshipperId}>
                       <SelectTrigger className="h-9 bg-white"><SelectValue placeholder="Pilih dropshipper..." /></SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="z-[80]">
                         {(opts?.dropshippers || []).map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -239,7 +238,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
               <label className="text-xs font-medium">Jenis PO</label>
               <Select value={poType} onValueChange={setPoType}>
                 <SelectTrigger className="h-9 bg-white"><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[80]">
                   {(opts?.poTypes || []).map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -256,7 +255,7 @@ export default function OrderBuilder({ orderType: initialType = null, onNavigate
                   <div className="flex-1">
                     <Select value={it.productId} onValueChange={(v) => onSelectProduct(it.key, v)}>
                       <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Pilih produk..." /></SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="z-[80]">
                         {(opts?.products || []).map(p => <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>)}
                       </SelectContent>
                     </Select>
