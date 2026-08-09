@@ -7,6 +7,7 @@ import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
 import { headers } from 'next/headers';
+import { runAgent, executeAction, canWrite } from '@/lib/ai/erp-agent';
 
 // -----------------------
 // Helpers
@@ -151,6 +152,38 @@ async function handleRoute(request, { params }) {
       }
     }
 
+
+    // ---------- AGENTIC AI ASSISTANT ----------
+    // POST /ai/chat  { message, sessionId, history:[{role,content}] }
+    if (route === '/ai/chat' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json().catch(() => ({}));
+      const message = String(body?.message || '').trim();
+      if (!message) return err('Pesan tidak boleh kosong', 400);
+      const result = await runAgent({
+        message,
+        history: Array.isArray(body?.history) ? body.history : [],
+        user: session.user,
+        sessionId: String(body?.sessionId || session.user.id),
+      });
+      if (!result.ok) return err(result.error || 'Gagal memproses', 500);
+      return json({
+        ok: true,
+        answer: result.answer,
+        pendingActions: result.pendingActions || [],
+        canWrite: canWrite(session.user),
+      });
+    }
+    // POST /ai/execute  { action:{type,args} }  — run a confirmed write action
+    if (route === '/ai/execute' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!canWrite(session.user)) return err('Peran Anda tidak diizinkan melakukan aksi ini', 403);
+      const body = await request.json().catch(() => ({}));
+      if (!body?.action?.type) return err('Aksi tidak valid', 400);
+      const result = executeAction({ action: body.action, user: session.user });
+      if (!result.ok) return err(result.message || 'Gagal menjalankan aksi', 400);
+      return json({ ok: true, message: result.message, ref: result.ref || null });
+    }
 
     // ---------- Shared helpers (hoisted early so all route blocks can use) ----------
     // Broadcast in-app notifications to all users with any of the given roles.
