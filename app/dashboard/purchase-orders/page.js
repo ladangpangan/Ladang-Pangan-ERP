@@ -268,24 +268,38 @@ function CreatePODialog({ onSaved }) {
           {form.items.map((it, i) => {
             const prod = (prods?.data || []).find(p => p.id === it.productId);
             return (
-            <div key={i} className="p-3 space-y-1">
-              <div className="grid grid-cols-12 gap-2 items-center">
-                <div className="col-span-4">
+            <div key={i} className="p-3 space-y-2">
+              <div className="flex items-end gap-2">
+                <div className="flex-1 space-y-1">
+                  <Label className="text-xs">Produk</Label>
                   <Select value={it.productId} onValueChange={v => updItem(i, 'productId', v)}>
-                    <SelectTrigger><SelectValue placeholder="Produk" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                     <SelectContent>{(prods?.data || []).map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
-                <div className="col-span-2">
-                  <Input type="number" placeholder={`Qty (${pkgShort(prod?.packagingType)})`} value={it.quantity} onChange={e => updItem(i, 'quantity', Number(e.target.value))} />
-                </div>
-                <Input className="col-span-2" type="number" placeholder="Berat (kg)" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
-                <Input className="col-span-3" type="number" placeholder="Harga/kg" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
-                <Button size="icon" variant="ghost" className="col-span-1" onClick={() => removeItem(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => removeItem(i)} title="Hapus item"><Trash2 className="w-4 h-4 text-red-500" /></Button>
               </div>
-              {prod?.packagingType && (
-                <div className="text-[11px] text-muted-foreground pl-1">Kemasan: <b>{pkgLabel(prod.packagingType)}</b> · Qty = jumlah hitungan kemasan</div>
-              )}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">Jenis Kemasan</Label>
+                  <Input readOnly value={prod?.packagingType ? pkgLabel(prod.packagingType) : '-'} className="bg-muted/50 cursor-default" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Qty ({pkgShort(prod?.packagingType) || 'unit'})</Label>
+                  <Input type="number" placeholder="0" value={it.quantity} onChange={e => updItem(i, 'quantity', Number(e.target.value))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Berat (kg)</Label>
+                  <Input type="number" placeholder="0" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Harga/kg (Rp)</Label>
+                  <Input type="number" placeholder="0" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
+                </div>
+              </div>
+              <div className="text-[11px] text-muted-foreground pl-0.5">
+                Jenis kemasan mengikuti master produk · Qty = jumlah hitungan kemasan · Subtotal baris: <b>Rp {(Number(it.unitPrice) * Number(it.weight)).toLocaleString('id-ID')}</b>
+              </div>
             </div>
             );
           })}
