@@ -9,6 +9,7 @@ import {
   CheckCircle2, AlertCircle, Trash2, Wand2, ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import OrderBuilder from '@/components/order-builder';
 
 const SUGGESTIONS = [
   'Ringkasan bisnis keseluruhan',
@@ -72,6 +73,7 @@ export default function AIAssistantChat({ compact = false, onNavigate }) {
       setMessages(prev => [...prev, {
         id: genId(), role: 'assistant', content: data.answer,
         pendingActions: (data.pendingActions || []).map(a => ({ ...a, state: 'pending' })),
+        uiComponents: data.uiComponents || [],
       }]);
     } catch (e) {
       setMessages(prev => [...prev, { id: genId(), role: 'assistant', content: 'Maaf, terjadi kesalahan: ' + e.message, error: true }]);
@@ -198,6 +200,14 @@ export default function AIAssistantChat({ compact = false, onNavigate }) {
                     </div>
                   </div>
                 </div>
+              ))}
+
+              {Array.isArray(m.uiComponents) && m.uiComponents.map((uc) => (
+                uc.type === 'order_builder' ? (
+                  <div key={uc.id} className="w-full">
+                    <OrderBuilder orderType={uc.orderType} onNavigate={onNavigate} />
+                  </div>
+                ) : null
               ))}
             </div>
           </div>

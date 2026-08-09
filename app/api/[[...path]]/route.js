@@ -171,6 +171,7 @@ async function handleRoute(request, { params }) {
         ok: true,
         answer: result.answer,
         pendingActions: result.pendingActions || [],
+        uiComponents: result.uiComponents || [],
         canWrite: canWrite(session.user),
       });
     }
@@ -183,6 +184,27 @@ async function handleRoute(request, { params }) {
       const result = executeAction({ action: body.action, user: session.user });
       if (!result.ok) return err(result.message || 'Gagal menjalankan aksi', 400);
       return json({ ok: true, message: result.message, ref: result.ref || null, link: result.link || null });
+    }
+
+    // GET /ai/options — option lists for the interactive order builder (dropdowns)
+    if (route === '/ai/options' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const rows = db.select().from(s.contacts).where(isNull(s.contacts.archivedAt)).orderBy(s.contacts.displayName).all();
+      const inCat = (r, cat) => parseCategories(r).includes(cat);
+      const map = (r) => ({ id: r.id, label: `${r.displayName} (${r.code})`, name: r.displayName });
+      const customers = rows.filter(r => inCat(r, 'Customer')).map(map);
+      const suppliers = rows.filter(r => inCat(r, 'Supplier')).map(map);
+      const dropshippers = rows.filter(r => inCat(r, 'Dropshipper') || r.isDropshipper).map(map);
+      const agents = rows.filter(r => inCat(r, 'Agen') || r.isAgent).map(map);
+      const prods = db.select().from(s.products).where(isNull(s.products.archivedAt)).orderBy(s.products.name).all();
+      const products = prods.map(p => ({ id: p.id, label: `${p.name} (${p.sku})`, name: p.name, sku: p.sku, basePrice: p.basePrice, unit: p.unit }));
+      return json({
+        ok: true,
+        customers, suppliers, dropshippers, agents, products,
+        poTypes: ['Live Bird', 'Packaging', 'Bahan Baku', 'Produk Jadi', 'Operasional'],
+        fulfillmentTypes: [{ value: 'stock', label: 'Dari Stok' }, { value: 'dropship', label: 'Dropship (langsung dari supplier)' }],
+      });
     }
 
     // ---------- Shared helpers (hoisted early so all route blocks can use) ----------
