@@ -1236,9 +1236,10 @@ async function handleRoute(request, { params }) {
     const nextPoNumber = () => {
       const ym = new Date();
       const prefix = `PO/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.purchaseOrder).where(like(s.purchaseOrder.poNumber, `${prefix}%`)).get();
-      const seq = String((Number(row?.c || 0) + 1)).padStart(4, '0');
-      return `${prefix}${seq}`;
+      const rows = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(like(s.purchaseOrder.poNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      return `${prefix}${String(max + 1).padStart(4, '0')}`;
     };
     const nextGrnNumber = () => {
       const ym = new Date();
@@ -1687,8 +1688,10 @@ async function handleRoute(request, { params }) {
     const nextSoNumber = () => {
       const ym = new Date();
       const prefix = `SO/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.salesOrder).where(like(s.salesOrder.soNumber, `${prefix}%`)).get();
-      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      const rows = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(like(s.salesOrder.soNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      return `${prefix}${String(max + 1).padStart(4, '0')}`;
     };
     const nextInvoiceNumber = () => {
       const ym = new Date();
