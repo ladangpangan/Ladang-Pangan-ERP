@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import nodePath from 'path';
-import { eq, and, like, or, desc, sql, inArray, isNotNull } from 'drizzle-orm';
+import { eq, and, like, or, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
@@ -111,6 +111,46 @@ async function handleRoute(request, { params }) {
   try {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
+
+    // ---------- ARCHIVE (soft-archive) generic handlers ----------
+    // Resource map: URL segment -> { table, roles allowed to archive/restore }
+    const ARCHIVABLE = {
+      'contacts':         { table: s.contacts,       roles: ['admin', 'supervisor'] },
+      'products':         { table: s.products,       roles: ['admin', 'supervisor'] },
+      'cold-storages':    { table: s.coldStorages,   roles: ['admin', 'supervisor'] },
+      'purchase-orders':  { table: s.purchaseOrder,  roles: ['admin', 'supervisor'] },
+      'sales-orders':     { table: s.salesOrder,     roles: ['admin', 'supervisor'] },
+      'work-orders':      { table: s.workOrder,      roles: ['admin', 'supervisor'] },
+      'inventory-stocks': { table: s.inventoryStock, roles: ['admin', 'supervisor'] },
+      'users':            { table: s.user,           roles: ['admin', 'supervisor', 'direktur'] },
+    };
+    // Build the archived filter for a list GET based on ?archived= param.
+    // default => only ACTIVE (archived_at IS NULL); '1'|'true' => only ARCHIVED; 'all' => both.
+    const archivedCond = (table, url) => {
+      const a = url.searchParams.get('archived');
+      if (a === '1' || a === 'true') return isNotNull(table.archivedAt);
+      if (a === 'all') return null;
+      return isNull(table.archivedAt);
+    };
+    // POST /:resource/:id/archive  and  /:resource/:id/restore
+    if (path.length === 3 && (path[2] === 'archive' || path[2] === 'restore') && method === 'POST' && ARCHIVABLE[path[0]]) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const cfg = ARCHIVABLE[path[0]];
+      if (!requireRole(session, cfg.roles)) return err('Forbidden', 403);
+      const id = path[1];
+      const tbl = cfg.table;
+      const existing = db.select().from(tbl).where(eq(tbl.id, id)).get();
+      if (!existing) return err('Data tidak ditemukan', 404);
+      if (path[0] === 'users' && id === session.user.id) return err('Tidak bisa mengarsipkan akun sendiri', 400);
+      const isArchive = path[2] === 'archive';
+      try {
+        db.update(tbl).set({ archivedAt: isArchive ? new Date() : null, updatedAt: new Date() }).where(eq(tbl.id, id)).run();
+        return json({ ok: true, archived: isArchive });
+      } catch (e) {
+        return err('Gagal ' + (isArchive ? 'mengarsipkan' : 'memulihkan') + ': ' + String(e?.message || e), 400);
+      }
+    }
+
 
     // ---------- Shared helpers (hoisted early so all route blocks can use) ----------
     // Broadcast in-app notifications to all users with any of the given roles.
@@ -456,7 +496,11 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth();
       if (error) return error;
       if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
-      const rows = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).orderBy(desc(s.user.createdAt)).all();
+      const url = new URL(request.url);
+      const ac = archivedCond(s.user, url);
+      let uq = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, archivedAt: s.user.archivedAt, createdAt: s.user.createdAt }).from(s.user);
+      if (ac) uq = uq.where(ac);
+      const rows = uq.orderBy(desc(s.user.createdAt)).all();
       return json({ data: rows });
     }
 
@@ -565,6 +609,7 @@ async function handleRoute(request, { params }) {
       const q = url.searchParams.get('q');
       let query = db.select().from(s.contacts);
       const conds = [];
+      { const ac = archivedCond(s.contacts, url); if (ac) conds.push(ac); }
       if (q) conds.push(or(
         like(s.contacts.displayName, `%${q}%`),
         like(s.contacts.code, `%${q}%`),
@@ -956,6 +1001,7 @@ async function handleRoute(request, { params }) {
       const cat = url.searchParams.get('category');
       let query = db.select().from(s.products);
       const conds = [];
+      { const ac = archivedCond(s.products, url); if (ac) conds.push(ac); }
       if (cat && cat !== 'all') conds.push(eq(s.products.category, cat));
       if (q) conds.push(or(like(s.products.name, `%${q}%`), like(s.products.sku, `%${q}%`)));
       if (conds.length) query = query.where(and(...conds));
@@ -1018,7 +1064,11 @@ async function handleRoute(request, { params }) {
     // ---------- COLD STORAGES ----------
     if (route === '/cold-storages' && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
-      const rows = db.select().from(s.coldStorages).orderBy(desc(s.coldStorages.createdAt)).all();
+      const url = new URL(request.url);
+      const ac = archivedCond(s.coldStorages, url);
+      let q0 = db.select().from(s.coldStorages);
+      if (ac) q0 = q0.where(ac);
+      const rows = q0.orderBy(desc(s.coldStorages.createdAt)).all();
       // Enrich with zone counts
       const withZones = rows.map(cs => {
         const zoneCount = db.select({ c: sql`count(*)` }).from(s.zones).where(eq(s.zones.coldStorageId, cs.id)).get();
@@ -1206,6 +1256,7 @@ async function handleRoute(request, { params }) {
       const supplier = url.searchParams.get('supplier');
       const q = url.searchParams.get('q');
       const conds = [];
+      { const ac = archivedCond(s.purchaseOrder, url); if (ac) conds.push(ac); }
       if (status && status !== 'all') conds.push(eq(s.purchaseOrder.pipelineStatus, status));
       if (type && type !== 'all') conds.push(eq(s.purchaseOrder.poType, type));
       if (supplier) conds.push(eq(s.purchaseOrder.supplierId, supplier));
@@ -1660,6 +1711,7 @@ async function handleRoute(request, { params }) {
       const customer = url.searchParams.get('customer');
       const q = url.searchParams.get('q');
       const conds = [];
+      { const ac = archivedCond(s.salesOrder, url); if (ac) conds.push(ac); }
       if (status && status !== 'all') conds.push(eq(s.salesOrder.pipelineStatus, status));
       if (customer) conds.push(eq(s.salesOrder.customerId, customer));
       if (q) conds.push(or(like(s.salesOrder.soNumber, `%${q}%`), like(s.salesOrder.invoiceNumber, `%${q}%`)));
@@ -2809,6 +2861,7 @@ async function handleRoute(request, { params }) {
       const mode = url.searchParams.get('mode');
       const q = url.searchParams.get('q');
       const conds = [];
+      { const ac = archivedCond(s.workOrder, url); if (ac) conds.push(ac); }
       if (status && status !== 'all') conds.push(eq(s.workOrder.pipelineStatus, status));
       if (mode && mode !== 'all') conds.push(eq(s.workOrder.mode, mode));
       if (q) conds.push(like(s.workOrder.woNumber, `%${q}%`));
@@ -3166,6 +3219,7 @@ async function handleRoute(request, { params }) {
       const sort = url.searchParams.get('sort') || 'FEFO'; // FIFO | FEFO
       const q = url.searchParams.get('q');
       const conds = [];
+      { const ac = archivedCond(s.inventoryStock, url); if (ac) conds.push(ac); }
       if (status !== 'all') conds.push(eq(s.inventoryStock.status, status));
       if (productId) conds.push(eq(s.inventoryStock.productId, productId));
       if (csId) conds.push(eq(s.inventoryStock.coldStorageId, csId));

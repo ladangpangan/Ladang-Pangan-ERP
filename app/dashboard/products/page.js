@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Package, Loader2 } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Package, Loader2, Archive, ArchiveRestore } from 'lucide-react';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
@@ -50,12 +51,24 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const params = new URLSearchParams();
   if (cat !== 'all') params.set('category', cat);
   if (q) params.set('q', q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/products?${params}`, fetcher);
-  const rows = data?.data || [];
+  const rows = sort.sortRows(data?.data || [], {
+    sku: r => r.sku, name: r => r.name, category: r => r.category,
+    basePrice: r => r.basePrice, minStock: r => r.minStock, status: r => r.status,
+  });
+
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan produk ini dari arsip?' : 'Arsipkan produk ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('products', r.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (row) => { setEditing(row); setForm({ ...emptyForm, ...row }); setOpen(true); };
@@ -147,15 +160,21 @@ export default function ProductsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Cari SKU / nama..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
+            <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>SKU</TableHead><TableHead>Nama</TableHead><TableHead>Kategori</TableHead>
-              <TableHead>Satuan Berat</TableHead><TableHead>Kemasan</TableHead><TableHead className="text-right">Harga</TableHead>
-              <TableHead className="text-right">Min Stock</TableHead><TableHead>Shelf Life</TableHead>
-              <TableHead>Status</TableHead><TableHead className="text-right">Aksi</TableHead>
+              <SortHead field="sku" sort={sort}>SKU</SortHead>
+              <SortHead field="name" sort={sort}>Nama</SortHead>
+              <SortHead field="category" sort={sort}>Kategori</SortHead>
+              <TableHead>Satuan Berat</TableHead><TableHead>Kemasan</TableHead>
+              <SortHead field="basePrice" sort={sort} className="text-right">Harga</SortHead>
+              <SortHead field="minStock" sort={sort} className="text-right">Min Stock</SortHead>
+              <TableHead>Shelf Life</TableHead>
+              <SortHead field="status" sort={sort}>Status</SortHead>
+              <TableHead className="text-right">Aksi</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={10} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
@@ -173,6 +192,9 @@ export default function ProductsPage() {
                   <TableCell><Badge variant={r.status === 'active' ? 'default' : 'secondary'}>{r.status}</Badge></TableCell>
                   <TableCell className="text-right space-x-1">
                     <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="w-4 h-4" /></Button>
+                    {view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>}
                     <Button size="icon" variant="ghost" onClick={() => remove(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
                   </TableCell>
                 </TableRow>

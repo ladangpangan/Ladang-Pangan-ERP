@@ -17,9 +17,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown, FileText, Upload, Download } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown, FileText, Upload, Download, Archive, ArchiveRestore } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -91,12 +92,23 @@ export default function ContactsPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [detailId, setDetailId] = useState(null);
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const params = new URLSearchParams();
   if (type !== 'all') params.set('type', type);
   if (q) params.set('q', q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading, error } = useSWR(canView ? `/api/contacts?${params}` : null, fetcher);
-  const rows = data?.data || [];
+  const rows = sort.sortRows(data?.data || [], {
+    code: r => r.code, displayName: r => r.displayName, city: r => r.city, status: r => r.status,
+  });
+
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan kontak ini dari arsip?' : 'Arsipkan kontak ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('contacts', r.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   if (!canView) {
     return (
@@ -171,15 +183,20 @@ export default function ContactsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Cari nama / kode / phone..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
+            <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>Tipe</TableHead><TableHead>Kode</TableHead><TableHead>Nama</TableHead>
-              <TableHead>Kota</TableHead><TableHead>Kontak</TableHead>
+              <TableHead>Tipe</TableHead>
+              <SortHead field="code" sort={sort}>Kode</SortHead>
+              <SortHead field="displayName" sort={sort}>Nama</SortHead>
+              <SortHead field="city" sort={sort}>Kota</SortHead>
+              <TableHead>Kontak</TableHead>
               <TableHead className="text-right">Credit / Prepaid</TableHead>
-              <TableHead>Status</TableHead><TableHead className="text-right">Aksi</TableHead>
+              <SortHead field="status" sort={sort}>Status</SortHead>
+              <TableHead className="text-right">Aksi</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
@@ -208,6 +225,9 @@ export default function ContactsPage() {
                       <Eye className="w-4 h-4" />
                     </Button>
                     {canEdit && <Button size="icon" variant="ghost" title="Edit" onClick={() => openEdit(r)}><Pencil className="w-4 h-4" /></Button>}
+                    {canEdit && (view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
                     {canDelete && <Button size="icon" variant="ghost" title="Hapus" onClick={() => remove(r.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>}
                   </TableCell>
                 </TableRow>

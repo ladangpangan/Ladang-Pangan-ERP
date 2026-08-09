@@ -16,7 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2 } from 'lucide-react';
+import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore } from 'lucide-react';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel, pkgShort } from '@/lib/constants';
@@ -62,13 +63,26 @@ export default function POListPage() {
   const [poType, setPoType] = useState('all');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const params = new URLSearchParams();
   if (statusTab !== 'all') params.set('status', statusTab);
   if (poType !== 'all') params.set('type', poType);
   if (q) params.set('q', q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/purchase-orders?${params}`, fetcher);
-  const rows = data?.data || [];
+  const rows = sort.sortRows(data?.data || [], {
+    poNumber: r => r.poNumber, poType: r => r.poType, supplier: r => r.supplier?.name,
+    orderDate: r => r.orderDate, totalAmount: r => r.totalAmount,
+    paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
+  });
+
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan PO ini dari arsip?' : 'Arsipkan PO ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('purchase-orders', r.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   return (
     <div className="space-y-6">
@@ -107,15 +121,21 @@ export default function POListPage() {
                 {PO_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
               </SelectContent>
             </Select>
+            <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>No PO</TableHead><TableHead>Tipe</TableHead><TableHead>Supplier</TableHead>
-              <TableHead>Tgl Order</TableHead><TableHead>Metode</TableHead>
-              <TableHead className="text-right">Total</TableHead>
-              <TableHead>Bayar</TableHead><TableHead>Status</TableHead><TableHead></TableHead>
+              <SortHead field="poNumber" sort={sort}>No PO</SortHead>
+              <SortHead field="poType" sort={sort}>Tipe</SortHead>
+              <SortHead field="supplier" sort={sort}>Supplier</SortHead>
+              <SortHead field="orderDate" sort={sort}>Tgl Order</SortHead>
+              <TableHead>Metode</TableHead>
+              <SortHead field="totalAmount" sort={sort} className="text-right">Total</SortHead>
+              <SortHead field="paymentStatus" sort={sort}>Bayar</SortHead>
+              <SortHead field="pipelineStatus" sort={sort}>Status</SortHead>
+              <TableHead></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
@@ -133,7 +153,12 @@ export default function POListPage() {
                   <TableCell className="text-right font-medium">Rp {Number(r.totalAmount).toLocaleString('id-ID')}</TableCell>
                   <TableCell><Badge variant="secondary" className={PAY_COLOR[r.paymentStatus]}>{r.paymentStatus}</Badge></TableCell>
                   <TableCell><Badge className={STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
-                  <TableCell><Link href={`/dashboard/purchase-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link></TableCell>
+                  <TableCell className="text-right whitespace-nowrap">
+                    <Link href={`/dashboard/purchase-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                    {canCreate && (view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

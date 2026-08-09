@@ -10,7 +10,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Pencil, Trash2, Warehouse, MapPin, Loader2, Snowflake } from 'lucide-react';
+import { Plus, Pencil, Trash2, Warehouse, MapPin, Loader2, Snowflake, Archive, ArchiveRestore } from 'lucide-react';
+import { ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
@@ -19,13 +20,26 @@ const emptyCS = { code: '', name: '', location: '', temperatureRange: '', capaci
 const emptyZone = { code: '', name: '', description: '', status: 'active' };
 
 export default function ColdStoragePage() {
-  const { data, mutate, isLoading } = useSWR('/api/cold-storages', fetcher);
-  const rows = data?.data || [];
+  const [view, setView] = useState('active');
+  const [sortBy, setSortBy] = useState('recent');
+  const { data, mutate, isLoading } = useSWR(`/api/cold-storages${view === 'archived' ? '?archived=1' : ''}`, fetcher);
+  const rows = [...(data?.data || [])].sort((a, b) => {
+    if (sortBy === 'name') return (a.name || '').localeCompare(b.name || '', 'id');
+    if (sortBy === 'code') return (a.code || '').localeCompare(b.code || '', 'id');
+    if (sortBy === 'capacity') return Number(b.capacityKg || 0) - Number(a.capacityKg || 0);
+    return 0;
+  });
   const [csOpen, setCsOpen] = useState(false);
   const [csEditing, setCsEditing] = useState(null);
   const [csForm, setCsForm] = useState(emptyCS);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState(null);
+
+  const doArchive = async (cs) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan cold storage ini dari arsip?' : 'Arsipkan cold storage ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('cold-storages', cs.id, view === 'archived');
+    if (ok) { mutate(); if (selected?.id === cs.id) setSelected(null); }
+  };
 
   const openCreateCs = () => { setCsEditing(null); setCsForm(emptyCS); setCsOpen(true); };
   const openEditCs = (r) => { setCsEditing(r); setCsForm({ ...emptyCS, ...r }); setCsOpen(true); };
@@ -83,6 +97,19 @@ export default function ColdStoragePage() {
         </Dialog>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3">
+        <ArchiveTabs value={view} onChange={setView} />
+        <Select value={sortBy} onValueChange={setSortBy}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Urutkan" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="recent">Urutan: Terbaru</SelectItem>
+            <SelectItem value="name">Nama (A-Z)</SelectItem>
+            <SelectItem value="code">Kode (A-Z)</SelectItem>
+            <SelectItem value="capacity">Kapasitas (terbesar)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="grid lg:grid-cols-3 gap-4">
         {isLoading && <div className="col-span-3 text-center py-12"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
         {!isLoading && rows.length === 0 && <div className="col-span-3 text-center py-12 text-muted-foreground">Belum ada cold storage</div>}
@@ -101,6 +128,9 @@ export default function ColdStoragePage() {
                 </div>
                 <div className="flex gap-1">
                   <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); openEditCs(cs); }}><Pencil className="w-4 h-4" /></Button>
+                  {view === 'archived'
+                    ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={(e) => { e.stopPropagation(); doArchive(cs); }}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                    : <Button size="icon" variant="ghost" title="Arsipkan" onClick={(e) => { e.stopPropagation(); doArchive(cs); }}><Archive className="w-4 h-4 text-amber-600" /></Button>}
                   <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); removeCs(cs.id); }}><Trash2 className="w-4 h-4 text-red-500" /></Button>
                 </div>
               </div>
