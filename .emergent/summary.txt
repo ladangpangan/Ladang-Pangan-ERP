@@ -1,123 +1,124 @@
-<analysis>**original_problem_statement**: 
-The user wants to continue the development of an ERP system for PT Ladang Pangan Indonesia. During this session, the user requested several enhancements and bug fixes:
-1. **Contacts Module**: Link end-customers to existing customer contacts instead of duplicating them, add Google Maps links, refactor  to allow multi-select categories (Checklist), auto-generate contact codes, and allow document uploads (NPWP, Akta, etc.).
-2. **Sales/Purchase Orders (Dropship)**: Fix a bug where the purchase price () and selling price () in Dropship mode were always the same, not allowing for margin calculation.
-3. **Surat Jalan (Delivery) Weight Sync**: Fix a bug where the actual shipped weight on the delivery note (Surat Jalan) wasn't altering the total SO value or the syncing PO for dropship.
-4. **PDF Generation**: Fix broken PDF Invoice generation and update PDF files (SO, Invoice, Surat Jalan) to reflect actual shipped weights and include Google Maps links. 
-5. **New Focus**: The user has requested to start a new discussion regarding the Products Module.
+<analysis>**original_problem_statement**: The user wanted to continue development on their ERP application. Specifically, they requested an audit and implementation of sorting, filtering, and soft-archiving (Active/Archive tabs) capabilities across all main data modules in the system. PRODUCT REQUIREMENTS: Implement soft-archiving (hide by default, with an 'Archive' tab and 'Restore' action) and clickable sorting headers across 8 primary modules.
 
-**User's preferred language**: **Indonesian**. INSTRUCT next agent to respond in **Indonesian** only.
+**User's preferred language**: Indonesian (You MUST automatically detect the user's primary language from their messages inside the <trajectory> tag and INSTRUCT next agent to respond in Indonesian ONLY).
 
-**what currently exists?** 
-A functional full-stack Next.js ERP application utilizing Tailwind, shadcn/ui, Drizzle ORM, and local SQLite. Existing modules include Contacts (multi-category with auto-code and document uploads), Products, Cold Storage, Purchase Orders, Sales Orders (with dropship auto-PO sync), Work Orders, Inventory, Commissions, and PDF generation.
+**what currently exists?**: A functional full-stack ERP system handling Master Data, Purchasing, Sales, Production, and Inventory. The tech stack utilizes Next.js 15, TailwindCSS, Drizzle ORM, SQLite (), and Better Auth. The app now fully supports soft-archiving (), active/archive toggles, and clickable column sorting across all 8 main lists/modules (Contacts, Products, Cold Storage, Purchase Orders, Sales Orders, Work Orders, Inventory, Users).
 
 **Last working item**: 
-- **Last item agent was working**: Discussing the requirements for the Products (Modul Produk) module. The agent provided a summary of what currently exists in the Product module and asked the user what enhancements or new features they want to build (e.g., fields, photo uploads, yield conversions, etc.).
-- **Status**: NONE (Waiting for user response)
-- **Agent Testing Done**: N/A
-- **Which testing method agent to use?**: N/A
-- **User Testing Done**: N/A
+    - Last item agent was working: Implementing Archive (soft-delete) functionality and sortable UI table headers across the entire application frontend and backend.
+    - Status: COMPLETED
+    - Agent Testing Done: Y
+    - Which testing method agent to use? both (backend and frontend deep testing agents were executed and passed perfectly).
+    - User Testing Done: Y (Agent tested on user's behalf per approval).
 
-**All Pending/In progress Issue list**: 
-None. All bugs raised in the previous session have been fixed and fully verified by testing agents.
+**All Pending/In progress Issue list**:
+None. All requested items have been successfully built and verified.
 
 **In progress Task List**:
 None.
 
 **Upcoming and Future Tasks**:
-- **P0: Products Module Enhancements**: Await the user's reply to the last message and implement requested features for the  table/module (e.g., new fields, image uploads, SKU auto-generation, or yield conversions).
+// The user explicitly halted new feature development in the last message (2c - cukup dulu / enough for now).
+Future Enhancements (Not prioritized yet, but proposed):
+- Export to Excel functionality for list views.
+- Advanced analytics/dashboards.
+- Addition of new modules like Finance (Accounts Receivable / Accounts Payable).
 
 **Completed work in this session**:
--  used to fix startup issue with  (DONE)
-- End-Customer link to existing Customer () in Contacts (DONE)
-- Google Maps link () on Contacts and End-Customers (DONE)
-- Multi-category Contacts (refactored  to JSON array ) (DONE)
-- Contact Auto-Code generation ( endpoint) (DONE)
-- Contact Document Uploads (NPWP, Akta, SK, KTP) persisted to disk with DB tracking (DONE)
-- BUGFIX: Dropship SO  split from  to allow profit margin (DONE)
-- BUGFIX: Real shipped weight (Surat Jalan) dynamically updates SO totals and syncs to dropship POs (DONE)
-- BUGFIX:  v4 import error causing PDF generation failure (DONE)
-- UI/PDF Updates: SO tables, PDF Invoice, PDF SO, and Receipt logic now reflect the actual shipped weight instead of original ordered weight. Added View (Lihat) button and Maps link to Surat Jalan PDF (DONE)
+- Created a shared utility for UI sorting hooks and components ().
+- Migrated 8 database tables to include an  timestamp field (, ).
+- Developed generic API routes for archiving and restoring items ( & ) inside .
+- Implemented  filtering in backend GET list endpoints.
+- Integrated UI toggle (Aktif / Arsip), clickable sorting headers, and Archive/Restore action buttons in:
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
 
 **Earlier issues found/mentioned but not fixed**:
-None
+None.
 
 **Known issue recurrence from previous fork**:
-- Issue recurrence in previous fork: Variable shadowing in Next.js catch-all route (). The URL parameter array  shadows the Node.js  module. 
-- Recurrence count: 1
-- Status: RESOLVED (Imported as  instead of ). *Next agent must be aware to use  when dealing with file systems in the catch-all route.*
+- Issue recurrence in previous fork: None
+- Recurrence count: 0
+- Status: RESOLVED
 
 **Code Architecture**:
 
 
 **Key Technical Concepts**:
-Next.js App Router, Better Auth, Drizzle ORM, SQLite (local disk DB), Tailwind CSS, shadcn/ui components, SWR for client-side fetching, jsPDF (v4) for client-side document generation.
+Next.js 15 App Router, React (Client/Server components), Drizzle ORM, SQLite Database (), Better Auth, Tailwind CSS (shadcn/ui), SWR for client-side data fetching.
 
 **key DB schema**:
-- : 
-- : 
-- : 
-- : 
-- : 
+  - : {id, name, type, , ...}
+  - : {id, sku, name, , ...}
+  - : {id, code, name, , ...}
+  - : {id, orderNumber, , ...}
+  - : {id, poNumber, , ...}
+  - : {id, woNumber, , ...}
+  - : {id, , ...}
+  - : {id, name, email, role, , ...}
 
 **changes in tech stack**:
-None, but standard  changed to named import  due to jsPDF v4 module exports behavior.
+- **CRITICAL:** This project utilizes **SQLite with Drizzle ORM**, NOT MongoDB. Do not use MongoDB conventions or ObjectID.
 
 **All files of reference**:
--  (Updated to handle doc uploads, auto-code, dropship buyPrice, shippedWeight syncing, receipt baselines)
--  (Added , , )
--  (Added idempotent SQL  and table creations)
--  (Refactored to multi-category checkbox, Maps link, documents tab)
--  (Added Dropship Buy Price vs Sell Price margin)
--  (Updated UI to reflect shipped weights and updated Receipt tab logic)
--  (Updated jsPDF import, mapped shipped weights, added Maps links)
+1.  (Updated: Added  to all main tables)
+2.  (Updated: Added  migrations for )
+3.  (Updated: Added generic POST archive/restore endpoints, updated all GET queries)
+4.  (Created: Contains , , and  UI logic)
+5.  (Updated: Mapped correct test credentials)
+6. All  files (Updated: Integrated Sort & Archive frontend logic)
 
 **Areas that need refactoring**:
-The monolithic  is quite large (~3800 lines). It currently works fine but be mindful of line drift when making  edits.
+-  is extremely large (~4000 lines). Future scalability may require breaking this monolithic routing file into domain-specific route files.
 
 **key api endpoints**:
--  (Accepts  which checks array membership in )
--  (Handles binary buffer uploads)
--  (Triggers SO recalculations based on real weights)
--  (Returns next auto-incremented string ID)
+- 
+- 
+- 
 
 **Critical Info for New Agent**:
-1. **Migrations**: Alter tables are performed sequentially via  logic in . Always add new DB columns there after editing .
-2. **Variable Shadowing**: In , the catch-all parameter  overwrites Node's  module. Use  for file operations.
-3. **jsPDF**: Do not use . It will cause . Always use .
+- **Database Alert:** The system uses Better-SQLite3 () via Drizzle ORM. Ensure you do NOT default to MongoDB/Mongoose logic.
+- Node Engine: The  has an engine incompatibility with node v20.20.2. Always run yarn install v1.22.22
+[1/4] Resolving packages...
+success Already up-to-date.
+Done in 0.24s. if installing dependencies.
+- Language Requirement: Communicate exclusively in **Indonesian**.
 
 **documents and test reports created in this job**:
--  (Contains updated test roles)
--  (Contains extensive verification updates from this iteration)
+- 
+-  (Updated with deep testing protocols and latest module completions)
 
 **Last 10 User Messages and any pending HUMAN messages**:
-1. Saya ingin memulai diskusi baru, untuk modul produk (Pending - Agent responded by summarizing the Product module and asking what to do. Waiting for next step.)
-2. Penerimaan, PDF SO dan PDF Invoice masih mengacu pada SO Awal... (Resolved)
-3. Untuk penyesuaian berat di kirim belum ada efek ke SO maupun PO... (Resolved)
-4. masih eror (Resolved)
-5. uji sendiri (Resolved)
-6. Harus nya ketika SO terbuat, lalu konfirmasi packed, kita bisa mengkonfirmasi berat rill... Kedua fitur PDF Invoice tidak bisa (Resolved)
-7. saya mau uji sendiri (Resolved)
-8. untuk transaksi dropship, harga beli dengan harga jual sama... (Resolved)
-9. uji sendiri (Resolved)
-10. untuk kode kontak tambahkan otomatis... tambahkan juga untuk upload file di kontak... (Resolved)
+- 1a, 2c (User approved running frontend testing and then stopping for now) - COMPLETED
+- System reminder regarding testing - COMPLETED
+- 1c, 2a, 3a, 4a (User specifying exact requirements for Sort and Archive) - COMPLETED
+- apakah sudah ada fitur urutkan ataupun filter serta arsip di seluruh data di erp ini (Query about existing Sort/Filter/Archive) - COMPLETED
+- Start the task now - COMPLETED
 
-**Project Health Check**:
-Healthy.
+**Project Health Check:**
+- Broken: None
+- Mocked: None (Fully integrated with SQLite DB)
 
 **3rd Party Integrations**:
-- jsPDF (Client-side PDF generation) - NO KEYS REQUIRED
+- Better Auth (Authentication) - Requires internal secret keys (in ).
 
 **Testing status**:
-- Testing agent used after significant changes: YES ( used extensively;  used for PDF validation).
-- Troubleshoot agent used after agent stuck in loop: NO
-- Test files created: ,  (scratchpads)
-- Known regressions: None.
+  - Testing agent used after significant changes: YES (Both  and  were utilized and passed flawlessly).
+  - Troubleshoot agent used after agent stuck in loop: NO
+  - Test files created:  appended.
+  - Known regressions: None.
 
 **Credentials to test flow**:
-Check 
-Admin:  / 
-Supervisor:  / 
+Refer to 
+- Admin:  / 
+- Supervisor:  / 
+- Operator:  / 
 
 **What agent forgot to execute**:
-Nothing. The agent successfully fulfilled all user feature requests and bug reports, fully verified them, and is currently pausing for user input on the next target module (Products).</analysis>
+None. All requests were fulfilled flawlessly.</analysis>
