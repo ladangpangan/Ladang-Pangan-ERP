@@ -16,7 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes } from 'lucide-react';
+import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes, Archive, ArchiveRestore } from 'lucide-react';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -56,12 +57,25 @@ export default function SOListPage() {
   const [statusTab, setStatusTab] = useState('all');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const params = new URLSearchParams();
   if (statusTab !== 'all') params.set('status', statusTab);
   if (q) params.set('q', q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/sales-orders?${params}`, fetcher);
-  const rows = data?.data || [];
+  const rows = sort.sortRows(data?.data || [], {
+    soNumber: r => r.soNumber, customer: r => r.customer?.name, orderDate: r => r.orderDate,
+    invoiceNumber: r => r.invoiceNumber, totalAmount: r => r.totalAmount,
+    paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
+  });
+
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan SO ini dari arsip?' : 'Arsipkan SO ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('sales-orders', r.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   return (
     <div className="space-y-6">
@@ -91,18 +105,25 @@ export default function SOListPage() {
               {SO_STATUSES.map(st => <TabsTrigger key={st} value={st}>{st}</TabsTrigger>)}
             </TabsList>
           </Tabs>
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input placeholder="Cari SO / Invoice number..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+          <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+            <div className="relative flex-1 max-w-sm w-full">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input placeholder="Cari SO / Invoice number..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+            </div>
+            <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>No SO</TableHead><TableHead>Customer</TableHead>
-              <TableHead>Tgl Order</TableHead><TableHead>Invoice</TableHead>
-              <TableHead className="text-right">Total</TableHead>
-              <TableHead>Bayar</TableHead><TableHead>Status</TableHead><TableHead></TableHead>
+              <SortHead field="soNumber" sort={sort}>No SO</SortHead>
+              <SortHead field="customer" sort={sort}>Customer</SortHead>
+              <SortHead field="orderDate" sort={sort}>Tgl Order</SortHead>
+              <SortHead field="invoiceNumber" sort={sort}>Invoice</SortHead>
+              <SortHead field="totalAmount" sort={sort} className="text-right">Total</SortHead>
+              <SortHead field="paymentStatus" sort={sort}>Bayar</SortHead>
+              <SortHead field="pipelineStatus" sort={sort}>Status</SortHead>
+              <TableHead></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
@@ -119,7 +140,12 @@ export default function SOListPage() {
                   <TableCell className="text-right font-medium">Rp {Number(r.totalAmount).toLocaleString('id-ID')}</TableCell>
                   <TableCell><Badge variant="secondary" className={PAY_COLOR[r.paymentStatus]}>{r.paymentStatus}</Badge></TableCell>
                   <TableCell><Badge className={SO_STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
-                  <TableCell><Link href={`/dashboard/sales-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link></TableCell>
+                  <TableCell className="text-right whitespace-nowrap">
+                    <Link href={`/dashboard/sales-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                    {canCreate && (view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

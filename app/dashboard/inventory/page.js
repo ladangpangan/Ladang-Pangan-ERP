@@ -15,10 +15,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package } from 'lucide-react';
+import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package, Archive, ArchiveRestore } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel } from '@/lib/constants';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -32,6 +33,8 @@ export default function InventoryPage() {
   const [selected, setSelected] = useState([]);
   const [viewMode, setViewMode] = useState('flat'); // 'flat' or 'grouped'
   const [expandedGroups, setExpandedGroups] = useState({}); // { key: bool }
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const { data: cs } = useSWR('/api/cold-storages', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
@@ -42,8 +45,18 @@ export default function InventoryPage() {
   params.set('status', filter.status);
   params.set('sort', filter.sort);
   if (filter.q) params.set('q', filter.q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/inventory/stocks?${params}`, fetcher);
   const rows = data?.data || [];
+  const flatRows = sort.sortRows(rows, {
+    kodeSimpan: r => r.kodeSimpan, product: r => r.product?.name, weight: r => r.weight,
+    quantity: r => r.quantity, expiredDate: r => r.expiredDate, status: r => r.status,
+  });
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan stok ini dari arsip?' : 'Arsipkan stok ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('inventory-stocks', r.id, view === 'archived');
+    if (ok) mutate();
+  };
   const summary = data?.summary || {};
 
   const toggleAll = () => setSelected(selected.length === rows.length ? [] : rows.map(r => r.id));
@@ -112,6 +125,7 @@ export default function InventoryPage() {
                 <LayoutGrid className="w-4 h-4" />
               </Button>
             </div>
+            <ArchiveTabs value={view} onChange={setView} className="ml-auto" />
           </div>
           {selected.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap p-3 rounded-lg bg-slate-100">
@@ -133,14 +147,16 @@ export default function InventoryPage() {
           <Table>
             <TableHeader><TableRow>
               {canOperate && <TableHead className="w-10"><Checkbox checked={selected.length === rows.length && rows.length > 0} onCheckedChange={toggleAll} /></TableHead>}
-              <TableHead>Kode Simpan</TableHead><TableHead>Produk</TableHead>
+              <SortHead field="kodeSimpan" sort={sort}>Kode Simpan</SortHead>
+              <SortHead field="product" sort={sort}>Produk</SortHead>
               <TableHead>CS / Zone</TableHead><TableHead>Pkg</TableHead>
-              <TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Qty</TableHead>
-              <TableHead>Expired</TableHead><TableHead>Source</TableHead>
-              <TableHead>Status</TableHead><TableHead></TableHead>
+              <SortHead field="weight" sort={sort} className="text-right">Berat</SortHead>
+              <SortHead field="quantity" sort={sort} className="text-right">Qty</SortHead>
+              <SortHead field="expiredDate" sort={sort}>Expired</SortHead><TableHead>Source</TableHead>
+              <SortHead field="status" sort={sort}>Status</SortHead><TableHead></TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {rows.map(r => (
+              {flatRows.map(r => (
                 <TableRow key={r.id} className={selected.includes(r.id) ? 'bg-emerald-50' : 'hover:bg-slate-50'}>
                   {canOperate && <TableCell><Checkbox checked={selected.includes(r.id)} onCheckedChange={() => toggle(r.id)} /></TableCell>}
                   <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}</TableCell>
@@ -155,6 +171,9 @@ export default function InventoryPage() {
                   <TableCell className="space-x-1">
                     <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
                     {canOperate && (r.packagingType === 'karung' || r.packagingType === 'colly') && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
+                    {canManage && (view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
                   </TableCell>
                 </TableRow>
               ))}

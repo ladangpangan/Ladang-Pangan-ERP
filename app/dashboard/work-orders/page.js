@@ -15,7 +15,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, ClipboardList, Loader2, Smartphone } from 'lucide-react';
+import { Plus, Search, Eye, ClipboardList, Loader2, Smartphone, Archive, ArchiveRestore } from 'lucide-react';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -37,13 +38,26 @@ export default function WOListPage() {
   const [mode, setMode] = useState('all');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState('active');
+  const sort = useSort();
 
   const params = new URLSearchParams();
   if (statusTab !== 'all') params.set('status', statusTab);
   if (mode !== 'all') params.set('mode', mode);
   if (q) params.set('q', q);
+  if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/work-orders?${params}`, fetcher);
-  const rows = data?.data || [];
+  const rows = sort.sortRows(data?.data || [], {
+    woNumber: r => r.woNumber, mode: r => r.mode, startDate: r => r.startDate,
+    totalLiveBirdWeight: r => r.totalLiveBirdWeight, totalLiveBirdHeadCount: r => r.totalLiveBirdHeadCount,
+    totalCost: r => r.totalCost, pipelineStatus: r => r.pipelineStatus,
+  });
+
+  const doArchive = async (r) => {
+    if (!confirm(view === 'archived' ? 'Pulihkan WO ini dari arsip?' : 'Arsipkan WO ini? Data akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('work-orders', r.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   return (
     <div className="space-y-6">
@@ -80,17 +94,21 @@ export default function WOListPage() {
               <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="all">Semua Mode</SelectItem><SelectItem value="Internal">Internal</SelectItem><SelectItem value="Maklon">Maklon</SelectItem></SelectContent>
             </Select>
+            <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>No WO</TableHead><TableHead>Mode</TableHead><TableHead>PO Ref</TableHead>
-              <TableHead>Tgl Mulai</TableHead>
-              <TableHead className="text-right">Berat LB</TableHead>
-              <TableHead className="text-right">Ekor</TableHead>
-              <TableHead className="text-right">Total Cost</TableHead>
-              <TableHead>Status</TableHead><TableHead></TableHead>
+              <SortHead field="woNumber" sort={sort}>No WO</SortHead>
+              <SortHead field="mode" sort={sort}>Mode</SortHead>
+              <TableHead>PO Ref</TableHead>
+              <SortHead field="startDate" sort={sort}>Tgl Mulai</SortHead>
+              <SortHead field="totalLiveBirdWeight" sort={sort} className="text-right">Berat LB</SortHead>
+              <SortHead field="totalLiveBirdHeadCount" sort={sort} className="text-right">Ekor</SortHead>
+              <SortHead field="totalCost" sort={sort} className="text-right">Total Cost</SortHead>
+              <SortHead field="pipelineStatus" sort={sort}>Status</SortHead>
+              <TableHead></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
@@ -105,7 +123,12 @@ export default function WOListPage() {
                   <TableCell className="text-right">{r.totalLiveBirdHeadCount || 0}{r.ekorMati > 0 && <div className="text-xs text-red-600">-{r.ekorMati} mati</div>}</TableCell>
                   <TableCell className="text-right font-medium">Rp {Number(r.totalCost || 0).toLocaleString('id-ID')}</TableCell>
                   <TableCell><Badge className={WO_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
-                  <TableCell><Link href={`/dashboard/work-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link></TableCell>
+                  <TableCell className="text-right whitespace-nowrap">
+                    <Link href={`/dashboard/work-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                    {canCreate && (view === 'archived'
+                      ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
+                      : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

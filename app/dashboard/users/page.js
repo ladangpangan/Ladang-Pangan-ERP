@@ -13,7 +13,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { UserPlus, Pencil, KeyRound, Trash2, Users as UsersIcon, Search } from 'lucide-react';
+import { UserPlus, Pencil, KeyRound, Trash2, Users as UsersIcon, Search, Archive, ArchiveRestore } from 'lucide-react';
+import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { cn } from '@/lib/utils';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
@@ -33,7 +34,9 @@ const ROLE_LABELS = {
 };
 
 export default function UsersPage() {
-  const { data, error, isLoading, mutate } = useSWR('/api/users', fetcher);
+  const [view, setView] = useState('active');
+  const sort = useSort();
+  const { data, error, isLoading, mutate } = useSWR(`/api/users${view === 'archived' ? '?archived=1' : ''}`, fetcher);
   const [query, setQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editUser, setEditUser] = useState(null);
@@ -46,11 +49,21 @@ export default function UsersPage() {
   const currentUserId = meData?.user?.id;
   const isAdmin = meData?.user?.role === 'admin';
 
-  const users = (data?.data || []).filter(u => {
+  const filtered = (data?.data || []).filter(u => {
     if (!query) return true;
     const q = query.toLowerCase();
     return u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.role?.toLowerCase().includes(q);
   });
+  const users = sort.sortRows(filtered, {
+    name: u => u.name, email: u => u.email, role: u => u.role, status: u => u.status, createdAt: u => u.createdAt,
+  });
+
+  const doArchive = async (u) => {
+    if (u.id === currentUserId) { return; }
+    if (!confirm(view === 'archived' ? 'Pulihkan user ini dari arsip?' : 'Arsipkan user ini? Akun akan disembunyikan dari daftar aktif.')) return;
+    const ok = await toggleArchive('users', u.id, view === 'archived');
+    if (ok) mutate();
+  };
 
   return (
     <div className="space-y-6">
@@ -96,6 +109,7 @@ export default function UsersPage() {
               />
             </div>
             <div className="text-sm text-muted-foreground">Total: {users.length}</div>
+            {isAdmin && <ArchiveTabs value={view} onChange={setView} className="ml-auto" />}
           </div>
         </CardHeader>
         <CardContent>
@@ -109,11 +123,11 @@ export default function UsersPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Nama</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Dibuat</TableHead>
+                    <SortHead field="name" sort={sort}>Nama</SortHead>
+                    <SortHead field="email" sort={sort}>Email</SortHead>
+                    <SortHead field="role" sort={sort}>Role</SortHead>
+                    <SortHead field="status" sort={sort}>Status</SortHead>
+                    <SortHead field="createdAt" sort={sort}>Dibuat</SortHead>
                     {isAdmin && <TableHead className="text-right">Aksi</TableHead>}
                   </TableRow>
                 </TableHeader>
@@ -144,6 +158,17 @@ export default function UsersPage() {
                             </Button>
                             <Button size="icon" variant="ghost" title="Reset Password" onClick={() => setResetUser(u)}>
                               <KeyRound className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              title={view === 'archived' ? 'Pulihkan' : 'Arsipkan'}
+                              disabled={u.id === currentUserId}
+                              onClick={() => doArchive(u)}
+                            >
+                              {view === 'archived'
+                                ? <ArchiveRestore className="w-4 h-4 text-emerald-600" />
+                                : <Archive className="w-4 h-4 text-amber-600" />}
                             </Button>
                             <Button
                               size="icon"
