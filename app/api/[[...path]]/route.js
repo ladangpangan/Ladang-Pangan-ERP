@@ -3605,6 +3605,22 @@ async function handleRoute(request, { params }) {
       return json({ data: { ...stk, product: p, coldStorage: cs, zone, source, inboundTransaction: inTx, children, parent } });
     }
 
+    // GET /inventory/next-kode-simpan?count=N - preview upcoming kode simpan (does NOT consume)
+    if (route === '/inventory/next-kode-simpan' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const count = Math.min(200, Math.max(1, Number(url.searchParams.get('count') || 1)));
+      const d = new Date();
+      const prefix = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+      const row = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(like(s.inventoryStock.kodeSimpan, `${prefix}%`)).get();
+      const base = Number(row?.c || 0);
+      const codes = [];
+      for (let i = 1; i <= count; i++) codes.push(`${prefix}${String(base + i).padStart(4, '0')}`);
+      return json({ data: { codes, prefix, base } });
+    }
+
+
     // POST /inventory/inbound - manual inbound (from PO GRN)
     if (route === '/inventory/inbound' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3655,7 +3671,7 @@ async function handleRoute(request, { params }) {
           }
         }
         const stkId = uuidv4();
-        const kodeSimpan = nextKodeSimpan();
+        const kodeSimpan = (it.kodeSimpan && String(it.kodeSimpan).trim()) ? String(it.kodeSimpan).trim() : nextKodeSimpan();
         // Tentukan HPP/kg stok dari sumber (PO item / WO output) atau fallback HPP produk
         let hppPerKg = Number(it.hppPerKg || 0);
         if (!hppPerKg && body.referenceType === 'WO' && body.referenceId) {
