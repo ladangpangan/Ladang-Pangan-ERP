@@ -3535,6 +3535,16 @@ async function handleRoute(request, { params }) {
         }
       }
       const _poReconMemo = {};
+      const _hppMemo = {};
+      const poItemHpp = (poId, productId) => {
+        const key = poId + '|' + productId;
+        if (_hppMemo[key] !== undefined) return _hppMemo[key];
+        const it = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+          .where(and(eq(s.purchaseOrderItems.purchaseOrderId, poId), eq(s.purchaseOrderItems.productId, productId))).get();
+        const v = Number(it?.hpp || 0);
+        _hppMemo[key] = v;
+        return v;
+      };
       const poRecon = (poId) => {
         if (_poReconMemo[poId] !== undefined) return _poReconMemo[poId];
         const sj = db.select({ w: sql`coalesce(sum(${s.purchaseOrderItems.receivedWeight}),0)` }).from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, poId)).get();
@@ -3569,11 +3579,22 @@ async function handleRoute(request, { params }) {
         reservedQty = Math.max(0, reservedQty);
         const availableWeight = Math.max(0, Number(r.weight || 0) - reservedWeight);
         const availableQty = Math.max(0, Number(r.quantity || 0) - reservedQty);
+        // HPP: pakai HPP/kg live dari PO item (berbasis tally) bila ada, else nilai tersimpan di stok
+        let hppPerKg = Number(r.hppPerKg || 0);
+        if (r.sourceType === 'PO' && r.sourceBatch) {
+          const liveHpp = poItemHpp(r.sourceBatch, r.productId);
+          if (liveHpp > 0) hppPerKg = liveHpp;
+        }
+        hppPerKg = Math.round(hppPerKg);
+        const qtyNum = Number(r.quantity || 0);
+        const stockValue = Math.round(hppPerKg * Number(r.weight || 0));
+        const hppPerKemasan = qtyNum > 0 ? Math.round(stockValue / qtyNum) : 0;
         return {
           ...r, product: p, coldStorage: cs, zone, source, daysToExpire,
           reservedWeight, reservedQty,
           reservedSoCount: reserved.sos ? reserved.sos.size : 0,
           availableWeight, availableQty,
+          hppPerKg, stockValue, hppPerKemasan,
         };
       });
       // Summary
@@ -3583,6 +3604,7 @@ async function handleRoute(request, { params }) {
         totalAvailableWeight: enriched.reduce((a, b) => a + Number(b.availableWeight || 0), 0),
         totalReservedWeight: enriched.reduce((a, b) => a + Number(b.reservedWeight || 0), 0),
         totalQty: enriched.reduce((a, b) => a + Number(b.quantity || 0), 0),
+        totalValue: enriched.reduce((a, b) => a + Number(b.stockValue || 0), 0),
         nearExpiry: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire <= 7 && r.daysToExpire >= 0).length,
         expired: enriched.filter(r => r.daysToExpire !== null && r.daysToExpire < 0).length,
       };
@@ -3722,6 +3744,10 @@ async function handleRoute(request, { params }) {
           }
         }
         try { computePoInvoice(body.referenceId); } catch (e) {}
+        // Tandai PO selesai ditally jika diminta -> hilang dari pilihan referensi tally
+        if (body.markTallyComplete) {
+          db.update(s.purchaseOrder).set({ tallyCompletedAt: new Date(), updatedAt: new Date() }).where(eq(s.purchaseOrder.id, body.referenceId)).run();
+        }
       }
       return json({ data: { transactionId: txId, stocks: createdStocks, stockIds: createdStocks.map(s => s.id) } }, { status: 201 });
     }

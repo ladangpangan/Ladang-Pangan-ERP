@@ -23,6 +23,16 @@ import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
+const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const HppInfo = ({ r }) => (
+  Number(r.hppPerKg) > 0 ? (
+    <div className="font-sans font-normal text-[10px] text-muted-foreground mt-0.5 leading-tight">
+      <div>HPP/kg: <span className="text-slate-700 font-medium">{rupiah(r.hppPerKg)}</span></div>
+      <div>HPP/kemasan: <span className="text-slate-700 font-medium">{rupiah(r.hppPerKemasan)}</span></div>
+    </div>
+  ) : null
+);
+
 export default function InventoryPage() {
   const { data: session } = useSession();
   const role = session?.user?.role || 'operator';
@@ -75,9 +85,10 @@ export default function InventoryPage() {
       </div>
 
       {/* Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <Stat label="Total Rows" value={summary.totalRows || 0} />
         <Stat label="Total Berat" value={`${Number(summary.totalWeight || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg`} color="emerald" />
+        <Stat label="Nilai Stok (HPP)" value={rupiah(summary.totalValue || 0)} color="emerald" />
         <Stat label="Near Expiry (≤7d)" value={summary.nearExpiry || 0} color={summary.nearExpiry > 0 ? 'amber' : 'slate'} />
         <Stat label="Expired" value={summary.expired || 0} color={summary.expired > 0 ? 'red' : 'slate'} />
       </div>
@@ -159,7 +170,7 @@ export default function InventoryPage() {
               {flatRows.map(r => (
                 <TableRow key={r.id} className={selected.includes(r.id) ? 'bg-emerald-50' : 'hover:bg-slate-50'}>
                   {canOperate && <TableCell><Checkbox checked={selected.includes(r.id)} onCheckedChange={() => toggle(r.id)} /></TableCell>}
-                  <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}</TableCell>
+                  <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}<HppInfo r={r} /></TableCell>
                   <TableCell><div className="font-medium">{r.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div></TableCell>
                   <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
                   <TableCell><Badge variant="outline" className="text-xs">{pkgLabel(r.packagingType)}</Badge></TableCell>
@@ -293,7 +304,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
                     {g.items.map(r => (
                       <TableRow key={r.id} className={selected.includes(r.id) ? 'bg-emerald-50' : 'hover:bg-white'}>
                         {canOperate && <TableCell><Checkbox checked={selected.includes(r.id)} onCheckedChange={() => toggle(r.id)} /></TableCell>}
-                        <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}</TableCell>
+                        <TableCell className="font-mono font-bold text-xs">{r.kodeSimpan}<HppInfo r={r} /></TableCell>
                         <TableCell>
                           <div className="font-medium text-sm">{r.product?.name}</div>
                           <div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div>
