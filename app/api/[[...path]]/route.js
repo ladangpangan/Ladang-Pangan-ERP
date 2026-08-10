@@ -3766,14 +3766,12 @@ async function handleRoute(request, { params }) {
     }
 
 
-    // POST /inventory/inbound - manual inbound (from PO GRN)
-    if (route === '/inventory/inbound' && method === 'POST') {
-      const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
-      const body = await request.json();
-      // body: { referenceId(PO/WO id), referenceType, coldStorageId, zoneId?, items: [{productId, weight, quantity, expiredDate, packagingType}] }
-      if (!Array.isArray(body.items) || body.items.length === 0) return err('items required');
-      if (!body.coldStorageId) return err('coldStorageId required');
+    // Helper: commit inbound (create inventory tx + stocks + PO tally accumulation).
+    // Throws Error with .status on validation error. Reused by /inventory/inbound & tally-session finalize.
+    const performInbound = (body, userEmail) => {
+      // body: { referenceId(PO/WO id), referenceType, coldStorageId, zoneId?, items: [{productId, weight, quantity, expiredDate, packagingType, zoneId?}] }
+      if (!Array.isArray(body.items) || body.items.length === 0) { const e = new Error('items required'); e.status = 400; throw e; }
+      if (!body.coldStorageId) { const e = new Error('coldStorageId required'); e.status = 400; throw e; }
       const txId = uuidv4();
       const totalW = body.items.reduce((a, b) => a + Number(b.weight || 0), 0);
       const totalQ = body.items.reduce((a, b) => a + Number(b.quantity || 0), 0);
@@ -3783,7 +3781,7 @@ async function handleRoute(request, { params }) {
         toColdStorageId: body.coldStorageId, toZoneId: body.zoneId || null,
         totalWeight: totalW, totalQuantity: totalQ,
         notes: body.notes || null, status: 'confirmed',
-        createdBy: session.user.email, createdAt: new Date(),
+        createdBy: userEmail, createdAt: new Date(),
       }).run();
       const createdStocks = [];
       for (const it of body.items) {
@@ -3794,10 +3792,10 @@ async function handleRoute(request, { params }) {
             .all();
           const totalRemaining = outputs.reduce((a, o) => a + Math.max(0, Number(o.weight || 0) - Number(o.storedWeight || 0)), 0);
           if (totalRemaining <= 0) {
-            return err(`Produk ini sudah selesai disimpan dari WO tersebut (tidak ada sisa)`, 400);
+            const e = new Error('Produk ini sudah selesai disimpan dari WO tersebut (tidak ada sisa)'); e.status = 400; throw e;
           }
           if (Number(it.weight || 0) - totalRemaining > 0.01) {
-            return err(`Berat ${it.weight}kg melebihi sisa output WO (${totalRemaining.toFixed(2)}kg tersisa)`, 400);
+            const e = new Error(`Berat ${it.weight}kg melebihi sisa output WO (${totalRemaining.toFixed(2)}kg tersisa)`); e.status = 400; throw e;
           }
           // Deduct across matching outputs (FIFO by created_at)
           let remainingToDeduct = Number(it.weight || 0);
@@ -3866,7 +3864,174 @@ async function handleRoute(request, { params }) {
           db.update(s.purchaseOrder).set({ tallyCompletedAt: new Date(), updatedAt: new Date() }).where(eq(s.purchaseOrder.id, body.referenceId)).run();
         }
       }
-      return json({ data: { transactionId: txId, stocks: createdStocks, stockIds: createdStocks.map(s => s.id) } }, { status: 201 });
+      return { txId, createdStocks };
+    };
+
+    // POST /inventory/inbound - manual inbound (from PO GRN)
+    if (route === '/inventory/inbound' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      try {
+        const { txId, createdStocks } = performInbound(body, session.user.email);
+        return json({ data: { transactionId: txId, stocks: createdStocks, stockIds: createdStocks.map(s2 => s2.id) } }, { status: 201 });
+      } catch (e) { return err(e.message || 'Gagal inbound', e.status || 400); }
+    }
+
+    // ================= TALLY SESSIONS (draft inbound yang bisa dilanjutkan) =================
+    // Helper: enrich a session row with cs/ref/items summary
+    const enrichTallySession = (r, withItems = false) => {
+      const itemRows = db.select().from(s.tallySessionItems)
+        .where(eq(s.tallySessionItems.sessionId, r.id)).orderBy(s.tallySessionItems.sortOrder).all();
+      const cs = r.coldStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get() : null;
+      let refNumber = null;
+      if (r.referenceType === 'PO' && r.referenceId) refNumber = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.referenceId)).get()?.n || null;
+      if (r.referenceType === 'WO' && r.referenceId) refNumber = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, r.referenceId)).get()?.n || null;
+      const totalWeight = itemRows.reduce((a, b) => a + Number(b.weight || 0), 0);
+      const base = { ...r, csCode: cs?.code || null, csName: cs?.name || null, refNumber, itemCount: itemRows.length, totalWeight };
+      if (withItems) {
+        base.items = itemRows.map(it => {
+          const p = db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, it.productId)).get();
+          const z = it.zoneId ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, it.zoneId)).get() : null;
+          return { ...it, productName: p?.name || null, productSku: p?.sku || null, zoneCode: z?.code || null };
+        });
+      }
+      return base;
+    };
+
+    // GET /tally-sessions?status=draft  (default draft) — list resumable sessions
+    if (route === '/tally-sessions' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const u = new URL(request.url);
+      const status = u.searchParams.get('status') || 'draft';
+      const rows = db.select().from(s.tallySession)
+        .where(eq(s.tallySession.status, status))
+        .orderBy(desc(s.tallySession.updatedAt)).all();
+      return json({ data: rows.map(r => enrichTallySession(r, false)) });
+    }
+
+    // GET /tally-sessions/:id — one session with items
+    if (route.startsWith('/tally-sessions/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const row = db.select().from(s.tallySession).where(eq(s.tallySession.id, path[1])).get();
+      if (!row) return err('Sesi tally tidak ditemukan', 404);
+      return json({ data: enrichTallySession(row, true) });
+    }
+
+    // POST /tally-sessions — create draft session (with items)
+    if (route === '/tally-sessions' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.coldStorageId) return err('coldStorageId required');
+      const id = uuidv4();
+      db.insert(s.tallySession).values({
+        id,
+        coldStorageId: body.coldStorageId,
+        zoneId: body.zoneId || null,
+        referenceType: body.referenceType || 'MANUAL',
+        referenceId: body.referenceId || null,
+        notes: body.notes || null,
+        status: 'draft',
+        kodeBase: body.kodeBase || null,
+        kodeBaseAt: Number(body.kodeBaseAt || 0),
+        markTallyComplete: !!body.markTallyComplete,
+        createdBy: session.user.email,
+        createdAt: new Date(), updatedAt: new Date(),
+      }).run();
+      const items = Array.isArray(body.items) ? body.items : [];
+      items.forEach((it, i) => {
+        db.insert(s.tallySessionItems).values({
+          id: uuidv4(), sessionId: id, productId: it.productId,
+          weight: Number(it.weight || 0), quantity: Number(it.quantity || 1),
+          packagingType: it.packagingType || 'colly',
+          expiredDate: it.expiredDate ? new Date(it.expiredDate) : null,
+          kodeSimpan: it.kodeSimpan || null, zoneId: it.zoneId || null,
+          sortOrder: i, createdAt: new Date(),
+        }).run();
+      });
+      const row = db.select().from(s.tallySession).where(eq(s.tallySession.id, id)).get();
+      return json({ data: enrichTallySession(row, true) }, { status: 201 });
+    }
+
+    // PUT /tally-sessions/:id — update draft (header + replace items)
+    if (route.startsWith('/tally-sessions/') && path.length === 2 && (method === 'PUT' || method === 'PATCH')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const existing = db.select().from(s.tallySession).where(eq(s.tallySession.id, path[1])).get();
+      if (!existing) return err('Sesi tally tidak ditemukan', 404);
+      if (existing.status === 'final') return err('Sesi sudah final, tidak bisa diubah', 400);
+      const body = await request.json();
+      db.update(s.tallySession).set({
+        coldStorageId: body.coldStorageId ?? existing.coldStorageId,
+        zoneId: body.zoneId !== undefined ? (body.zoneId || null) : existing.zoneId,
+        referenceType: body.referenceType ?? existing.referenceType,
+        referenceId: body.referenceId !== undefined ? (body.referenceId || null) : existing.referenceId,
+        notes: body.notes !== undefined ? (body.notes || null) : existing.notes,
+        kodeBase: body.kodeBase !== undefined ? (body.kodeBase || null) : existing.kodeBase,
+        kodeBaseAt: body.kodeBaseAt !== undefined ? Number(body.kodeBaseAt || 0) : existing.kodeBaseAt,
+        markTallyComplete: body.markTallyComplete !== undefined ? !!body.markTallyComplete : existing.markTallyComplete,
+        updatedAt: new Date(),
+      }).where(eq(s.tallySession.id, path[1])).run();
+      if (Array.isArray(body.items)) {
+        db.delete(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, path[1])).run();
+        body.items.forEach((it, i) => {
+          db.insert(s.tallySessionItems).values({
+            id: uuidv4(), sessionId: path[1], productId: it.productId,
+            weight: Number(it.weight || 0), quantity: Number(it.quantity || 1),
+            packagingType: it.packagingType || 'colly',
+            expiredDate: it.expiredDate ? new Date(it.expiredDate) : null,
+            kodeSimpan: it.kodeSimpan || null, zoneId: it.zoneId || null,
+            sortOrder: i, createdAt: new Date(),
+          }).run();
+        });
+      }
+      const row = db.select().from(s.tallySession).where(eq(s.tallySession.id, path[1])).get();
+      return json({ data: enrichTallySession(row, true) });
+    }
+
+    // POST /tally-sessions/:id/finalize — commit to inventory + lock
+    if (route.startsWith('/tally-sessions/') && path.length === 3 && path[2] === 'finalize' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const existing = db.select().from(s.tallySession).where(eq(s.tallySession.id, path[1])).get();
+      if (!existing) return err('Sesi tally tidak ditemukan', 404);
+      if (existing.status === 'final') return err('Sesi sudah final', 400);
+      const itemRows = db.select().from(s.tallySessionItems)
+        .where(eq(s.tallySessionItems.sessionId, path[1])).orderBy(s.tallySessionItems.sortOrder).all();
+      if (itemRows.length === 0) return err('Belum ada item pada sesi ini', 400);
+      const inboundBody = {
+        coldStorageId: existing.coldStorageId,
+        zoneId: existing.zoneId || undefined,
+        referenceType: existing.referenceType || 'MANUAL',
+        referenceId: existing.referenceId || undefined,
+        notes: existing.notes || undefined,
+        markTallyComplete: existing.referenceType === 'PO' && !!existing.markTallyComplete,
+        items: itemRows.map(it => ({
+          productId: it.productId, weight: Number(it.weight || 0), quantity: Number(it.quantity || 1),
+          packagingType: it.packagingType, expiredDate: it.expiredDate || undefined,
+          kodeSimpan: it.kodeSimpan || undefined, zoneId: it.zoneId || undefined,
+        })),
+      };
+      let result;
+      try { result = performInbound(inboundBody, session.user.email); }
+      catch (e) { return err(e.message || 'Gagal finalisasi', e.status || 400); }
+      db.update(s.tallySession).set({
+        status: 'final', transactionId: result.txId, finalizedAt: new Date(), updatedAt: new Date(),
+      }).where(eq(s.tallySession.id, path[1])).run();
+      return json({ data: { transactionId: result.txId, stocks: result.createdStocks, stockIds: result.createdStocks.map(s2 => s2.id) } }, { status: 201 });
+    }
+
+    // DELETE /tally-sessions/:id — discard a draft
+    if (route.startsWith('/tally-sessions/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const existing = db.select().from(s.tallySession).where(eq(s.tallySession.id, path[1])).get();
+      if (!existing) return err('Sesi tally tidak ditemukan', 404);
+      if (existing.status === 'final') return err('Sesi sudah final, tidak bisa dihapus', 400);
+      db.delete(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, path[1])).run();
+      db.delete(s.tallySession).where(eq(s.tallySession.id, path[1])).run();
+      return json({ data: { deleted: true } });
     }
 
     // POST /inventory/outbound - non-sales (sample) or damage

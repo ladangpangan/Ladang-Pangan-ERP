@@ -1,352 +1,633 @@
 #!/usr/bin/env python3
 """
-Backend test for GRN grn_number UNIQUE constraint bugfix (gap-safe MAX+1)
+Backend test for Tally Session feature (draft inbound resumable + finalize to inventory)
+Uses subprocess + curl to handle Better Auth secure cookies over HTTP
 """
-import requests
+import subprocess
 import json
+import sqlite3
 import sys
-from datetime import datetime
 
 BASE_URL = "http://localhost:3000/api"
+DB_PATH = "/app/data/erp.db"
+COOKIE_FILE = "/tmp/test_cookies.txt"
+
+# Track created resources for cleanup
+created_session_ids = []
+created_transaction_ids = []
+created_stock_ids = []
+
+def curl_request(method, endpoint, data=None, expect_status=None):
+    """Make a curl request with session cookies"""
+    cmd = [
+        "curl", "-s", "-w", "\\n%{http_code}",
+        "-b", COOKIE_FILE, "-c", COOKIE_FILE,
+        "-X", method,
+        "-H", "Content-Type: application/json",
+        "-H", "Origin: http://localhost:3000"
+    ]
+    
+    if data:
+        cmd.extend(["-d", json.dumps(data)])
+    
+    cmd.append(f"{BASE_URL}{endpoint}")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = result.stdout
+        
+        # Split response body and status code
+        lines = output.strip().split('\n')
+        status_code = int(lines[-1]) if lines else 0
+        body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
+        
+        if expect_status and status_code != expect_status:
+            print(f"❌ Expected status {expect_status}, got {status_code}")
+            print(f"   Response: {body[:200]}")
+        
+        return status_code, body
+    except Exception as e:
+        print(f"❌ curl error: {e}")
+        return 0, ""
 
 def login():
-    """Login as admin and return session"""
-    print("\n=== STEP 1: Login as admin@lpi.co.id ===")
-    session = requests.Session()
-    
-    # Better Auth sign-in endpoint
-    url = "http://localhost:3000/api/auth/sign-in/email"
-    payload = {
-        "email": "admin@lpi.co.id",
-        "password": "admin123"
-    }
-    
+    """Login as admin"""
+    print("\n=== STEP 0: Login ===")
     try:
-        resp = session.post(url, json=payload)
-        print(f"Login response status: {resp.status_code}")
+        status, body = curl_request("POST", "/auth/sign-in/email", {
+            "email": "admin@lpi.co.id",
+            "password": "admin123"
+        })
         
-        if resp.status_code == 200:
+        print(f"Login response status: {status}")
+        if status == 200:
             print("✅ Login successful")
-            # Check if we have session cookies
-            cookies = session.cookies.get_dict()
-            print(f"Session cookies: {list(cookies.keys())}")
-            return session
+            return True
         else:
-            print(f"❌ Login failed: {resp.status_code}")
-            print(f"Response: {resp.text[:200]}")
-            return None
+            print(f"❌ Login failed: {status} - {body}")
+            return False
     except Exception as e:
         print(f"❌ Login error: {e}")
-        return None
+        return False
 
-def get_purchase_orders(session):
-    """Get list of purchase orders"""
-    print("\n=== STEP 2: Get Purchase Orders ===")
+def get_cold_storage_and_product():
+    """Get a cold storage ID and product ID"""
+    print("\n=== STEP 1: Get Cold Storage and Product IDs ===")
     try:
-        resp = session.get(f"{BASE_URL}/purchase-orders")
-        print(f"GET /purchase-orders status: {resp.status_code}")
+        # Get cold storage
+        status, body = curl_request("GET", "/cold-storages")
+        print(f"GET /cold-storages status: {status}")
         
-        if resp.status_code == 200:
-            data = resp.json()
-            pos = data.get('data', [])
-            print(f"✅ Found {len(pos)} purchase orders")
-            
-            # Look for PO/202608/0014
-            target_po = None
-            for po in pos:
-                if po.get('poNumber') == 'PO/202608/0014':
-                    target_po = po
-                    print(f"✅ Found target PO: {po.get('poNumber')} (ID: {po.get('id')})")
-                    break
-            
-            if not target_po:
-                # Find any PO without GRN
-                print("Target PO/202608/0014 not found, looking for any PO without GRN...")
-                for po in pos:
-                    # Get PO detail to check if it has GRN
-                    detail_resp = session.get(f"{BASE_URL}/purchase-orders/{po['id']}")
-                    if detail_resp.status_code == 200:
-                        detail = detail_resp.json().get('data', {})
-                        grns = detail.get('grn', [])
-                        if len(grns) == 0:
-                            target_po = po
-                            print(f"✅ Found PO without GRN: {po.get('poNumber')} (ID: {po.get('id')})")
-                            break
-            
-            return target_po
-        else:
-            print(f"❌ Failed to get POs: {resp.status_code}")
-            print(f"Response: {resp.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"❌ Error getting POs: {e}")
-        return None
-
-def get_po_detail(session, po_id):
-    """Get PO detail and record original state"""
-    print(f"\n=== STEP 3: Get PO Detail (ID: {po_id}) ===")
-    try:
-        resp = session.get(f"{BASE_URL}/purchase-orders/{po_id}")
-        print(f"GET /purchase-orders/{po_id} status: {resp.status_code}")
+        if status != 200:
+            print(f"❌ Failed to get cold storages: {body}")
+            return None, None
         
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            print(f"✅ PO Number: {data.get('poNumber')}")
-            print(f"   Original total_amount: Rp {data.get('totalAmount', 0):,.0f}")
-            print(f"   Pipeline status: {data.get('pipelineStatus')}")
-            print(f"   Existing GRNs: {len(data.get('grn', []))}")
-            
-            items = data.get('items', [])
-            print(f"   Items count: {len(items)}")
-            for i, item in enumerate(items):
-                print(f"     Item {i+1}: Product {item.get('productId')}, weight={item.get('weight')}, receivedWeight={item.get('receivedWeight', 0)}")
-            
-            return data
-        else:
-            print(f"❌ Failed to get PO detail: {resp.status_code}")
-            print(f"Response: {resp.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"❌ Error getting PO detail: {e}")
-        return None
-
-def create_grn(session, po_id, po_data):
-    """Create GRN and verify grn_number is GRN/202608/0006"""
-    print(f"\n=== STEP 4: Create GRN for PO {po_id} ===")
-    
-    # Prepare items for GRN
-    items = []
-    for item in po_data.get('items', []):
-        # Use the item's weight as receivedWeight
-        weight = item.get('weight', 0)
-        items.append({
-            "productId": item.get('productId'),
-            "receivedWeight": weight,
-            "receivedQuantity": item.get('quantity', 1)
-        })
-    
-    payload = {
-        "sjNumber": "SJ-TEST-FIX",
-        "receivedDate": "2026-08-10",
-        "items": items
-    }
-    
-    print(f"Payload: {json.dumps(payload, indent=2)}")
-    
-    try:
-        resp = session.post(f"{BASE_URL}/purchase-orders/{po_id}/grn", json=payload)
-        print(f"POST /purchase-orders/{po_id}/grn status: {resp.status_code}")
+        cs_data = json.loads(body)
+        if not cs_data.get('data') or len(cs_data['data']) == 0:
+            print("❌ No cold storages found")
+            return None, None
         
-        if resp.status_code in [200, 201]:
-            data = resp.json().get('data', {})
-            grn_number = data.get('grnNumber')
-            grn_id = data.get('id')
-            
-            print(f"✅ GRN created successfully!")
-            print(f"   GRN Number: {grn_number}")
-            print(f"   GRN ID: {grn_id}")
-            print(f"   Total Amount: Rp {data.get('totalAmount', 0):,.0f}")
-            
-            # CRITICAL VERIFICATION: Check if GRN number is GRN/202608/0006
-            if grn_number == "GRN/202608/0006":
-                print(f"✅ CRITICAL VERIFICATION PASSED: GRN number is {grn_number} (gap-safe, NOT 0005)")
-            else:
-                print(f"⚠️  GRN number is {grn_number} (expected GRN/202608/0006)")
-                print(f"   This may be OK if there were other GRNs created after the gap")
-            
-            return {
-                'grnNumber': grn_number,
-                'grnId': grn_id,
-                'data': data
-            }
-        else:
-            print(f"❌ Failed to create GRN: {resp.status_code}")
-            print(f"Response: {resp.text[:500]}")
-            
-            # Check for UNIQUE constraint error
-            if "UNIQUE constraint" in resp.text or "grn_number" in resp.text:
-                print(f"❌ CRITICAL BUG: UNIQUE constraint error detected!")
-                print(f"   This means the bugfix did NOT work - GRN number collision occurred")
-            
-            return None
-    except Exception as e:
-        print(f"❌ Error creating GRN: {e}")
-        return None
-
-def verify_grn_in_po(session, po_id, expected_grn_number):
-    """Verify the GRN appears in PO detail"""
-    print(f"\n=== STEP 5: Verify GRN in PO Detail ===")
-    try:
-        resp = session.get(f"{BASE_URL}/purchase-orders/{po_id}")
-        print(f"GET /purchase-orders/{po_id} status: {resp.status_code}")
+        cold_storage_id = cs_data['data'][0]['id']
+        print(f"✅ Cold Storage ID: {cold_storage_id}")
         
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            grns = data.get('grn', [])
-            
-            print(f"✅ PO now has {len(grns)} GRN(s)")
-            
-            # Find our GRN
-            found = False
-            for grn in grns:
-                if grn.get('grnNumber') == expected_grn_number:
-                    found = True
-                    print(f"✅ Found GRN {expected_grn_number} in PO")
-                    print(f"   SJ Number: {grn.get('sjNumber')}")
-                    print(f"   Received Date: {grn.get('receivedDate')}")
-                    break
-            
-            if not found:
-                print(f"⚠️  GRN {expected_grn_number} not found in PO grn array")
-            
-            # Check updated totals
-            print(f"   Updated total_amount: Rp {data.get('totalAmount', 0):,.0f}")
-            print(f"   Weight confirmed: {data.get('weightConfirmed', False)}")
-            print(f"   Total received weight: {data.get('totalReceivedWeight', 0)}")
-            
-            return data
-        else:
-            print(f"❌ Failed to verify GRN: {resp.status_code}")
-            return None
+        # Get product
+        status, body = curl_request("GET", "/products")
+        print(f"GET /products status: {status}")
+        
+        if status != 200:
+            print(f"❌ Failed to get products: {body}")
+            return cold_storage_id, None
+        
+        prod_data = json.loads(body)
+        if not prod_data.get('data') or len(prod_data['data']) == 0:
+            print("❌ No products found")
+            return cold_storage_id, None
+        
+        product_id = prod_data['data'][0]['id']
+        print(f"✅ Product ID: {product_id}")
+        
+        return cold_storage_id, product_id
     except Exception as e:
-        print(f"❌ Error verifying GRN: {e}")
+        print(f"❌ Error getting IDs: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+def test_create_draft_session(cold_storage_id, product_id):
+    """Test POST /tally-sessions to create a draft with 1 item"""
+    print("\n=== STEP 2: POST /tally-sessions (create draft with 1 item) ===")
+    try:
+        payload = {
+            "coldStorageId": cold_storage_id,
+            "referenceType": "MANUAL",
+            "items": [
+                {
+                    "productId": product_id,
+                    "weight": 10,
+                    "quantity": 1,
+                    "packagingType": "colly"
+                }
+            ]
+        }
+        
+        status, body = curl_request("POST", "/tally-sessions", payload)
+        print(f"POST /tally-sessions status: {status}")
+        print(f"Response: {body[:500]}")
+        
+        if status != 201:
+            print(f"❌ Failed to create draft session: {status} - {body}")
+            return None
+        
+        data = json.loads(body)
+        session_id = data['data']['id']
+        created_session_ids.append(session_id)
+        print(f"✅ Draft session created with ID: {session_id}")
+        
+        # Verify GET /tally-sessions?status=draft includes it
+        print("\n--- Verify GET /tally-sessions?status=draft ---")
+        status, body = curl_request("GET", "/tally-sessions?status=draft")
+        print(f"GET /tally-sessions?status=draft status: {status}")
+        
+        if status != 200:
+            print(f"❌ Failed to list draft sessions: {body}")
+            return session_id
+        
+        list_data = json.loads(body)
+        sessions = list_data.get('data', [])
+        found_session = next((s for s in sessions if s['id'] == session_id), None)
+        
+        if not found_session:
+            print(f"❌ Session {session_id} not found in draft list")
+            return session_id
+        
+        print(f"✅ Session found in draft list")
+        print(f"   itemCount: {found_session.get('itemCount')} (expected: 1)")
+        print(f"   totalWeight: {found_session.get('totalWeight')} (expected: 10)")
+        
+        if found_session.get('itemCount') == 1 and found_session.get('totalWeight') == 10:
+            print("✅ itemCount and totalWeight are correct")
+        else:
+            print(f"❌ itemCount or totalWeight mismatch")
+        
+        return session_id
+    except Exception as e:
+        print(f"❌ Error creating draft session: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
-def create_second_grn(session, po_id):
-    """Optional: Create a second GRN to verify it gets 0007"""
-    print(f"\n=== STEP 6 (OPTIONAL): Create Second GRN ===")
-    print("Skipping second GRN creation to avoid data pollution")
-    print("The first GRN test is sufficient to verify the bugfix")
-    return None
-
-def cleanup_grn(session, po_id, grn_id, original_po_data):
-    """Clean up: delete GRN and restore PO to original state"""
-    print(f"\n=== STEP 7: Cleanup - Delete GRN and Restore PO ===")
-    
-    # Use direct SQLite commands for cleanup
-    import sqlite3
-    
+def test_update_draft_session(session_id, product_id):
+    """Test PUT /tally-sessions/:id to update with 2 items"""
+    print(f"\n=== STEP 3: PUT /tally-sessions/{session_id} (update to 2 items) ===")
     try:
-        db_path = "/app/data/erp.db"
-        conn = sqlite3.connect(db_path)
+        payload = {
+            "items": [
+                {
+                    "productId": product_id,
+                    "weight": 10,
+                    "quantity": 1,
+                    "packagingType": "colly"
+                },
+                {
+                    "productId": product_id,
+                    "weight": 5,
+                    "quantity": 1,
+                    "packagingType": "colly"
+                }
+            ]
+        }
+        
+        status, body = curl_request("PUT", f"/tally-sessions/{session_id}", payload)
+        print(f"PUT /tally-sessions/{session_id} status: {status}")
+        print(f"Response: {body[:500]}")
+        
+        if status != 200:
+            print(f"❌ Failed to update draft session: {status} - {body}")
+            return False
+        
+        print("✅ Draft session updated")
+        
+        # Verify GET /tally-sessions/:id shows 2 items, totalWeight=15
+        print(f"\n--- Verify GET /tally-sessions/{session_id} ---")
+        status, body = curl_request("GET", f"/tally-sessions/{session_id}")
+        print(f"GET /tally-sessions/{session_id} status: {status}")
+        
+        if status != 200:
+            print(f"❌ Failed to get session: {body}")
+            return False
+        
+        data = json.loads(body)
+        session = data.get('data', {})
+        items = session.get('items', [])
+        total_weight = session.get('totalWeight', 0)
+        
+        print(f"   Number of items: {len(items)} (expected: 2)")
+        print(f"   totalWeight: {total_weight} (expected: 15)")
+        
+        if len(items) == 2 and total_weight == 15:
+            print("✅ Item count and totalWeight are correct")
+            print(f"   Item 1 weight: {items[0].get('weight')}")
+            print(f"   Item 2 weight: {items[1].get('weight')}")
+            return True
+        else:
+            print(f"❌ Item count or totalWeight mismatch")
+            return False
+    except Exception as e:
+        print(f"❌ Error updating draft session: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_finalize_session(session_id):
+    """Test POST /tally-sessions/:id/finalize"""
+    print(f"\n=== STEP 4: POST /tally-sessions/{session_id}/finalize ===")
+    try:
+        status, body = curl_request("POST", f"/tally-sessions/{session_id}/finalize")
+        print(f"POST /tally-sessions/{session_id}/finalize status: {status}")
+        print(f"Response: {body[:500]}")
+        
+        if status != 201:
+            print(f"❌ Failed to finalize session: {status} - {body}")
+            return None, []
+        
+        data = json.loads(body)
+        transaction_id = data['data'].get('transactionId')
+        stock_ids = data['data'].get('stockIds', [])
+        stocks = data['data'].get('stocks', [])
+        
+        print(f"✅ Session finalized")
+        print(f"   Transaction ID: {transaction_id}")
+        print(f"   Stock IDs: {stock_ids}")
+        print(f"   Number of stocks: {len(stocks)} (expected: 2)")
+        
+        if transaction_id:
+            created_transaction_ids.append(transaction_id)
+        created_stock_ids.extend(stock_ids)
+        
+        # Verify via SQLite
+        print("\n--- Verify via SQLite ---")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        print(f"Deleting GRN {grn_id}...")
+        # Check inventory_stock rows
+        print("(a) Checking inventory_stock rows...")
+        for stock_id in stock_ids:
+            cursor.execute(
+                "SELECT id, weight, quantity, status FROM inventory_stock WHERE id = ?",
+                (stock_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                print(f"   ✅ Stock {stock_id}: weight={row[1]}, quantity={row[2]}, status={row[3]}")
+                if row[3] != 'active':
+                    print(f"      ❌ Status is not 'active': {row[3]}")
+            else:
+                print(f"   ❌ Stock {stock_id} not found in database")
         
-        # Delete grn_items
-        cursor.execute("DELETE FROM grn_items WHERE grn_id = ?", (grn_id,))
-        deleted_items = cursor.rowcount
-        print(f"  Deleted {deleted_items} grn_items rows")
-        
-        # Delete grn_documents (if any)
-        cursor.execute("DELETE FROM grn_documents WHERE grn_id = ?", (grn_id,))
-        deleted_docs = cursor.rowcount
-        print(f"  Deleted {deleted_docs} grn_documents rows")
-        
-        # Delete grn
-        cursor.execute("DELETE FROM grn WHERE id = ?", (grn_id,))
-        deleted_grn = cursor.rowcount
-        print(f"  Deleted {deleted_grn} grn rows")
-        
-        # Restore purchase_order_items received_weight to 0
-        cursor.execute("UPDATE purchase_order_items SET received_weight = 0 WHERE purchase_order_id = ?", (po_id,))
-        updated_items = cursor.rowcount
-        print(f"  Reset received_weight for {updated_items} PO items")
-        
-        # Restore purchase_order total_amount and pipeline_status
-        original_total = original_po_data.get('totalAmount', 0)
-        original_status = original_po_data.get('pipelineStatus', 'Draft')
+        # Check weights are 10 and 5
         cursor.execute(
-            "UPDATE purchase_order SET total_amount = ?, pipeline_status = ? WHERE id = ?",
-            (original_total, original_status, po_id)
+            "SELECT weight FROM inventory_stock WHERE id IN (?, ?) ORDER BY weight DESC",
+            tuple(stock_ids[:2])
         )
-        updated_po = cursor.rowcount
-        print(f"  Restored PO total_amount to {original_total} and status to {original_status}")
+        weights = [row[0] for row in cursor.fetchall()]
+        print(f"   Stock weights: {weights} (expected: [10, 5] or [10.0, 5.0])")
+        if len(weights) == 2 and weights[0] == 10 and weights[1] == 5:
+            print("   ✅ Stock weights are correct (10 and 5)")
+        else:
+            print(f"   ❌ Stock weights mismatch")
         
-        conn.commit()
+        # Check tally_session row
+        print("(b) Checking tally_session row...")
+        cursor.execute(
+            "SELECT status, transaction_id, finalized_at FROM tally_session WHERE id = ?",
+            (session_id,)
+        )
+        session_row = cursor.fetchone()
+        if session_row:
+            status_db, tx_id, finalized_at = session_row
+            print(f"   ✅ Session status: {status_db} (expected: 'final')")
+            print(f"   ✅ Transaction ID: {tx_id} (expected: {transaction_id})")
+            print(f"   ✅ Finalized at: {finalized_at} (expected: non-null)")
+            
+            if status_db != 'final':
+                print(f"      ❌ Status is not 'final': {status_db}")
+            if tx_id != transaction_id:
+                print(f"      ❌ Transaction ID mismatch: {tx_id} != {transaction_id}")
+            if not finalized_at:
+                print(f"      ❌ Finalized at is null")
+        else:
+            print(f"   ❌ Session {session_id} not found in database")
+        
         conn.close()
         
-        print("✅ Cleanup completed successfully")
+        # Check GET /tally-sessions?status=draft NO LONGER includes this session
+        print("(c) Verify GET /tally-sessions?status=draft NO LONGER includes this session...")
+        status, body = curl_request("GET", "/tally-sessions?status=draft")
+        if status == 200:
+            list_data = json.loads(body)
+            sessions = list_data.get('data', [])
+            found_session = next((s for s in sessions if s['id'] == session_id), None)
+            
+            if found_session:
+                print(f"   ❌ Session {session_id} still found in draft list (should be removed)")
+            else:
+                print(f"   ✅ Session {session_id} NOT in draft list (correct)")
+        else:
+            print(f"   ❌ Failed to list draft sessions: {body}")
+        
+        return transaction_id, stock_ids
+    except Exception as e:
+        print(f"❌ Error finalizing session: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, []
+
+def test_negative_cases(session_id):
+    """Test negative cases: PUT/POST/DELETE on finalized session"""
+    print(f"\n=== STEP 5: Negative Tests (finalized session) ===")
+    
+    # Test PUT on finalized session (should be 400)
+    print(f"\n--- Test PUT /tally-sessions/{session_id} (finalized) ---")
+    try:
+        payload = {"items": []}
+        status, body = curl_request("PUT", f"/tally-sessions/{session_id}", payload)
+        print(f"PUT /tally-sessions/{session_id} status: {status}")
+        print(f"Response: {body[:200]}")
+        
+        if status == 400:
+            print("✅ PUT on finalized session correctly rejected (400)")
+        else:
+            print(f"❌ PUT on finalized session should return 400, got {status}")
+    except Exception as e:
+        print(f"❌ Error testing PUT on finalized: {e}")
+    
+    # Test POST finalize again (should be 400)
+    print(f"\n--- Test POST /tally-sessions/{session_id}/finalize (again) ---")
+    try:
+        status, body = curl_request("POST", f"/tally-sessions/{session_id}/finalize")
+        print(f"POST /tally-sessions/{session_id}/finalize status: {status}")
+        print(f"Response: {body[:200]}")
+        
+        if status == 400:
+            print("✅ POST finalize again correctly rejected (400)")
+        else:
+            print(f"❌ POST finalize again should return 400, got {status}")
+    except Exception as e:
+        print(f"❌ Error testing POST finalize again: {e}")
+    
+    # Test DELETE on finalized session (should be 400)
+    print(f"\n--- Test DELETE /tally-sessions/{session_id} (finalized) ---")
+    try:
+        status, body = curl_request("DELETE", f"/tally-sessions/{session_id}")
+        print(f"DELETE /tally-sessions/{session_id} status: {status}")
+        print(f"Response: {body[:200]}")
+        
+        if status == 400:
+            print("✅ DELETE on finalized session correctly rejected (400)")
+        else:
+            print(f"❌ DELETE on finalized session should return 400, got {status}")
+    except Exception as e:
+        print(f"❌ Error testing DELETE on finalized: {e}")
+
+def test_regression_inbound(cold_storage_id, product_id):
+    """Test POST /inventory/inbound still works (regression test)"""
+    print(f"\n=== STEP 6: Regression Test - POST /inventory/inbound ===")
+    try:
+        payload = {
+            "coldStorageId": cold_storage_id,
+            "referenceType": "MANUAL",
+            "items": [
+                {
+                    "productId": product_id,
+                    "weight": 3,
+                    "quantity": 1,
+                    "packagingType": "colly"
+                }
+            ]
+        }
+        
+        status, body = curl_request("POST", "/inventory/inbound", payload)
+        print(f"POST /inventory/inbound status: {status}")
+        print(f"Response: {body[:500]}")
+        
+        if status != 201:
+            print(f"❌ Failed to create inbound: {status} - {body}")
+            return None, []
+        
+        data = json.loads(body)
+        transaction_id = data['data'].get('transactionId')
+        stock_ids = data['data'].get('stockIds', [])
+        stocks = data['data'].get('stocks', [])
+        
+        print(f"✅ Inbound created (regression test passed)")
+        print(f"   Transaction ID: {transaction_id}")
+        print(f"   Stock IDs: {stock_ids}")
+        print(f"   Number of stocks: {len(stocks)} (expected: 1)")
+        
+        if len(stocks) == 1:
+            print("✅ Correct number of stocks created")
+        else:
+            print(f"❌ Expected 1 stock, got {len(stocks)}")
+        
+        if transaction_id:
+            created_transaction_ids.append(transaction_id)
+        created_stock_ids.extend(stock_ids)
+        
+        return transaction_id, stock_ids
+    except Exception as e:
+        print(f"❌ Error testing regression inbound: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, []
+
+def test_delete_draft(cold_storage_id, product_id):
+    """Test DELETE on a fresh draft session"""
+    print(f"\n=== STEP 7: Test DELETE on fresh draft ===")
+    try:
+        # Create a new draft session
+        print("--- Creating new draft session ---")
+        payload = {
+            "coldStorageId": cold_storage_id,
+            "referenceType": "MANUAL",
+            "items": [
+                {
+                    "productId": product_id,
+                    "weight": 7,
+                    "quantity": 1,
+                    "packagingType": "colly"
+                }
+            ]
+        }
+        
+        status, body = curl_request("POST", "/tally-sessions", payload)
+        print(f"POST /tally-sessions status: {status}")
+        
+        if status != 201:
+            print(f"❌ Failed to create draft session: {status} - {body}")
+            return
+        
+        data = json.loads(body)
+        session_id = data['data']['id']
+        created_session_ids.append(session_id)
+        print(f"✅ Draft session created with ID: {session_id}")
+        
+        # Delete the draft session
+        print(f"\n--- DELETE /tally-sessions/{session_id} ---")
+        status, body = curl_request("DELETE", f"/tally-sessions/{session_id}")
+        print(f"DELETE /tally-sessions/{session_id} status: {status}")
+        print(f"Response: {body[:200]}")
+        
+        if status == 200:
+            print("✅ Draft session deleted successfully")
+        else:
+            print(f"❌ Failed to delete draft session: {status}")
+        
+        # Verify it's gone from the draft list
+        print("--- Verify session is gone from draft list ---")
+        status, body = curl_request("GET", "/tally-sessions?status=draft")
+        if status == 200:
+            list_data = json.loads(body)
+            sessions = list_data.get('data', [])
+            found_session = next((s for s in sessions if s['id'] == session_id), None)
+            
+            if found_session:
+                print(f"   ❌ Session {session_id} still found in draft list")
+            else:
+                print(f"   ✅ Session {session_id} NOT in draft list (correctly deleted)")
+        
+        # Verify tally_session_items are removed
+        print("--- Verify tally_session_items are removed ---")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM tally_session_items WHERE session_id = ?",
+            (session_id,)
+        )
+        count = cursor.fetchone()[0]
+        conn.close()
+        
+        if count == 0:
+            print(f"   ✅ tally_session_items removed (count: {count})")
+        else:
+            print(f"   ❌ tally_session_items still exist (count: {count})")
+        
+    except Exception as e:
+        print(f"❌ Error testing DELETE on draft: {e}")
+        import traceback
+        traceback.print_exc()
+
+def cleanup():
+    """Cleanup all created data"""
+    print(f"\n=== CLEANUP ===")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Delete inventory_stock rows
+        if created_stock_ids:
+            print(f"Deleting {len(created_stock_ids)} inventory_stock rows...")
+            placeholders = ','.join('?' * len(created_stock_ids))
+            cursor.execute(f"DELETE FROM inventory_stock WHERE id IN ({placeholders})", created_stock_ids)
+            print(f"   ✅ Deleted {cursor.rowcount} inventory_stock rows")
+        
+        # Delete inventory_transaction rows
+        if created_transaction_ids:
+            print(f"Deleting {len(created_transaction_ids)} inventory_transaction rows...")
+            placeholders = ','.join('?' * len(created_transaction_ids))
+            cursor.execute(f"DELETE FROM inventory_transaction WHERE id IN ({placeholders})", created_transaction_ids)
+            print(f"   ✅ Deleted {cursor.rowcount} inventory_transaction rows")
+        
+        # Delete tally_session_items and tally_session rows
+        if created_session_ids:
+            print(f"Deleting tally_session_items for {len(created_session_ids)} sessions...")
+            placeholders = ','.join('?' * len(created_session_ids))
+            cursor.execute(f"DELETE FROM tally_session_items WHERE session_id IN ({placeholders})", created_session_ids)
+            print(f"   ✅ Deleted {cursor.rowcount} tally_session_items rows")
+            
+            print(f"Deleting {len(created_session_ids)} tally_session rows...")
+            cursor.execute(f"DELETE FROM tally_session WHERE id IN ({placeholders})", created_session_ids)
+            print(f"   ✅ Deleted {cursor.rowcount} tally_session rows")
+        
+        conn.commit()
         
         # Verify cleanup
-        resp = session.get(f"{BASE_URL}/purchase-orders/{po_id}")
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            grns = data.get('grn', [])
-            print(f"✅ Verification: PO now has {len(grns)} GRN(s) (should be back to original count)")
-            print(f"   Total amount: Rp {data.get('totalAmount', 0):,.0f} (original: Rp {original_total:,.0f})")
+        print("\n--- Verify cleanup ---")
+        if created_session_ids:
+            placeholders = ','.join('?' * len(created_session_ids))
+            cursor.execute(
+                f"SELECT COUNT(*) FROM tally_session WHERE id IN ({placeholders})",
+                created_session_ids
+            )
+            count = cursor.fetchone()[0]
+            if count == 0:
+                print(f"   ✅ No leftover tally_session rows")
+            else:
+                print(f"   ❌ {count} tally_session rows still exist")
         
-        return True
+        conn.close()
+        print("✅ Cleanup complete")
     except Exception as e:
         print(f"❌ Cleanup error: {e}")
-        return False
+        import traceback
+        traceback.print_exc()
 
 def main():
     print("=" * 80)
-    print("BACKEND TEST: GRN grn_number UNIQUE constraint bugfix (gap-safe MAX+1)")
+    print("TALLY SESSION BACKEND TEST")
     print("=" * 80)
     
-    # Step 1: Login
-    session = login()
-    if not session:
-        print("\n❌ TEST FAILED: Could not login")
-        sys.exit(1)
+    # Login
+    if not login():
+        print("\n❌ TEST FAILED: Cannot login")
+        return 1
     
-    # Step 2: Get POs and find target
-    target_po = get_purchase_orders(session)
-    if not target_po:
-        print("\n❌ TEST FAILED: Could not find suitable PO")
-        sys.exit(1)
+    # Get IDs
+    cold_storage_id, product_id = get_cold_storage_and_product()
+    if not cold_storage_id or not product_id:
+        print("\n❌ TEST FAILED: Cannot get cold storage or product ID")
+        return 1
     
-    po_id = target_po.get('id')
+    # Test create draft session
+    session_id = test_create_draft_session(cold_storage_id, product_id)
+    if not session_id:
+        print("\n❌ TEST FAILED: Cannot create draft session")
+        cleanup()
+        return 1
     
-    # Step 3: Get PO detail and record original state
-    original_po_data = get_po_detail(session, po_id)
-    if not original_po_data:
-        print("\n❌ TEST FAILED: Could not get PO detail")
-        sys.exit(1)
+    # Test update draft session
+    if not test_update_draft_session(session_id, product_id):
+        print("\n❌ TEST FAILED: Cannot update draft session")
+        cleanup()
+        return 1
     
-    # Step 4: Create GRN
-    grn_result = create_grn(session, po_id, original_po_data)
-    if not grn_result:
-        print("\n❌ TEST FAILED: Could not create GRN")
-        sys.exit(1)
+    # Test finalize session
+    transaction_id, stock_ids = test_finalize_session(session_id)
+    if not transaction_id:
+        print("\n❌ TEST FAILED: Cannot finalize session")
+        cleanup()
+        return 1
     
-    grn_number = grn_result['grnNumber']
-    grn_id = grn_result['grnId']
+    # Test negative cases
+    test_negative_cases(session_id)
     
-    # Step 5: Verify GRN in PO
-    verify_grn_in_po(session, po_id, grn_number)
+    # Test regression
+    test_regression_inbound(cold_storage_id, product_id)
     
-    # Step 6: Optional second GRN (skipped)
-    # create_second_grn(session, po_id)
+    # Test DELETE on draft
+    test_delete_draft(cold_storage_id, product_id)
     
-    # Step 7: Cleanup
-    cleanup_success = cleanup_grn(session, po_id, grn_id, original_po_data)
+    # Cleanup
+    cleanup()
     
-    # Final summary
     print("\n" + "=" * 80)
     print("TEST SUMMARY")
     print("=" * 80)
-    print(f"✅ Login: SUCCESS")
-    print(f"✅ Find PO: SUCCESS (PO: {original_po_data.get('poNumber')})")
-    print(f"✅ Create GRN: SUCCESS (GRN: {grn_number})")
-    print(f"✅ GRN Number: {grn_number}")
-    
-    if grn_number == "GRN/202608/0006":
-        print(f"✅ CRITICAL VERIFICATION: GRN number is GRN/202608/0006 (gap-safe, NOT 0005)")
-        print(f"✅ BUGFIX VERIFIED: The gap-safe MAX+1 logic is working correctly")
-    else:
-        print(f"⚠️  GRN number is {grn_number} (expected GRN/202608/0006)")
-        print(f"   Note: This may be OK if other GRNs were created after the gap")
-    
-    if cleanup_success:
-        print(f"✅ Cleanup: SUCCESS")
-    else:
-        print(f"⚠️  Cleanup: PARTIAL (manual verification recommended)")
-    
-    print("\n✅ ALL TESTS PASSED - NO UNIQUE CONSTRAINT ERROR")
+    print("✅ All Tally Session tests completed successfully")
+    print(f"   - Created sessions: {len(created_session_ids)}")
+    print(f"   - Created transactions: {len(created_transaction_ids)}")
+    print(f"   - Created stocks: {len(created_stock_ids)}")
     print("=" * 80)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

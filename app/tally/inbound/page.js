@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { toast } from 'sonner';
@@ -17,7 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import {
   ArrowLeft, ArrowRight, PackagePlus, Wifi, WifiOff, LogOut, X, Save, Loader2, Warehouse, CheckCircle2,
-  ListChecks, ClipboardCheck, Package, FileText, Tag, Download, FileSpreadsheet
+  ListChecks, ClipboardCheck, Package, FileText, Tag, Download, FileSpreadsheet, History, Play, Trash2, Lock, FilePlus
 } from 'lucide-react';
 import { PACKAGING_TYPES, pkgLabel, pkgShort } from '@/lib/constants';
 import { generateTallyInboundPDF } from '@/lib/pdf/invoice';
@@ -68,8 +68,14 @@ export default function TallyInboundPage() {
   const [staged, setStaged] = useState([]);
   const [listOpen, setListOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [sessionId, setSessionId] = useState(null); // draft session id (null = belum tersimpan)
   const [lastSaved, setLastSaved] = useState(null);
   const [reportOpen, setReportOpen] = useState(false);
+
+  // Draft sessions yang bisa dilanjutkan (server)
+  const { data: draftData, mutate: mutateDrafts } = useSWR('/api/tally-sessions?status=draft', fetcher);
+  const drafts = draftData?.data || [];
 
   // Kode Simpan preview queue
   const [kodeQueue, setKodeQueue] = useState([]);
@@ -92,7 +98,11 @@ export default function TallyInboundPage() {
   const { data: zoneData } = useSWR(coldStorageId ? `/api/cold-storages/${coldStorageId}` : null, fetcher);
   const zones = zoneData?.data?.zones || [];
 
-  useEffect(() => { setRefId(''); }, [refType]);
+  const skipRefClear = useRef(false);
+  useEffect(() => {
+    if (skipRefClear.current) { skipRefClear.current = false; return; }
+    setRefId('');
+  }, [refType]);
 
   // PO yang sudah selesai ditally disembunyikan dari referensi
   const availablePOs = useMemo(() => purchaseOrders.filter(po => !po.tallyCompletedAt), [purchaseOrders]);
@@ -227,72 +237,135 @@ export default function TallyInboundPage() {
     };
   };
 
-  const simpanInbound = async () => {
-    if (!coldStorageId) return toast.error('Pilih Cold Storage');
-    if (staged.length === 0) return toast.error('Belum ada item tercatat. Klik "Catat" dulu.');
-    if ((refType === 'PO' || refType === 'WO') && !refId) return toast.error('Pilih No. Referensi (dropdown)');
+  // Bangun payload sesi tally (draft) dari state saat ini
+  const buildSessionPayload = () => ({
+    coldStorageId,
+    zoneId: zoneId || undefined,
+    referenceType: refType,
+    referenceId: refId || undefined,
+    notes,
+    kodeBase: kodeBase || undefined,
+    kodeBaseAt,
+    markTallyComplete: refType === 'PO' && !!markTallyDone,
+    items: staged.map(it => ({
+      productId: it.productId,
+      weight: Number(it.weight),
+      quantity: Number(it.quantity || 1),
+      packagingType: it.packagingType,
+      expiredDate: it.expiredDate || undefined,
+      kodeSimpan: it.kodeSimpan || undefined,
+      zoneId: it.zoneId || undefined,
+    })),
+  });
 
+  // SIMPAN sebagai DRAFT (belum masuk inventory) — bisa dilanjutkan kapan saja
+  const simpanDraft = async ({ silent = false } = {}) => {
+    if (!coldStorageId) { toast.error('Pilih Cold Storage'); return null; }
+    if (staged.length === 0) { toast.error('Belum ada item tercatat. Klik "Catat" dulu.'); return null; }
+    if ((refType === 'PO' || refType === 'WO') && !refId) { toast.error('Pilih No. Referensi (dropdown)'); return null; }
     setSaving(true);
-    const snapshot = [...staged];
-    const payload = {
-      coldStorageId,
-      zoneId: zoneId || undefined,
-      referenceType: refType,
-      referenceId: refId || undefined,
-      notes,
-      markTallyComplete: refType === 'PO' && !!markTallyDone,
-      items: staged.map(it => ({
-        productId: it.productId,
-        weight: Number(it.weight),
-        quantity: Number(it.quantity || 1),
-        packagingType: it.packagingType,
-        expiredDate: it.expiredDate || undefined,
-        kodeSimpan: it.kodeSimpan || undefined,
-        zoneId: it.zoneId || undefined,
-      })),
-    };
-
-    if (!online) {
-      try {
-        const q = JSON.parse(localStorage.getItem('tallyInboundQueue') || '[]');
-        q.push({ payload, savedAt: new Date().toISOString() });
-        localStorage.setItem('tallyInboundQueue', JSON.stringify(q));
-        toast.success('Tersimpan offline. Akan sync saat online.');
-        setLastSaved(buildReport(snapshot));
-        resetAll();
-      } catch { toast.error('Gagal simpan offline'); }
-      setSaving(false);
-      return;
-    }
-
     try {
-      const res = await fetch('/api/inventory/inbound', {
-        method: 'POST', credentials: 'include',
+      const isNew = !sessionId;
+      const res = await fetch(isNew ? '/api/tally-sessions' : `/api/tally-sessions/${sessionId}`, {
+        method: isNew ? 'POST' : 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildSessionPayload()),
       });
-      const json = await res.json();
-      if (res.ok) {
-        const created = json.data?.stocks || [];
-        // gabungkan kode simpan hasil server (jika berbeda) ke snapshot berdasarkan urutan
-        const merged = snapshot.map((it, i) => ({ ...it, kodeSimpan: created[i]?.kodeSimpan || it.kodeSimpan }));
-        toast.success(`Inbound tersimpan (${snapshot.length} item, ${totalWeight.toFixed(1)} kg)`);
-        setLastSaved(buildReport(merged));
-        setReportOpen(true);
-        resetAll();
-        loadKodes();
-      } else {
-        toast.error(json.error || 'Gagal simpan');
-      }
-    } catch (e) {
-      const q = JSON.parse(localStorage.getItem('tallyInboundQueue') || '[]');
-      q.push({ payload, savedAt: new Date().toISOString() });
-      localStorage.setItem('tallyInboundQueue', JSON.stringify(q));
-      toast.warning('Gagal online. Tersimpan offline.');
-      setLastSaved(buildReport(snapshot));
-      resetAll();
-    } finally { setSaving(false); }
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal simpan draft');
+      const id = j.data?.id || sessionId;
+      setSessionId(id);
+      mutateDrafts();
+      if (!silent) toast.success(`Draft tersimpan (${staged.length} item) — bisa dilanjutkan nanti`);
+      return id;
+    } catch (e) { toast.error(e.message); return null; }
+    finally { setSaving(false); }
   };
+
+  // FINAL — commit ke inventory & kunci (tidak bisa dilanjutkan lagi)
+  const finalize = async () => {
+    if (staged.length === 0) return toast.error('Belum ada item. Klik "Catat" dulu.');
+    if (!confirm('Finalkan tally ini?\n\nSemua item akan MASUK ke inventory (siap dijual) dan sesi TIDAK BISA dilanjutkan lagi.')) return;
+    setFinalizing(true);
+    try {
+      const id = await simpanDraft({ silent: true }); // pastikan tersimpan dulu
+      if (!id) { setFinalizing(false); return; }
+      const snapshot = [...staged];
+      const res = await fetch(`/api/tally-sessions/${id}/finalize`, { method: 'POST', credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal finalisasi');
+      const created = j.data?.stocks || [];
+      const merged = snapshot.map((it, i) => ({ ...it, kodeSimpan: created[i]?.kodeSimpan || it.kodeSimpan }));
+      toast.success(`Final! ${snapshot.length} item masuk inventory (${totalWeight.toFixed(1)} kg)`);
+      setLastSaved(buildReport(merged));
+      setReportOpen(true);
+      resetAll();
+      loadKodes();
+      mutateDrafts();
+    } catch (e) { toast.error(e.message); }
+    finally { setFinalizing(false); }
+  };
+
+  // Muat draft yang tersimpan untuk dilanjutkan
+  const loadSession = async (id) => {
+    try {
+      const res = await fetch(`/api/tally-sessions/${id}`, { credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal memuat draft');
+      const sess = j.data;
+      skipRefClear.current = true;
+      setColdStorageId(sess.coldStorageId || '');
+      setZoneId(sess.zoneId || '');
+      setRefType(sess.referenceType || 'MANUAL');
+      setRefId(sess.referenceId || '');
+      setNotes(sess.notes || '');
+      setMarkTallyDone(!!sess.markTallyComplete);
+      const items = (sess.items || []).map(it => ({
+        _id: Math.random().toString(36).slice(2),
+        productId: it.productId,
+        productName: it.productName,
+        productSku: it.productSku,
+        weight: Number(it.weight || 0),
+        quantity: Number(it.quantity || 1),
+        packagingType: it.packagingType || 'colly',
+        expiredDate: it.expiredDate ? new Date(it.expiredDate).toISOString().slice(0, 10) : '',
+        kodeSimpan: it.kodeSimpan || null,
+        zoneId: it.zoneId || null,
+        zoneCode: it.zoneCode || null,
+      }));
+      setStaged(items);
+      if (sess.kodeBase) { setKodeBase(sess.kodeBase); setKodeBaseAt(sess.kodeBaseAt || 0); }
+      else if (items.length && items[items.length - 1].kodeSimpan) { setKodeBase(items[items.length - 1].kodeSimpan); setKodeBaseAt(items.length - 1); }
+      else { setKodeBase(null); setKodeBaseAt(0); }
+      setSessionId(id);
+      setDraft(emptyDraft());
+      setStep(2);
+      loadKodes();
+      toast.success('Draft dimuat — silakan lanjutkan');
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const deleteDraft = async (id) => {
+    if (!confirm('Hapus draft tally ini?')) return;
+    try {
+      const res = await fetch(`/api/tally-sessions/${id}`, { method: 'DELETE', credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menghapus');
+      toast.success('Draft dihapus');
+      if (id === sessionId) resetAll();
+      mutateDrafts();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  // Auto-load draft bila dibuka via /tally/inbound?session=<id>
+  const autoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    try {
+      const sid = new URLSearchParams(window.location.search).get('session');
+      if (sid) { autoLoadedRef.current = true; loadSession(sid); }
+    } catch {}
+  }, []);
 
   const resetAll = () => {
     setStaged([]);
@@ -301,6 +374,7 @@ export default function TallyInboundPage() {
     setKodeBase(null);
     setKodeBaseAt(0);
     setMarkTallyDone(false);
+    setSessionId(null);
   };
 
   const logout = async () => { await authClient.signOut(); router.push('/login'); };
@@ -441,6 +515,37 @@ export default function TallyInboundPage() {
       {/* ============ SECTION 1 ============ */}
       {step === 1 && (
         <>
+          {drafts.length > 0 && (
+            <Card className="mb-3 border-amber-200 bg-amber-50/40">
+              <CardContent className="pt-4 space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <History className="w-4 h-4" /> Lanjutkan Tally ({drafts.length} draft)
+                </div>
+                <div className="text-[11px] text-muted-foreground -mt-1">Draft belum masuk inventory. Klik "Lanjutkan" untuk melanjutkan, atau "Final" pada sesi untuk mengunci &amp; menyimpan ke inventory.</div>
+                <div className="space-y-1.5">
+                  {drafts.map(d => (
+                    <div key={d.id} className="flex items-center gap-2 bg-white border rounded-lg px-2.5 py-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold truncate">
+                          {d.csCode || 'CS?'}{d.refNumber ? ` · ${d.referenceType} ${d.refNumber}` : ' · Manual'}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {d.itemCount} item · {Number(d.totalWeight || 0).toFixed(1)} kg
+                          {d.updatedAt && ` · ${format(new Date(d.updatedAt), 'dd MMM HH:mm')}`}
+                        </div>
+                      </div>
+                      <Button size="sm" onClick={() => loadSession(d.id)} className="h-8 bg-emerald-600 hover:bg-emerald-700 text-xs">
+                        <Play className="w-3.5 h-3.5 mr-1" /> Lanjutkan
+                      </Button>
+                      <Button size="icon" variant="ghost" onClick={() => deleteDraft(d.id)} className="h-8 w-8 text-red-500 shrink-0">
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <Card className="mb-3">
             <CardContent className="pt-4 space-y-3">
               <div className="flex items-center gap-2 text-sm font-semibold">
@@ -539,8 +644,16 @@ export default function TallyInboundPage() {
               {zoneId && <span> · {zones.find(z => z.id === zoneId)?.code}</span>}
               <span className="text-muted-foreground"> · Ref: </span>
               <b>{refType === 'MANUAL' ? 'Manual' : `${refType} ${refType === 'PO' ? (purchaseOrders.find(p => p.id === refId)?.poNumber || '') : (workOrders.find(w => w.id === refId)?.woNumber || '')}`}</b>
+              {sessionId && <Badge variant="outline" className="ml-1 border-amber-300 text-amber-700 text-[10px] py-0">Draft</Badge>}
             </div>
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setStep(1)}>Ubah</Button>
+            <div className="flex items-center gap-1">
+              {(sessionId || staged.length > 0) && (
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => { if (confirm('Mulai tally baru? Item yang belum disimpan sebagai draft akan hilang.')) { resetAll(); setStep(1); } }}>
+                  <FilePlus className="w-3 h-3 mr-0.5" /> Baru
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setStep(1)}>Ubah</Button>
+            </div>
           </div>
 
           {/* Kode Simpan tengah */}
@@ -701,18 +814,23 @@ export default function TallyInboundPage() {
               </label>
             )}
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Total tercatat:</span>
+              <span className="text-muted-foreground">Total tercatat:{sessionId && <span className="ml-1 text-amber-600 font-medium">(draft)</span>}</span>
               <span><b>{staged.length}</b> item · <b>{totalWeight.toFixed(1)}</b> kg</span>
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <Button size="sm" onClick={catat} className="h-11 bg-blue-600 hover:bg-blue-700">
                 <ClipboardCheck className="w-4 h-4 mr-1" /> Catat
               </Button>
               <Button size="sm" variant="outline" onClick={() => setListOpen(true)} disabled={staged.length === 0} className="h-11">
                 <ListChecks className="w-4 h-4 mr-1" /> Daftar ({staged.length})
               </Button>
-              <Button size="sm" onClick={simpanInbound} disabled={saving || staged.length === 0} className="h-11 bg-emerald-600 hover:bg-emerald-700">
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 mr-1" />} Simpan
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" variant="outline" onClick={() => simpanDraft()} disabled={saving || finalizing || staged.length === 0} className="h-11 border-amber-300 text-amber-700 hover:bg-amber-50">
+                {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />} Simpan Draft
+              </Button>
+              <Button size="sm" onClick={finalize} disabled={saving || finalizing || staged.length === 0} className="h-11 bg-emerald-600 hover:bg-emerald-700">
+                {finalizing ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Lock className="w-4 h-4 mr-1" />} Final
               </Button>
             </div>
           </div>

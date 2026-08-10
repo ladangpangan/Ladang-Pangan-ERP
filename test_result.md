@@ -14957,3 +14957,248 @@ agent_communication:
 
     -agent: "main"
     -message: "NEW CHANGES (Tally Inbound UX) — needs backend verification for per-item zoneId. (1) FRONTEND: Enter key in Berat field now triggers 'Catat' (record staged item). (2) FRONTEND: Moved Zona selector from Section 1 to Section 2 next to Kadaluarsa (2-col grid). Zona is persistent state (survives each Catat), captured per-item at record time, and only changes when manually changed. (3) BACKEND (route.js POST /inventory/inbound, ~line 3835): inventoryStock.zoneId now uses `it.zoneId || body.zoneId || null` (per-item zona with header-level fallback — backward compatible). PLEASE TEST: POST /api/inventory/inbound with a coldStorageId that has zones, items where some items carry a per-item zoneId and some don't → verify each created stock's zone_id matches its item's zoneId (or falls back to body.zoneId/null). Also verify existing behavior (only body.zoneId, no per-item) still applies zona to all stocks. Login admin@lpi.co.id/admin123. Clean up created stocks/transaction afterward."
+
+  - task: "Tally Session (draft inbound resumable + finalize to inventory)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js, /app/lib/db/schema.js, /app/lib/db/index.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE: Tally can be saved as a DRAFT (server-side, NOT yet in inventory) and resumed anytime. "Final" commits to inventory and locks the session.
+          DB: new tables tally_session (id, coldStorageId, zoneId, referenceType, referenceId, notes, status[draft|final], kodeBase, kodeBaseAt, markTallyComplete, transactionId, createdBy, timestamps, finalizedAt) and tally_session_items (id, sessionId FK cascade, productId, weight, quantity, packagingType, expiredDate, kodeSimpan, zoneId, sortOrder).
+          Refactor: extracted performInbound(body, userEmail) helper (throws Error{status}); /inventory/inbound now calls it. This same helper is used by finalize so inventory logic is identical.
+          Endpoints (auth required; write endpoints admin/supervisor/operator):
+          - GET /api/tally-sessions?status=draft -> list resumable sessions (enriched: csCode, refNumber, itemCount, totalWeight).
+          - GET /api/tally-sessions/:id -> session with items (each item enriched with productName/sku/zoneCode).
+          - POST /api/tally-sessions -> create draft with items. 201.
+          - PUT /api/tally-sessions/:id -> update draft header + REPLACE items. Blocks if status='final' (400).
+          - POST /api/tally-sessions/:id/finalize -> performInbound(items) -> creates inventory_transaction + inventory_stock rows, sets status='final', transactionId, finalizedAt. Blocks if already final or no items.
+          - DELETE /api/tally-sessions/:id -> discard draft (blocks if final).
+          TEST (login admin@lpi.co.id/admin123, base http://localhost:3000/api):
+          1) GET a cold storage id (GET /api/cold-storages) and a product id (GET /api/products).
+          2) POST /tally-sessions {coldStorageId, referenceType:'MANUAL', items:[{productId, weight:10, quantity:1, packagingType:'colly'}]} -> 201, capture id. Verify GET /tally-sessions?status=draft includes it with itemCount=1, totalWeight=10.
+          3) PUT /tally-sessions/:id add second item (items array of 2, e.g. weights 10 and 5) -> 200; GET /tally-sessions/:id shows 2 items, totalWeight=15.
+          4) POST /tally-sessions/:id/finalize -> 201, returns stocks (2). Verify: (a) 2 inventory_stock rows created with matching weights and status 'active'; (b) session status now 'final' with transactionId + finalizedAt set; (c) GET /tally-sessions?status=draft NO LONGER includes it. 
+          5) Negative: PUT the finalized session -> 400 'sudah final'. POST finalize again -> 400. DELETE finalized -> 400.
+          6) Regression: POST /inventory/inbound still works directly (create 1 stock) -> 201 with data.stocks.
+          CLEANUP (python3 sqlite3 /app/data/erp.db): delete inventory_stock where transaction_id in (the finalize tx and the regression tx); delete inventory_transaction those ids; delete tally_session_items where session_id=<id>; delete tally_session where id=<id>. Confirm DB restored.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TALLY SESSION FEATURE - ALL TESTS PASSED (7/7 steps, 100%)
+          
+          Comprehensive backend testing completed for the NEW Tally Session feature (draft inbound resumable + finalize to inventory).
+          All endpoints working correctly. The performInbound refactor successfully shares logic between /tally-sessions/:id/finalize and /inventory/inbound.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: SQLite at /app/data/erp.db
+          - Cold Storage: CS-01 (Cold Storage Utama, ID: f68026af-1fe6-4d44-b6dc-1e363bec04e8)
+          - Product: Sayap Premium Medium 10-12/Pack (ID: 78469ace-b58e-4a29-b8a1-bc83c54b5c31)
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Get Cold Storage and Product IDs (PASSED):
+             - GET /api/cold-storages → 200 ✓
+             - GET /api/products → 200 ✓
+             - Cold Storage ID captured: f68026af-1fe6-4d44-b6dc-1e363bec04e8
+             - Product ID captured: 78469ace-b58e-4a29-b8a1-bc83c54b5c31
+          
+          ✅ STEP 2 — POST /api/tally-sessions (create draft with 1 item) (PASSED):
+             - POST /api/tally-sessions → 201 Created ✓
+             - Session ID: eb2fccc8-f50f-4f17-b5ea-3f3a70e620af
+             - Status: draft ✓
+             - Item count: 1 ✓
+             - Total weight: 10 kg ✓
+             
+             **Verification via GET /api/tally-sessions?status=draft:**
+             - Session found in draft list ✓
+             - itemCount: 1 (expected: 1) ✓
+             - totalWeight: 10 (expected: 10) ✓
+             - Enriched fields present: csCode='CS-01', csName='Cold Storage Utama' ✓
+          
+          ✅ STEP 3 — PUT /api/tally-sessions/:id (update to 2 items) (PASSED):
+             - PUT /api/tally-sessions/eb2fccc8-f50f-4f17-b5ea-3f3a70e620af → 200 OK ✓
+             - Items array replaced with 2 items (weights: 10 kg, 5 kg) ✓
+             
+             **Verification via GET /api/tally-sessions/:id:**
+             - Number of items: 2 (expected: 2) ✓
+             - totalWeight: 15 (expected: 15) ✓
+             - Item 1 weight: 10 kg ✓
+             - Item 2 weight: 5 kg ✓
+             - Items enriched with productName, productSku, zoneCode ✓
+          
+          ✅ STEP 4 — POST /api/tally-sessions/:id/finalize (PASSED):
+             - POST /api/tally-sessions/eb2fccc8-f50f-4f17-b5ea-3f3a70e620af/finalize → 201 Created ✓
+             - Transaction ID: 46624c64-1a4d-4a80-bd6d-741ab0d6971f ✓
+             - Number of stocks created: 2 (expected: 2) ✓
+             - Stock IDs: adfa90e9-b5a3-466a-9b7f-be5a1c86dde6, 67c50758-4ef8-4a48-8de1-84d1d30b0caa ✓
+             
+             **(a) SQLite Verification - inventory_stock rows:**
+             - Stock 1 (adfa90e9-b5a3-466a-9b7f-be5a1c86dde6): weight=10.0 kg, quantity=1, status='active' ✓
+             - Stock 2 (67c50758-4ef8-4a48-8de1-84d1d30b0caa): weight=5.0 kg, quantity=1, status='active' ✓
+             - Stock weights: [10.0, 5.0] (correct) ✓
+             - kodeSimpan auto-generated: 2608100011, 2608100012 ✓
+             
+             **(b) SQLite Verification - tally_session row:**
+             - Session status: 'final' (expected: 'final') ✓
+             - Transaction ID: 46624c64-1a4d-4a80-bd6d-741ab0d6971f (matches response) ✓
+             - Finalized at: 1786353297 (non-null timestamp) ✓
+             
+             **(c) Verification - draft list no longer includes finalized session:**
+             - GET /api/tally-sessions?status=draft → 200 ✓
+             - Session eb2fccc8-f50f-4f17-b5ea-3f3a70e620af NOT in draft list ✓
+             - **Session correctly moved from draft to final status**
+          
+          ✅ STEP 5 — Negative Tests (finalized session) (PASSED 3/3):
+             
+             **Test 5a: PUT on finalized session**
+             - PUT /api/tally-sessions/eb2fccc8-f50f-4f17-b5ea-3f3a70e620af → 400 Bad Request ✓
+             - Error message: "Sesi sudah final, tidak bisa diubah" ✓
+             - **Correctly blocks updates to finalized sessions**
+             
+             **Test 5b: POST finalize again**
+             - POST /api/tally-sessions/eb2fccc8-f50f-4f17-b5ea-3f3a70e620af/finalize → 400 Bad Request ✓
+             - Error message: "Sesi sudah final" ✓
+             - **Correctly prevents double finalization**
+             
+             **Test 5c: DELETE finalized session**
+             - DELETE /api/tally-sessions/eb2fccc8-f50f-4f17-b5ea-3f3a70e620af → 400 Bad Request ✓
+             - Error message: "Sesi sudah final, tidak bisa dihapus" ✓
+             - **Correctly prevents deletion of finalized sessions**
+          
+          ✅ STEP 6 — Regression Test: POST /api/inventory/inbound (PASSED):
+             - POST /api/inventory/inbound → 201 Created ✓
+             - Transaction ID: 4166bdde-b123-4642-bb47-e9e310f64dea ✓
+             - Number of stocks created: 1 (expected: 1) ✓
+             - Stock ID: 982a63a8-ee83-418c-ac29-eefa98277f99 ✓
+             - Stock weight: 3 kg ✓
+             - kodeSimpan auto-generated: 2608100013 ✓
+             - **performInbound refactor did NOT break existing /inventory/inbound endpoint**
+          
+          ✅ STEP 7 — DELETE draft session (PASSED):
+             - Created new draft session: 373a8339-fe69-47d5-9054-ef4a28627b7b ✓
+             - DELETE /api/tally-sessions/373a8339-fe69-47d5-9054-ef4a28627b7b → 200 OK ✓
+             - Response: {"data":{"deleted":true}} ✓
+             
+             **Verification:**
+             - Session NOT in draft list (correctly deleted) ✓
+             - tally_session_items removed (count: 0) ✓
+             - **Cascade delete working correctly**
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified:**
+          - Draft sessions can be created, updated, listed, and retrieved ✓
+          - Finalize commits items to inventory via shared performInbound helper ✓
+          - Status transitions correctly: draft → final (locked) ✓
+          - Finalized sessions cannot be modified or deleted ✓
+          - Draft sessions can be deleted (cascade removes items) ✓
+          
+          ✅ **performInbound Refactor:**
+          - Extracted helper function at line 3771 in route.js ✓
+          - Used by both /tally-sessions/:id/finalize (line 4017) and /inventory/inbound (line 3876) ✓
+          - Identical inventory logic for both endpoints ✓
+          - No regression in existing /inventory/inbound endpoint ✓
+          
+          ✅ **Database Schema:**
+          - tally_session table working correctly ✓
+          - tally_session_items table working correctly ✓
+          - Foreign key cascade (session_id) working ✓
+          - Status field ('draft', 'final') working ✓
+          - transactionId and finalizedAt fields populated on finalize ✓
+          
+          ✅ **Enrichment Functions:**
+          - enrichTallySession helper (line 3883) working correctly ✓
+          - List view enriched with: csCode, csName, refNumber, itemCount, totalWeight ✓
+          - Detail view enriched with: items array + productName, productSku, zoneCode per item ✓
+          
+          ✅ **API Endpoints:**
+          - GET /api/tally-sessions?status=draft → 200 (list resumable sessions) ✓
+          - GET /api/tally-sessions/:id → 200 (session with items) ✓
+          - POST /api/tally-sessions → 201 (create draft) ✓
+          - PUT /api/tally-sessions/:id → 200 (update draft, blocks if final) ✓
+          - POST /api/tally-sessions/:id/finalize → 201 (commit to inventory, lock session) ✓
+          - DELETE /api/tally-sessions/:id → 200 (discard draft, blocks if final) ✓
+          
+          ✅ **Status Locking:**
+          - Draft sessions: can be updated, deleted ✓
+          - Final sessions: cannot be updated, deleted, or finalized again ✓
+          - All status checks return 400 with appropriate error messages ✓
+          
+          ✅ **Inventory Integration:**
+          - Finalize creates inventory_transaction row ✓
+          - Finalize creates inventory_stock rows (one per item) ✓
+          - Stock status set to 'active' ✓
+          - kodeSimpan auto-generated correctly ✓
+          - Weights and quantities match session items ✓
+          
+          ✅ **Data Integrity:**
+          - All created rows verified via direct SQLite queries ✓
+          - Transaction IDs match between API response and database ✓
+          - Stock IDs match between API response and database ✓
+          - Weights and quantities accurate ✓
+          - Status transitions persisted correctly ✓
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Session 1 (finalized):
+          - Session ID: eb2fccc8-f50f-4f17-b5ea-3f3a70e620af
+          - Cold Storage: CS-01 (f68026af-1fe6-4d44-b6dc-1e363bec04e8)
+          - Product: Sayap Premium Medium 10-12/Pack (78469ace-b58e-4a29-b8a1-bc83c54b5c31)
+          - Initial items: 1 (weight: 10 kg)
+          - Updated items: 2 (weights: 10 kg, 5 kg)
+          - Total weight: 15 kg
+          - Transaction ID: 46624c64-1a4d-4a80-bd6d-741ab0d6971f
+          - Stock 1: adfa90e9-b5a3-466a-9b7f-be5a1c86dde6 (10 kg, kodeSimpan: 2608100011)
+          - Stock 2: 67c50758-4ef8-4a48-8de1-84d1d30b0caa (5 kg, kodeSimpan: 2608100012)
+          
+          Session 2 (deleted draft):
+          - Session ID: 373a8339-fe69-47d5-9054-ef4a28627b7b
+          - Items: 1 (weight: 7 kg)
+          - Successfully deleted with cascade
+          
+          Regression Test (direct inbound):
+          - Transaction ID: 4166bdde-b123-4642-bb47-e9e310f64dea
+          - Stock: 982a63a8-ee83-418c-ac29-eefa98277f99 (3 kg, kodeSimpan: 2608100013)
+          
+          === CLEANUP ===
+          ✅ All test data cleaned up successfully:
+          - 3 inventory_stock rows deleted ✓
+          - 2 inventory_transaction rows deleted ✓
+          - 2 tally_session_items rows deleted ✓
+          - 1 tally_session row deleted (1 already deleted via DELETE endpoint) ✓
+          - Database restored to original state ✓
+          - No leftover tally_session rows ✓
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All Tally Session features working correctly.
+          Draft sessions can be created, updated, listed, retrieved, and deleted.
+          Finalize correctly commits to inventory and locks the session.
+          Status locking prevents modifications to finalized sessions.
+          performInbound refactor successful (no regression in /inventory/inbound).
+          Database schema and cascade deletes working correctly.
+          All enrichment functions working correctly.
+          
+          Test Coverage: 7/7 steps passed (100%)
+          - STEP 1: Get Cold Storage and Product IDs ✓
+          - STEP 2: POST /tally-sessions (create draft) ✓
+          - STEP 3: PUT /tally-sessions/:id (update draft) ✓
+          - STEP 4: POST /tally-sessions/:id/finalize ✓
+          - STEP 5: Negative tests (PUT/POST/DELETE on finalized) ✓
+          - STEP 6: Regression test (POST /inventory/inbound) ✓
+          - STEP 7: DELETE draft session ✓
+
+  - agent: "main"
+    message: "Please test the NEW Tally Session (draft inbound resumable + finalize) backend endpoints described in the task above. Focus on: draft create/update/list/get, finalize committing to inventory via shared performInbound helper, status locking (draft->final), and that /inventory/inbound still works (no regression). SQLite DB at /app/data/erp.db. Clean up all created rows afterward."
+  
+  - agent: "testing"
+    message: "✅ ALL TALLY SESSION TESTS PASSED (7/7 steps, 100%). All endpoints working correctly: draft create/update/list/get, finalize to inventory, status locking, DELETE draft, and regression test for /inventory/inbound. The performInbound refactor successfully shares logic between finalize and direct inbound. Database verified via SQLite queries. All test data cleaned up. NO CRITICAL ISSUES FOUND."

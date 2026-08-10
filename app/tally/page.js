@@ -6,7 +6,7 @@ import { useSession, authClient } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Smartphone, ChevronRight, LogOut, Wheat, ClipboardList, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Smartphone, ChevronRight, LogOut, Wheat, ClipboardList, Loader2, Wifi, WifiOff, History, Play, PackagePlus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
@@ -27,6 +27,8 @@ export default function TallyHomePage() {
 
   const { data, isLoading } = useSWR('/api/work-orders?status=Dalam Proses', fetcher, { refreshInterval: 10000 });
   const rows = data?.data || [];
+  const { data: draftData } = useSWR('/api/tally-sessions?status=draft', fetcher, { refreshInterval: 15000 });
+  const drafts = draftData?.data || [];
 
   const logout = async () => { await authClient.signOut(); router.push('/login'); };
 
@@ -51,6 +53,29 @@ export default function TallyHomePage() {
           {!online && <div className="mt-2 text-xs bg-red-100 text-red-700 p-2 rounded">Offline: input akan dicache dan disync saat kembali online</div>}
         </CardContent>
       </Card>
+
+      {/* Tally Inbound draft yang bisa dilanjutkan */}
+      {drafts.length > 0 && (
+        <Card className="mb-4 border-amber-200 bg-amber-50/40">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-2 text-amber-800"><History className="w-5 h-5" /><span className="font-bold text-sm">Lanjutkan Tally Inbound ({drafts.length})</span></div>
+            <div className="space-y-1.5">
+              {drafts.map(d => (
+                <div key={d.id} className="flex items-center gap-2 bg-white border rounded-lg px-2.5 py-2">
+                  <PackagePlus className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold truncate">{d.csCode || 'CS?'}{d.refNumber ? ` · ${d.referenceType} ${d.refNumber}` : ' · Manual'}</div>
+                    <div className="text-[11px] text-muted-foreground">{d.itemCount} item · {Number(d.totalWeight || 0).toFixed(1)} kg{d.updatedAt && ` · ${format(new Date(d.updatedAt), 'dd MMM HH:mm')}`}</div>
+                  </div>
+                  <Link href={`/tally/inbound?session=${d.id}`}>
+                    <Button size="sm" className="h-8 bg-emerald-600 hover:bg-emerald-700 text-xs"><Play className="w-3.5 h-3.5 mr-1" /> Lanjutkan</Button>
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* WO List */}
       <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold mb-2">WO Aktif ({rows.length})</div>
