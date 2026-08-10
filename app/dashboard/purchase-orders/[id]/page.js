@@ -327,11 +327,11 @@ function GrnTab({ po, onSaved, canOperate }) {
                   <F label="No. Kendaraan"><Input value={vehicleNumber} onChange={e => setVehicleNumber(e.target.value)} placeholder="opsional" /></F>
                 </div>
                 <div>
-                  <div className="text-xs font-medium mb-1">Berat Diterima per Item (dari Surat Jalan)</div>
+                  <div className="text-xs font-medium mb-1">Berat Dikirim per Item (dari Surat Jalan)</div>
                   <div className="border rounded-lg divide-y">
                     <div className="grid grid-cols-12 gap-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground bg-muted/40">
                       <div className="col-span-5">Produk</div><div className="col-span-2 text-right">Rencana</div>
-                      <div className="col-span-3 text-right">Berat Diterima (kg)</div><div className="col-span-2 text-right">Qty</div>
+                      <div className="col-span-3 text-right">Berat Dikirim (kg)</div><div className="col-span-2 text-right">Qty</div>
                     </div>
                     {rows.map(r => (
                       <div key={r.productId} className="grid grid-cols-12 gap-2 px-2 py-1.5 items-center text-sm">
@@ -342,7 +342,7 @@ function GrnTab({ po, onSaved, canOperate }) {
                       </div>
                     ))}
                   </div>
-                  <div className="text-xs text-muted-foreground mt-1.5">Total PO akan direvisi ke: <b className="text-foreground">{fmt(previewTotal)}</b> (harga × berat diterima + biaya tambahan)</div>
+                  <div className="text-xs text-muted-foreground mt-1.5">Total PO akan direvisi ke: <b className="text-foreground">{fmt(previewTotal)}</b> (harga × berat dikirim + biaya tambahan)</div>
                 </div>
                 <F label="Catatan"><Textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></F>
               </div>
@@ -357,7 +357,7 @@ function GrnTab({ po, onSaved, canOperate }) {
             <div className="flex items-center gap-2 font-medium"><Scale className="w-4 h-4" />Keterangan Berat</div>
             <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
               <div>Berat Rencana:<div className="font-semibold text-sm">{kg(po.totalPlanWeight)}</div></div>
-              <div>Berat Diterima (SJ):<div className="font-semibold text-sm">{kg(po.totalReceivedWeight)}</div></div>
+              <div>Berat Dikirim (SJ):<div className="font-semibold text-sm">{kg(po.totalReceivedWeight)}</div></div>
               <div>Selisih:<div className={`font-semibold text-sm ${variance < 0 ? 'text-amber-700' : variance > 0 ? 'text-blue-700' : ''}`}>{variance > 0 ? '+' : ''}{kg(variance)}</div></div>
             </div>
           </div>
