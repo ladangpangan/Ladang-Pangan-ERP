@@ -1,568 +1,784 @@
 #!/usr/bin/env python3
 """
-Backend test for Dropship SO<->PO full linkage feature using curl
-Tests GRN sync from SJ, invoice basis (grn/so_receipt), and navigation links
+Backend API Testing Script for ERP System - Accounting Module (SAK EP)
+Tests all accounting endpoints with comprehensive scenarios including idempotency checks.
 """
 
-import subprocess
+import requests
 import json
+import sys
 import sqlite3
 from datetime import datetime
-import tempfile
-import os
 
+# Configuration
 BASE_URL = "http://localhost:3000/api"
 DB_PATH = "/app/data/erp.db"
-COOKIE_FILE = "/tmp/test_cookies.txt"
 
-# Test data tracking for cleanup
-test_data = {
-    "sales_orders": [],
-    "purchase_orders": []
-}
+# Test credentials
+ADMIN_EMAIL = "admin@lpi.co.id"
+ADMIN_PASSWORD = "admin123"
 
-def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+# Global session
+session = requests.Session()
 
-def curl_request(method, url, data=None, expect_json=True):
-    """Make a curl request with cookie handling"""
-    cmd = ["curl", "-s", "-b", COOKIE_FILE, "-c", COOKIE_FILE]
-    
-    if method == "POST":
-        cmd.extend(["-X", "POST"])
-    elif method == "PATCH":
-        cmd.extend(["-X", "PATCH"])
-    elif method == "DELETE":
-        cmd.extend(["-X", "DELETE"])
-    
-    if data:
-        cmd.extend(["-H", "Content-Type: application/json", "-d", json.dumps(data)])
-    
-    cmd.append(url)
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    if expect_json:
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            raise Exception(f"Failed to parse JSON response: {result.stdout[:200]}")
-    else:
-        return result.stdout
+def print_test(msg):
+    """Print test step"""
+    print(f"\n{'='*80}")
+    print(f"TEST: {msg}")
+    print('='*80)
+
+def print_result(success, msg, details=None):
+    """Print test result"""
+    status = "✅ PASS" if success else "❌ FAIL"
+    print(f"{status}: {msg}")
+    if details:
+        print(f"Details: {details}")
+    return success
 
 def login():
-    """Login as admin"""
-    log("Logging in as admin@lpi.co.id...")
-    
-    # Remove old cookie file
-    if os.path.exists(COOKIE_FILE):
-        os.remove(COOKIE_FILE)
-    
-    resp = curl_request("POST", f"{BASE_URL}/auth/sign-in/email", {
-        "email": "admin@lpi.co.id",
-        "password": "admin123"
-    })
-    
-    if "user" not in resp:
-        raise Exception(f"Login failed: {resp}")
-    
-    log("✓ Login successful")
-
-def find_supplier():
-    """Find an existing supplier contact"""
-    log("Finding supplier contact...")
-    resp = curl_request("GET", f"{BASE_URL}/contacts?type=Supplier")
-    
-    if "data" not in resp or not resp["data"]:
-        raise Exception("No suppliers found")
-    
-    supplier = resp["data"][0]
-    log(f"✓ Found supplier: {supplier['displayName']} (ID: {supplier['id']})")
-    return supplier
-
-def find_customer():
-    """Find an existing customer contact"""
-    log("Finding customer contact...")
-    resp = curl_request("GET", f"{BASE_URL}/contacts?type=Customer")
-    
-    if "data" not in resp or not resp["data"]:
-        raise Exception("No customers found")
-    
-    customer = resp["data"][0]
-    log(f"✓ Found customer: {customer['displayName']} (ID: {customer['id']})")
-    return customer
-
-def find_products(count=1):
-    """Find existing products with prices"""
-    log(f"Finding {count} products...")
-    resp = curl_request("GET", f"{BASE_URL}/products")
-    
-    if "data" not in resp:
-        raise Exception("Failed to get products")
-    
-    products = [p for p in resp["data"] if p.get("basePrice") and float(p["basePrice"]) > 0][:count]
-    
-    if len(products) < count:
-        raise Exception(f"Not enough products with prices found (need {count}, found {len(products)})")
-    
-    for p in products:
-        log(f"✓ Found product: {p['name']} (ID: {p['id']}, price: {p['basePrice']})")
-    
-    return products
-
-def create_dropship_so(supplier_id, customer_id, products):
-    """Create a dropship SO with buyPrice and unitPrice"""
-    log("\n=== TEST STEP 1: Create Dropship SO ===")
-    
-    product = products[0]
-    sell_price = float(product["basePrice"])
-    buy_price = sell_price * 0.8
-    
-    payload = {
-        "customerId": customer_id,
-        "supplierId": supplier_id,
-        "fulfillmentType": "dropship",
-        "orderDate": datetime.now().isoformat(),
-        "items": [{
-            "productId": product["id"],
-            "quantity": 1,
-            "weight": 10.0,
-            "unitPrice": sell_price,
-            "buyPrice": buy_price
-        }]
-    }
-    
-    log(f"Creating dropship SO with:")
-    log(f"  - Product: {product['name']}")
-    log(f"  - Ordered weight: 10.0 kg")
-    log(f"  - Sell price: Rp {sell_price:,.0f}")
-    log(f"  - Buy price: Rp {buy_price:,.0f}")
-    
-    resp = curl_request("POST", f"{BASE_URL}/sales-orders", payload)
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to create SO: {resp}")
-    
-    so_data = resp["data"]
-    so_id = so_data["id"]
-    so_number = so_data["soNumber"]
-    auto_po_id = so_data.get("autoPoId")
-    
-    test_data["sales_orders"].append(so_id)
-    
-    log(f"✓ SO created: {so_number} (ID: {so_id})")
-    log(f"  - SO totalAmount: Rp {so_data['totalAmount']:,.0f}")
-    
-    if not auto_po_id:
-        raise Exception("autoPoId not returned")
-    
-    log(f"✓ Auto-PO created: {auto_po_id}")
-    test_data["purchase_orders"].append(auto_po_id)
-    
-    return {
-        "so_id": so_id,
-        "so_number": so_number,
-        "auto_po_id": auto_po_id,
-        "product_id": product["id"],
-        "product_name": product["name"],
-        "sell_price": sell_price,
-        "buy_price": buy_price,
-        "ordered_weight": 10.0
-    }
-
-def verify_so_po_linkage(so_id, auto_po_id, so_number):
-    """Verify bidirectional linkage"""
-    log("\n=== TEST STEP 2: Verify SO<->PO Linkage ===")
-    
-    # Check SO -> PO link
-    log(f"GET /api/sales-orders/{so_id}")
-    resp = curl_request("GET", f"{BASE_URL}/sales-orders/{so_id}")
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to get SO: {resp}")
-    
-    so_data = resp["data"]
-    linked_po = so_data.get("linkedPurchaseOrder")
-    
-    if not linked_po:
-        raise Exception("linkedPurchaseOrder not present")
-    
-    log(f"✓ SO has linkedPurchaseOrder:")
-    log(f"  - PO ID: {linked_po['id']}")
-    log(f"  - PO Number: {linked_po['poNumber']}")
-    log(f"  - PO Status: {linked_po['pipelineStatus']}")
-    
-    if linked_po["id"] != auto_po_id:
-        raise Exception(f"linkedPurchaseOrder.id mismatch")
-    
-    po_number = linked_po["poNumber"]
-    
-    # Check PO -> SO link
-    log(f"\nGET /api/purchase-orders/{auto_po_id}")
-    resp = curl_request("GET", f"{BASE_URL}/purchase-orders/{auto_po_id}")
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to get PO: {resp}")
-    
-    po_data = resp["data"]
-    
-    if po_data.get("salesOrderId") != so_id:
-        raise Exception("PO salesOrderId mismatch")
-    
-    if not po_data.get("isDropship"):
-        raise Exception("PO isDropship is not true")
-    
-    linked_so = po_data.get("linkedSalesOrder")
-    if not linked_so:
-        raise Exception("linkedSalesOrder not present")
-    
-    log(f"✓ PO has linkedSalesOrder:")
-    log(f"  - SO ID: {linked_so['id']}")
-    log(f"  - SO Number: {linked_so['soNumber']}")
-    
-    if linked_so["soNumber"] != so_number:
-        raise Exception("linkedSalesOrder.soNumber mismatch")
-    
-    log(f"✓ Bidirectional linkage verified")
-    
-    return po_number, po_data
-
-def advance_so_status(so_id, target_status):
-    """Advance SO status"""
-    log(f"\nAdvancing SO to {target_status}...")
-    resp = curl_request("POST", f"{BASE_URL}/sales-orders/{so_id}/status", {"status": target_status})
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to advance SO: {resp}")
-    
-    log(f"✓ SO advanced to {target_status}")
-
-def create_surat_jalan(so_id, product_id, shipped_weight):
-    """Create Surat Jalan"""
-    log(f"\n=== TEST STEP 3: Create Surat Jalan (shipped: {shipped_weight} kg) ===")
-    
-    # Get SO items
-    resp = curl_request("GET", f"{BASE_URL}/sales-orders/{so_id}")
-    so_data = resp["data"]
-    item = next((it for it in so_data["items"] if it["productId"] == product_id), None)
-    
-    if not item:
-        raise Exception("Product not found in SO items")
-    
-    item_id = item["id"]
-    
-    payload = {
-        "deliveryDate": datetime.now().isoformat(),
-        "items": [{
-            "itemId": item_id,
-            "shippedWeight": shipped_weight
-        }]
-    }
-    
-    log(f"Creating Surat Jalan:")
-    log(f"  - Ordered: {item['weight']} kg")
-    log(f"  - Shipped: {shipped_weight} kg")
-    
-    resp = curl_request("POST", f"{BASE_URL}/sales-orders/{so_id}/surat-jalan", payload)
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to create SJ: {resp}")
-    
-    sj_number = resp["data"].get("sjNumber")
-    log(f"✓ Surat Jalan created: {sj_number}")
-    
-    return sj_number
-
-def verify_grn_sync(auto_po_id, so_id, product_id, shipped_weight, buy_price):
-    """Verify GRN auto-sync"""
-    log(f"\n=== TEST STEP 4: Verify GRN Auto-Sync ===")
-    
-    resp = curl_request("GET", f"{BASE_URL}/purchase-orders/{auto_po_id}")
-    po_data = resp["data"]
-    
-    # Check GRN
-    grns = po_data.get("grn", [])
-    auto_grn_tag = f"AUTO-SJ:{so_id}"
-    auto_grn = next((g for g in grns if g.get("notes") == auto_grn_tag), None)
-    
-    if not auto_grn:
-        raise Exception(f"Auto GRN not found. GRNs: {grns}")
-    
-    log(f"✓ Auto GRN found:")
-    log(f"  - GRN Number: {auto_grn['grnNumber']}")
-    log(f"  - Notes: {auto_grn['notes']}")
-    
-    # Check GRN items via DB
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT received_weight FROM grn_items WHERE grn_id = ? AND product_id = ?", 
-                   (auto_grn["id"], product_id))
-    result = cursor.fetchone()
-    conn.close()
-    
-    if not result:
-        raise Exception("GRN item not found in DB")
-    
-    grn_received = result[0]
-    log(f"✓ GRN received weight: {grn_received} kg (expected: {shipped_weight} kg)")
-    
-    if abs(grn_received - shipped_weight) > 0.001:
-        raise Exception(f"GRN weight mismatch: {grn_received} != {shipped_weight}")
-    
-    # Check PO item received_weight
-    po_item = next((it for it in po_data["items"] if it["productId"] == product_id), None)
-    if not po_item:
-        raise Exception("Product not found in PO items")
-    
-    po_received = po_item.get("receivedWeight", 0)
-    log(f"✓ PO item received weight: {po_received} kg")
-    
-    if abs(po_received - shipped_weight) > 0.001:
-        raise Exception(f"PO received weight mismatch")
-    
-    # Check PO status
-    if po_data["pipelineStatus"] != "Tanda Terima":
-        raise Exception(f"PO status should be 'Tanda Terima', got '{po_data['pipelineStatus']}'")
-    
-    log(f"✓ PO status: {po_data['pipelineStatus']}")
-    
-    # Check PO total
-    po_total = po_data["totalAmount"]
-    expected_total = buy_price * shipped_weight
-    
-    log(f"✓ PO totalAmount: Rp {po_total:,.0f} (expected: Rp {expected_total:,.0f})")
-    
-    if abs(po_total - expected_total) > 1:
-        raise Exception(f"PO total mismatch")
-    
-    log(f"✓ All GRN sync verifications passed")
-    
-    return auto_grn
-
-def test_invoice_basis(auto_po_id, buy_price, shipped_weight):
-    """Test invoice basis"""
-    log(f"\n=== TEST STEP 5: Test Invoice Basis ===")
-    
-    resp = curl_request("GET", f"{BASE_URL}/purchase-orders/{auto_po_id}")
-    po_data = resp["data"]
-    
-    invoice_grn = po_data.get("invoiceGrnTotal")
-    invoice_so_receipt = po_data.get("invoiceSoReceiptTotal")
-    
-    if invoice_grn is None or invoice_so_receipt is None:
-        raise Exception("Invoice totals not present")
-    
-    log(f"✓ Invoice preview totals:")
-    log(f"  - invoiceGrnTotal: Rp {invoice_grn:,.0f}")
-    log(f"  - invoiceSoReceiptTotal: Rp {invoice_so_receipt:,.0f}")
-    
-    # Test basis 'so_receipt'
-    log(f"\nTesting basis='so_receipt'")
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{auto_po_id}/invoice", {"basis": "so_receipt"})
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to set basis: {resp}")
-    
-    result = resp["data"]
-    log(f"✓ Basis set to: {result['invoiceWeightBasis']}")
-    
-    if result["invoiceWeightBasis"] != "so_receipt":
-        raise Exception("Basis should be 'so_receipt'")
-    
-    # Test basis 'grn'
-    log(f"\nTesting basis='grn'")
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{auto_po_id}/invoice", {"basis": "grn"})
-    result = resp["data"]
-    log(f"✓ Basis set to: {result['invoiceWeightBasis']}")
-    
-    if result["invoiceWeightBasis"] != "grn":
-        raise Exception("Basis should be 'grn'")
-    
-    # Test basis 'tally' (should coerce to 'grn')
-    log(f"\nTesting basis='tally' (should coerce to 'grn')")
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{auto_po_id}/invoice", {"basis": "tally"})
-    result = resp["data"]
-    log(f"✓ Basis coerced to: {result['invoiceWeightBasis']}")
-    
-    if result["invoiceWeightBasis"] != "grn":
-        raise Exception("Basis should be coerced to 'grn'")
-    
-    log(f"✓ All invoice basis tests passed")
-
-def test_customer_receipt(so_id, product_id, received_weight, auto_po_id, buy_price):
-    """Test customer receipt"""
-    log(f"\n=== TEST STEP 6: Test Customer Receipt ===")
-    
-    payload = {
-        "receivedDate": datetime.now().isoformat(),
-        "items": [{
-            "productId": product_id,
-            "receivedWeight": received_weight
-        }]
-    }
-    
-    log(f"Creating receipt with receivedWeight={received_weight} kg")
-    resp = curl_request("POST", f"{BASE_URL}/sales-orders/{so_id}/receipts", payload)
-    
-    if "data" not in resp:
-        raise Exception(f"Failed to create receipt: {resp}")
-    
-    receipt_number = resp["data"].get("receiptNumber")
-    log(f"✓ Receipt created: {receipt_number}")
-    
-    # Apply so_receipt basis
-    log(f"\nApplying basis='so_receipt' after receipt")
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{auto_po_id}/invoice", {"basis": "so_receipt"})
-    result = resp["data"]
-    
-    expected_total = buy_price * received_weight
-    log(f"✓ PO total: Rp {result['totalAmount']:,.0f} (expected: Rp {expected_total:,.0f})")
-    
-    if abs(result["totalAmount"] - expected_total) > 1:
-        raise Exception("PO total with so_receipt mismatch")
-    
-    log(f"✓ Customer receipt test passed")
-
-def test_non_dropship_regression():
-    """Test non-dropship PO"""
-    log(f"\n=== TEST STEP 7: Regression Test ===")
-    
-    resp = curl_request("GET", f"{BASE_URL}/purchase-orders")
-    pos = resp["data"]
-    non_dropship = next((p for p in pos if not p.get("isDropship")), None)
-    
-    if not non_dropship:
-        log("⚠ No non-dropship PO found, skipping")
-        return
-    
-    po_id = non_dropship["id"]
-    po_number = non_dropship["poNumber"]
-    original_basis = non_dropship.get("invoiceWeightBasis")
-    
-    log(f"Testing non-dropship PO: {po_number}")
-    
-    # Test 'shipped'
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{po_id}/invoice", {"basis": "shipped"})
-    if resp["data"]["invoiceWeightBasis"] != "shipped":
-        raise Exception("Basis 'shipped' failed")
-    log(f"✓ Basis 'shipped' works")
-    
-    # Test 'tally'
-    resp = curl_request("POST", f"{BASE_URL}/purchase-orders/{po_id}/invoice", {"basis": "tally"})
-    if resp["data"]["invoiceWeightBasis"] != "tally":
-        raise Exception("Basis 'tally' failed")
-    log(f"✓ Basis 'tally' works")
-    
-    # Restore
-    if original_basis:
-        curl_request("POST", f"{BASE_URL}/purchase-orders/{po_id}/invoice", {"basis": original_basis})
-        log(f"✓ Original basis restored")
-    
-    log(f"✓ Regression test passed")
-
-def cleanup_test_data():
-    """Clean up test data"""
-    log(f"\n=== CLEANUP ===")
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
+    """Login and establish session"""
+    print_test("Authentication - Login as admin")
     try:
-        for so_id in test_data["sales_orders"]:
-            log(f"Cleaning SO: {so_id}")
-            cursor.execute("DELETE FROM commission_records WHERE sales_order_id = ?", (so_id,))
-            cursor.execute("DELETE FROM sales_payments WHERE sales_order_id = ?", (so_id,))
-            cursor.execute("DELETE FROM sales_order_receipt_items WHERE receipt_id IN (SELECT id FROM sales_order_receipts WHERE sales_order_id = ?)", (so_id,))
-            cursor.execute("DELETE FROM sales_order_receipts WHERE sales_order_id = ?", (so_id,))
-            cursor.execute("DELETE FROM surat_jalan WHERE sales_order_id = ?", (so_id,))
-            cursor.execute("DELETE FROM sales_order_items WHERE sales_order_id = ?", (so_id,))
-            cursor.execute("DELETE FROM sales_order WHERE id = ?", (so_id,))
+        response = session.post(
+            f"{BASE_URL}/auth/sign-in/email",
+            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+            headers={"Content-Type": "application/json"}
+        )
         
-        for po_id in test_data["purchase_orders"]:
-            log(f"Cleaning PO: {po_id}")
-            cursor.execute("DELETE FROM grn_items WHERE grn_id IN (SELECT id FROM grn WHERE purchase_order_id = ?)", (po_id,))
-            cursor.execute("DELETE FROM grn WHERE purchase_order_id = ?", (po_id,))
-            cursor.execute("DELETE FROM purchase_payments WHERE purchase_order_id = ?", (po_id,))
-            cursor.execute("DELETE FROM purchase_order_items WHERE purchase_order_id = ?", (po_id,))
-            cursor.execute("DELETE FROM purchase_order WHERE id = ?", (po_id,))
+        # Debug: Print cookies
+        print(f"   Response status: {response.status_code}")
+        print(f"   Cookies received: {len(response.cookies)}")
+        for cookie in response.cookies:
+            print(f"   Cookie: {cookie.name} = {cookie.value[:20]}...")
         
-        conn.commit()
-        log(f"✓ Cleanup complete")
+        # Debug: Print session cookies
+        print(f"   Session cookies: {len(session.cookies)}")
+        for cookie in session.cookies:
+            print(f"   Session cookie: {cookie.name}")
         
+        if response.status_code == 200:
+            return print_result(True, "Login successful")
+        else:
+            return print_result(False, f"Login failed with status {response.status_code}", response.text[:200])
     except Exception as e:
-        conn.rollback()
-        raise Exception(f"Cleanup failed: {e}")
-    finally:
+        return print_result(False, f"Login exception: {str(e)}")
+
+def query_db(query, params=()):
+    """Execute SQLite query and return results"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        results = cursor.fetchall()
         conn.close()
+        return results
+    except Exception as e:
+        print(f"DB query error: {e}")
+        return None
 
-def main():
-    """Main test"""
-    print("\n" + "="*80)
-    print("DROPSHIP SO<->PO FULL LINKAGE BACKEND TEST")
-    print("="*80 + "\n")
+def count_db(query, params=()):
+    """Execute SQLite count query and return count"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else 0
+    except Exception as e:
+        print(f"DB count error: {e}")
+        return 0
+
+# ============================================================================
+# TEST 1: GET /accounting/accounts?archived=0
+# ============================================================================
+def test_get_accounts():
+    print_test("1. GET /accounting/accounts?archived=0 - Verify seeded COA")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/accounts?archived=0")
+        if response.status_code != 200:
+            return print_result(False, f"GET accounts failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        accounts = data.get('data', [])
+        
+        # Verify we have 51 accounts
+        if len(accounts) != 51:
+            return print_result(False, f"Expected 51 accounts, got {len(accounts)}")
+        
+        # Verify system accounts have is_system=1
+        system_accounts = [a for a in accounts if a.get('is_system') == 1]
+        print(f"   Found {len(system_accounts)} system accounts")
+        
+        # Verify header accounts have is_postable=0
+        header_accounts = [a for a in accounts if a.get('is_postable') == 0]
+        print(f"   Found {len(header_accounts)} header (non-postable) accounts")
+        
+        # Find Kas account (1-1110) - should be system
+        kas_account = next((a for a in accounts if a.get('code') == '1-1110'), None)
+        if not kas_account:
+            return print_result(False, "Kas account (1-1110) not found")
+        if kas_account.get('is_system') != 1:
+            return print_result(False, "Kas account should be system account (is_system=1)")
+        
+        return print_result(True, f"GET accounts successful: {len(accounts)} accounts, {len(system_accounts)} system, {len(header_accounts)} headers")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 2: COA CRUD Operations
+# ============================================================================
+def test_coa_crud():
+    print_test("2. COA CRUD - Create, Update, Archive, Restore, Delete")
+    
+    created_account_id = None
     
     try:
-        login()
+        # 2a. POST /accounting/accounts - Create new account
+        print("\n2a. POST /accounting/accounts - Create test account")
+        response = session.post(
+            f"{BASE_URL}/accounting/accounts",
+            json={
+                "code": "6-1950",
+                "name": "Beban Tes",
+                "type": "expense",
+                "normalBalance": "debit",
+                "category": "Beban Operasional",
+                "isPostable": True
+            }
+        )
+        if response.status_code != 200:
+            print_result(False, f"POST account failed with status {response.status_code}", response.text[:200])
+            return False
         
-        supplier = find_supplier()
-        customer = find_customer()
-        products = find_products(1)
+        data = response.json()
+        created_account = data.get('data', {})
+        created_account_id = created_account.get('id')
         
-        so_data = create_dropship_so(supplier["id"], customer["id"], products)
+        if not created_account_id:
+            print_result(False, "Created account ID not found in response")
+            return False
         
-        po_number, po_data = verify_so_po_linkage(so_data["so_id"], so_data["auto_po_id"], so_data["so_number"])
+        print_result(True, f"Account created: {created_account.get('code')} - {created_account.get('name')}")
         
-        log("\n=== Advancing SO Status ===")
-        advance_so_status(so_data["so_id"], "Confirmed")
-        advance_so_status(so_data["so_id"], "Packed")
+        # 2b. PATCH /accounting/accounts/:id - Update account
+        print("\n2b. PATCH /accounting/accounts/:id - Update account name")
+        response = session.patch(
+            f"{BASE_URL}/accounting/accounts/{created_account_id}",
+            json={"name": "Beban Tes Edit"}
+        )
+        if response.status_code != 200:
+            print_result(False, f"PATCH account failed with status {response.status_code}", response.text[:200])
+            return False
         
-        shipped_weight = 9.5
-        sj_number = create_surat_jalan(so_data["so_id"], so_data["product_id"], shipped_weight)
+        data = response.json()
+        updated_account = data.get('data', {})
+        if updated_account.get('name') != "Beban Tes Edit":
+            print_result(False, f"Account name not updated correctly: {updated_account.get('name')}")
+            return False
         
-        auto_grn = verify_grn_sync(so_data["auto_po_id"], so_data["so_id"], so_data["product_id"], 
-                                   shipped_weight, so_data["buy_price"])
+        print_result(True, f"Account updated: {updated_account.get('name')}")
         
-        test_invoice_basis(so_data["auto_po_id"], so_data["buy_price"], shipped_weight)
+        # 2c. POST /accounting/accounts/:id/archive - Archive account
+        print("\n2c. POST /accounting/accounts/:id/archive - Archive account")
+        response = session.post(f"{BASE_URL}/accounting/accounts/{created_account_id}/archive")
+        if response.status_code != 200:
+            print_result(False, f"Archive account failed with status {response.status_code}", response.text[:200])
+            return False
         
-        received_weight = 9.0
-        test_customer_receipt(so_data["so_id"], so_data["product_id"], received_weight, 
-                            so_data["auto_po_id"], so_data["buy_price"])
+        print_result(True, "Account archived successfully")
         
-        test_non_dropship_regression()
+        # 2d. POST /accounting/accounts/:id/restore - Restore account
+        print("\n2d. POST /accounting/accounts/:id/restore - Restore account")
+        response = session.post(f"{BASE_URL}/accounting/accounts/{created_account_id}/restore")
+        if response.status_code != 200:
+            print_result(False, f"Restore account failed with status {response.status_code}", response.text[:200])
+            return False
         
-        print("\n" + "="*80)
-        print("✅ ALL TESTS PASSED")
-        print("="*80)
+        print_result(True, "Account restored successfully")
         
-        print("\n=== SUMMARY ===")
-        print(f"✓ SO: {so_data['so_number']}")
-        print(f"✓ PO: {po_number}")
-        print(f"✓ SJ: {sj_number}")
-        print(f"✓ GRN: {auto_grn['grnNumber']}")
-        print(f"✓ Ordered: {so_data['ordered_weight']} kg")
-        print(f"✓ Shipped: {shipped_weight} kg")
-        print(f"✓ Received: {received_weight} kg")
-        print(f"✓ Sell price: Rp {so_data['sell_price']:,.0f}")
-        print(f"✓ Buy price: Rp {so_data['buy_price']:,.0f}")
-        print(f"✓ PO total (grn): Rp {so_data['buy_price'] * shipped_weight:,.0f}")
-        print(f"✓ PO total (so_receipt): Rp {so_data['buy_price'] * received_weight:,.0f}")
+        # 2e. DELETE /accounting/accounts/:id - Delete account
+        print("\n2e. DELETE /accounting/accounts/:id - Delete test account")
+        response = session.delete(f"{BASE_URL}/accounting/accounts/{created_account_id}")
+        if response.status_code != 200:
+            print_result(False, f"DELETE account failed with status {response.status_code}", response.text[:200])
+            return False
+        
+        print_result(True, "Account deleted successfully")
+        
+        # 2f. NEGATIVE TEST: DELETE system account (Kas 1-1110)
+        print("\n2f. NEGATIVE TEST: DELETE system account (should fail with 400)")
+        # First, get Kas account ID
+        response = session.get(f"{BASE_URL}/accounting/accounts?archived=0")
+        accounts = response.json().get('data', [])
+        kas_account = next((a for a in accounts if a.get('code') == '1-1110'), None)
+        
+        if not kas_account:
+            print_result(False, "Kas account not found for negative test")
+            return False
+        
+        response = session.delete(f"{BASE_URL}/accounting/accounts/{kas_account['id']}")
+        if response.status_code == 400:
+            print_result(True, "DELETE system account correctly rejected with 400")
+        else:
+            print_result(False, f"DELETE system account should return 400, got {response.status_code}")
+            return False
+        
+        # 2g. NEGATIVE TEST: PATCH system account code (should keep old code)
+        print("\n2g. NEGATIVE TEST: PATCH system account code (should keep old code)")
+        response = session.patch(
+            f"{BASE_URL}/accounting/accounts/{kas_account['id']}",
+            json={"code": "1-9999", "name": "Kas Modified"}
+        )
+        if response.status_code != 200:
+            print_result(False, f"PATCH system account failed with status {response.status_code}")
+            return False
+        
+        data = response.json()
+        updated = data.get('data', {})
+        if updated.get('code') == '1-1110':
+            print_result(True, "System account code protected (kept as 1-1110)")
+        else:
+            print_result(False, f"System account code should not change, got {updated.get('code')}")
+            return False
+        
+        return True
         
     except Exception as e:
-        print("\n" + "="*80)
-        print(f"❌ TEST FAILED: {e}")
-        print("="*80)
-        import traceback
-        traceback.print_exc()
-        return 1
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 3: GET /accounting/mapping
+# ============================================================================
+def test_mapping():
+    print_test("3. GET /accounting/mapping - Verify mapping data")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/mapping")
+        if response.status_code != 200:
+            return print_result(False, f"GET mapping failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        mapping = data.get('data', {})
+        labels = data.get('labels', {})
+        
+        # Verify key mappings exist
+        required_keys = ['kas', 'bank', 'piutang_usaha', 'persediaan', 'utang_usaha', 'penjualan', 'hpp']
+        missing_keys = [k for k in required_keys if k not in mapping]
+        
+        if missing_keys:
+            return print_result(False, f"Missing mapping keys: {missing_keys}")
+        
+        print(f"   Mapping keys: {len(mapping)}")
+        print(f"   Label keys: {len(labels)}")
+        
+        # 3b. PUT /accounting/mapping - Update mapping
+        print("\n3b. PUT /accounting/mapping - Update mapping (merge)")
+        current_mapping = mapping.copy()
+        response = session.put(
+            f"{BASE_URL}/accounting/mapping",
+            json={"mapping": current_mapping}
+        )
+        if response.status_code != 200:
+            return print_result(False, f"PUT mapping failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        merged_mapping = data.get('data', {})
+        
+        return print_result(True, f"Mapping operations successful: {len(merged_mapping)} keys")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 4: GET /accounting/settings
+# ============================================================================
+def test_settings():
+    print_test("4. GET /accounting/settings - Verify settings")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/settings")
+        if response.status_code != 200:
+            return print_result(False, f"GET settings failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        settings = data.get('data', {})
+        
+        # Verify required settings
+        if 'ppnEnabled' not in settings:
+            return print_result(False, "ppnEnabled not in settings")
+        if 'ppnRate' not in settings:
+            return print_result(False, "ppnRate not in settings")
+        if 'openingDate' not in settings:
+            return print_result(False, "openingDate not in settings")
+        if 'autoPost' not in settings:
+            return print_result(False, "autoPost not in settings")
+        
+        print(f"   ppnEnabled: {settings.get('ppnEnabled')}")
+        print(f"   ppnRate: {settings.get('ppnRate')}")
+        print(f"   openingDate: {settings.get('openingDate')}")
+        print(f"   autoPost: {settings.get('autoPost')}")
+        
+        # 4b. PUT /accounting/settings - Update settings
+        print("\n4b. PUT /accounting/settings - Update settings")
+        response = session.put(
+            f"{BASE_URL}/accounting/settings",
+            json={"settings": {"ppnEnabled": False}}
+        )
+        if response.status_code != 200:
+            return print_result(False, f"PUT settings failed with status {response.status_code}", response.text[:200])
+        
+        return print_result(True, "Settings operations successful")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 5: POST /accounting/sync - IDEMPOTENCY TEST (CRITICAL)
+# ============================================================================
+def test_sync_idempotency():
+    print_test("5. POST /accounting/sync - IDEMPOTENCY TEST (CRITICAL)")
+    try:
+        # First sync
+        print("\n5a. First POST /accounting/sync")
+        response = session.post(f"{BASE_URL}/accounting/sync")
+        if response.status_code != 200:
+            return print_result(False, f"First sync failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        first_count = data.get('count', 0)
+        print(f"   First sync count: {first_count}")
+        
+        if first_count == 0:
+            print_result(False, "First sync count is 0, expected > 0")
+            return False
+        
+        # Count auto journals in DB
+        auto_count_1 = count_db("SELECT COUNT(*) FROM journal_entries WHERE is_auto = 1")
+        print(f"   Auto journals in DB after first sync: {auto_count_1}")
+        
+        # Count manual journals in DB
+        manual_count_1 = count_db("SELECT COUNT(*) FROM journal_entries WHERE is_auto = 0")
+        print(f"   Manual journals in DB after first sync: {manual_count_1}")
+        
+        # Second sync (idempotency test)
+        print("\n5b. Second POST /accounting/sync (idempotency check)")
+        response = session.post(f"{BASE_URL}/accounting/sync")
+        if response.status_code != 200:
+            return print_result(False, f"Second sync failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        second_count = data.get('count', 0)
+        print(f"   Second sync count: {second_count}")
+        
+        # Count auto journals in DB after second sync
+        auto_count_2 = count_db("SELECT COUNT(*) FROM journal_entries WHERE is_auto = 1")
+        print(f"   Auto journals in DB after second sync: {auto_count_2}")
+        
+        # Count manual journals in DB after second sync
+        manual_count_2 = count_db("SELECT COUNT(*) FROM journal_entries WHERE is_auto = 0")
+        print(f"   Manual journals in DB after second sync: {manual_count_2}")
+        
+        # CRITICAL: Auto journal count should be the same (idempotent)
+        if auto_count_1 != auto_count_2:
+            return print_result(False, f"IDEMPOTENCY FAILED: Auto journal count changed from {auto_count_1} to {auto_count_2}")
+        
+        # CRITICAL: Manual journals should NOT be deleted
+        if manual_count_1 != manual_count_2:
+            return print_result(False, f"Manual journals were affected: {manual_count_1} -> {manual_count_2}")
+        
+        return print_result(True, f"Sync idempotency verified: {auto_count_1} auto journals unchanged, {manual_count_1} manual journals preserved")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 6: Journals CRUD
+# ============================================================================
+def test_journals():
+    print_test("6. Journals - List, Get, Create Manual, Delete")
     
-    finally:
-        try:
-            cleanup_test_data()
-        except Exception as e:
-            print(f"\n❌ CLEANUP FAILED: {e}")
-            return 1
+    created_journal_id = None
+    auto_journal_id = None
     
-    return 0
+    try:
+        # 6a. GET /accounting/journals - List journals
+        print("\n6a. GET /accounting/journals?from=2025-01-01&to=2026-12-31")
+        response = session.get(f"{BASE_URL}/accounting/journals?from=2025-01-01&to=2026-12-31")
+        if response.status_code != 200:
+            print_result(False, f"GET journals failed with status {response.status_code}", response.text[:200])
+            return False
+        
+        data = response.json()
+        journals = data.get('data', [])
+        print(f"   Found {len(journals)} journals")
+        
+        # Find an auto journal for negative test
+        auto_journals = [j for j in journals if j.get('is_auto') == 1]
+        if auto_journals:
+            auto_journal_id = auto_journals[0].get('id')
+            print(f"   Found auto journal for negative test: {auto_journals[0].get('journal_number')}")
+        
+        # 6b. GET /accounting/journals/:id - Get journal detail
+        if journals:
+            print(f"\n6b. GET /accounting/journals/:id - Get journal detail")
+            journal_id = journals[0].get('id')
+            response = session.get(f"{BASE_URL}/accounting/journals/{journal_id}")
+            if response.status_code != 200:
+                print_result(False, f"GET journal detail failed with status {response.status_code}")
+                return False
+            
+            data = response.json()
+            journal = data.get('data', {})
+            lines = journal.get('lines', [])
+            print(f"   Journal {journal.get('journal_number')} has {len(lines)} lines")
+            
+            # Verify lines have required fields
+            if lines:
+                line = lines[0]
+                required_fields = ['debit', 'credit', 'account_code', 'account_name']
+                missing = [f for f in required_fields if f not in line]
+                if missing:
+                    print_result(False, f"Journal line missing fields: {missing}")
+                    return False
+            
+            print_result(True, f"Journal detail retrieved successfully")
+        
+        # 6c. POST /accounting/journals - Create balanced manual journal
+        print("\n6c. POST /accounting/journals - Create BALANCED manual journal")
+        
+        # Get Kas and Modal account IDs
+        response = session.get(f"{BASE_URL}/accounting/accounts?archived=0")
+        accounts = response.json().get('data', [])
+        kas_account = next((a for a in accounts if a.get('code') == '1-1110'), None)
+        modal_account = next((a for a in accounts if a.get('code') == '3-1100'), None)
+        
+        if not kas_account or not modal_account:
+            print_result(False, "Could not find Kas or Modal accounts")
+            return False
+        
+        response = session.post(
+            f"{BASE_URL}/accounting/journals",
+            json={
+                "date": "2026-08-10",
+                "description": "Test Manual Journal - Balanced",
+                "lines": [
+                    {
+                        "accountId": kas_account['id'],
+                        "debit": 100000,
+                        "credit": 0,
+                        "description": "Debit Kas"
+                    },
+                    {
+                        "accountId": modal_account['id'],
+                        "debit": 0,
+                        "credit": 100000,
+                        "description": "Credit Modal"
+                    }
+                ]
+            }
+        )
+        if response.status_code != 200:
+            print_result(False, f"POST balanced journal failed with status {response.status_code}", response.text[:200])
+            return False
+        
+        data = response.json()
+        created_journal_id = data.get('id')
+        journal_number = data.get('journalNumber')
+        
+        if not journal_number or not journal_number.startswith('JU-'):
+            print_result(False, f"Journal number format incorrect: {journal_number}")
+            return False
+        
+        print_result(True, f"Balanced manual journal created: {journal_number}")
+        
+        # 6d. NEGATIVE TEST: POST unbalanced journal
+        print("\n6d. NEGATIVE TEST: POST UNBALANCED manual journal (should fail with 400)")
+        response = session.post(
+            f"{BASE_URL}/accounting/journals",
+            json={
+                "date": "2026-08-10",
+                "description": "Test Manual Journal - Unbalanced",
+                "lines": [
+                    {
+                        "accountId": kas_account['id'],
+                        "debit": 100000,
+                        "credit": 0,
+                        "description": "Debit Kas"
+                    },
+                    {
+                        "accountId": modal_account['id'],
+                        "debit": 0,
+                        "credit": 50000,
+                        "description": "Credit Modal (unbalanced)"
+                    }
+                ]
+            }
+        )
+        if response.status_code == 400:
+            print_result(True, "Unbalanced journal correctly rejected with 400")
+        else:
+            print_result(False, f"Unbalanced journal should return 400, got {response.status_code}")
+            return False
+        
+        # 6e. DELETE manual journal
+        print("\n6e. DELETE /accounting/journals/:id - Delete manual journal")
+        if created_journal_id:
+            response = session.delete(f"{BASE_URL}/accounting/journals/{created_journal_id}")
+            if response.status_code != 200:
+                print_result(False, f"DELETE manual journal failed with status {response.status_code}", response.text[:200])
+                return False
+            
+            print_result(True, "Manual journal deleted successfully")
+        
+        # 6f. NEGATIVE TEST: DELETE auto journal
+        print("\n6f. NEGATIVE TEST: DELETE auto journal (should fail with 400)")
+        if auto_journal_id:
+            response = session.delete(f"{BASE_URL}/accounting/journals/{auto_journal_id}")
+            if response.status_code == 400:
+                print_result(True, "DELETE auto journal correctly rejected with 400")
+            else:
+                print_result(False, f"DELETE auto journal should return 400, got {response.status_code}")
+                return False
+        else:
+            print("   Skipping auto journal delete test (no auto journal found)")
+        
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception: {str(e)}")
+        return False
+
+# ============================================================================
+# TEST 7: GET /accounting/trial-balance - CRITICAL BALANCE CHECK
+# ============================================================================
+def test_trial_balance():
+    print_test("7. GET /accounting/trial-balance - CRITICAL BALANCE CHECK")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/trial-balance?to=2026-12-31")
+        if response.status_code != 200:
+            return print_result(False, f"GET trial-balance failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        tb_data = data.get('data', {})
+        
+        total_debit = tb_data.get('totalDebit', 0)
+        total_credit = tb_data.get('totalCredit', 0)
+        rows = tb_data.get('rows', [])
+        
+        print(f"   Total Debit:  Rp {total_debit:,.2f}")
+        print(f"   Total Credit: Rp {total_credit:,.2f}")
+        print(f"   Accounts: {len(rows)}")
+        
+        # CRITICAL: Debit must equal Credit
+        if abs(total_debit - total_credit) > 0.01:
+            return print_result(False, f"TRIAL BALANCE NOT BALANCED: Debit {total_debit} ≠ Credit {total_credit}")
+        
+        return print_result(True, f"Trial Balance BALANCED: Debit = Credit = Rp {total_debit:,.2f}")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 8: GET /accounting/income-statement
+# ============================================================================
+def test_income_statement():
+    print_test("8. GET /accounting/income-statement")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/income-statement?from=2025-01-01&to=2026-12-31")
+        if response.status_code != 200:
+            return print_result(False, f"GET income-statement failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        is_data = data.get('data', {})
+        
+        # Verify required fields
+        required_fields = ['revenue', 'cogs', 'grossProfit', 'expense', 'otherIncome', 'otherExpense', 'netIncome']
+        missing = [f for f in required_fields if f not in is_data]
+        if missing:
+            return print_result(False, f"Income statement missing fields: {missing}")
+        
+        # Verify all are numeric
+        for field in required_fields:
+            value = is_data.get(field)
+            if isinstance(value, dict):
+                value = value.get('total', 0)
+            if not isinstance(value, (int, float)):
+                return print_result(False, f"Field {field} is not numeric: {value}")
+        
+        revenue = is_data.get('revenue', {}).get('total', 0) if isinstance(is_data.get('revenue'), dict) else is_data.get('revenue', 0)
+        cogs = is_data.get('cogs', {}).get('total', 0) if isinstance(is_data.get('cogs'), dict) else is_data.get('cogs', 0)
+        gross_profit = is_data.get('grossProfit', 0)
+        expense = is_data.get('expense', {}).get('total', 0) if isinstance(is_data.get('expense'), dict) else is_data.get('expense', 0)
+        net_income = is_data.get('netIncome', 0)
+        
+        print(f"   Revenue:      Rp {revenue:,.2f}")
+        print(f"   COGS:         Rp {cogs:,.2f}")
+        print(f"   Gross Profit: Rp {gross_profit:,.2f}")
+        print(f"   Expense:      Rp {expense:,.2f}")
+        print(f"   Net Income:   Rp {net_income:,.2f}")
+        
+        return print_result(True, "Income statement retrieved successfully")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 9: GET /accounting/balance-sheet - CRITICAL BALANCE CHECK
+# ============================================================================
+def test_balance_sheet():
+    print_test("9. GET /accounting/balance-sheet - CRITICAL BALANCE CHECK")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/balance-sheet?asOf=2026-12-31")
+        if response.status_code != 200:
+            return print_result(False, f"GET balance-sheet failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        bs_data = data.get('data', {})
+        
+        total_assets = bs_data.get('totalAssets', 0)
+        total_liab_equity = bs_data.get('totalLiabilitiesEquity', 0)
+        balanced = bs_data.get('balanced', False)
+        
+        print(f"   Total Assets:              Rp {total_assets:,.2f}")
+        print(f"   Total Liabilities + Equity: Rp {total_liab_equity:,.2f}")
+        print(f"   Balanced: {balanced}")
+        
+        # CRITICAL: Assets must equal Liabilities + Equity
+        if not balanced:
+            return print_result(False, f"BALANCE SHEET NOT BALANCED: Assets {total_assets} ≠ Liab+Equity {total_liab_equity}")
+        
+        if abs(total_assets - total_liab_equity) > 1:
+            return print_result(False, f"BALANCE SHEET NOT BALANCED: Assets {total_assets} ≠ Liab+Equity {total_liab_equity}")
+        
+        return print_result(True, f"Balance Sheet BALANCED: Assets = Liab+Equity = Rp {total_assets:,.2f}")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 10: GET /accounting/cash-flow
+# ============================================================================
+def test_cash_flow():
+    print_test("10. GET /accounting/cash-flow")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/cash-flow?from=2025-01-01&to=2026-12-31")
+        if response.status_code != 200:
+            return print_result(False, f"GET cash-flow failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        cf_data = data.get('data', {})
+        
+        # Verify required fields
+        required_fields = ['beginningCash', 'operating', 'investing', 'financing', 'netChange', 'endingCash']
+        missing = [f for f in required_fields if f not in cf_data]
+        if missing:
+            return print_result(False, f"Cash flow missing fields: {missing}")
+        
+        # Verify all are numeric
+        for field in required_fields:
+            if not isinstance(cf_data.get(field), (int, float)):
+                return print_result(False, f"Field {field} is not numeric: {cf_data.get(field)}")
+        
+        beginning = cf_data.get('beginningCash', 0)
+        operating = cf_data.get('operating', 0)
+        investing = cf_data.get('investing', 0)
+        financing = cf_data.get('financing', 0)
+        net_change = cf_data.get('netChange', 0)
+        ending = cf_data.get('endingCash', 0)
+        
+        print(f"   Beginning Cash: Rp {beginning:,.2f}")
+        print(f"   Operating:      Rp {operating:,.2f}")
+        print(f"   Investing:      Rp {investing:,.2f}")
+        print(f"   Financing:      Rp {financing:,.2f}")
+        print(f"   Net Change:     Rp {net_change:,.2f}")
+        print(f"   Ending Cash:    Rp {ending:,.2f}")
+        
+        return print_result(True, "Cash flow retrieved successfully")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# TEST 11: GET /accounting/overview
+# ============================================================================
+def test_overview():
+    print_test("11. GET /accounting/overview")
+    try:
+        response = session.get(f"{BASE_URL}/accounting/overview")
+        if response.status_code != 200:
+            return print_result(False, f"GET overview failed with status {response.status_code}", response.text[:200])
+        
+        data = response.json()
+        overview = data.get('data', {})
+        
+        # Verify required fields
+        required_fields = ['cash', 'kas', 'bank', 'piutang', 'utang', 'persediaan', 'netIncomeYtd', 'revenueYtd', 'netIncomeMonth', 'journalCount']
+        missing = [f for f in required_fields if f not in overview]
+        if missing:
+            return print_result(False, f"Overview missing fields: {missing}")
+        
+        print(f"   Cash:            Rp {overview.get('cash', 0):,.2f}")
+        print(f"   Kas:             Rp {overview.get('kas', 0):,.2f}")
+        print(f"   Bank:            Rp {overview.get('bank', 0):,.2f}")
+        print(f"   Piutang:         Rp {overview.get('piutang', 0):,.2f}")
+        print(f"   Utang:           Rp {overview.get('utang', 0):,.2f}")
+        print(f"   Persediaan:      Rp {overview.get('persediaan', 0):,.2f}")
+        print(f"   Net Income YTD:  Rp {overview.get('netIncomeYtd', 0):,.2f}")
+        print(f"   Revenue YTD:     Rp {overview.get('revenueYtd', 0):,.2f}")
+        print(f"   Net Income Month: Rp {overview.get('netIncomeMonth', 0):,.2f}")
+        print(f"   Journal Count:   {overview.get('journalCount', 0)}")
+        
+        return print_result(True, "Overview retrieved successfully")
+    except Exception as e:
+        return print_result(False, f"Exception: {str(e)}")
+
+# ============================================================================
+# MAIN TEST RUNNER
+# ============================================================================
+def main():
+    print("\n" + "="*80)
+    print("ACCOUNTING MODULE (SAK EP) - BACKEND API TESTING")
+    print("="*80)
+    print(f"Base URL: {BASE_URL}")
+    print(f"Database: {DB_PATH}")
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    results = []
+    
+    # Login
+    if not login():
+        print("\n❌ LOGIN FAILED - Cannot proceed with tests")
+        sys.exit(1)
+    
+    # Run all tests
+    results.append(("GET /accounting/accounts", test_get_accounts()))
+    results.append(("COA CRUD Operations", test_coa_crud()))
+    results.append(("GET /accounting/mapping", test_mapping()))
+    results.append(("GET /accounting/settings", test_settings()))
+    results.append(("POST /accounting/sync (Idempotency)", test_sync_idempotency()))
+    results.append(("Journals CRUD", test_journals()))
+    results.append(("GET /accounting/trial-balance (CRITICAL)", test_trial_balance()))
+    results.append(("GET /accounting/income-statement", test_income_statement()))
+    results.append(("GET /accounting/balance-sheet (CRITICAL)", test_balance_sheet()))
+    results.append(("GET /accounting/cash-flow", test_cash_flow()))
+    results.append(("GET /accounting/overview", test_overview()))
+    
+    # Summary
+    print("\n" + "="*80)
+    print("TEST SUMMARY")
+    print("="*80)
+    
+    passed = sum(1 for _, result in results if result)
+    total = len(results)
+    
+    for test_name, result in results:
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status}: {test_name}")
+    
+    print("="*80)
+    print(f"TOTAL: {passed}/{total} tests passed ({passed*100//total}%)")
+    print("="*80)
+    
+    if passed == total:
+        print("\n🎉 ALL TESTS PASSED!")
+        sys.exit(0)
+    else:
+        print(f"\n⚠️  {total - passed} TEST(S) FAILED")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    exit(main())
+    main()
