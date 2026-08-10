@@ -3,11 +3,12 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import nodePath from 'path';
 import { eq, and, like, or, ne, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
-import { getDb } from '@/lib/db';
+import { getDb, getRawSqlite } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
 import { headers } from 'next/headers';
 import { runAgent, executeAction, canWrite } from '@/lib/ai/erp-agent';
+import * as acct from '@/lib/accounting/engine';
 
 // -----------------------
 // Helpers
@@ -151,6 +152,176 @@ async function handleRoute(request, { params }) {
         return err('Gagal ' + (isArchive ? 'mengarsipkan' : 'memulihkan') + ': ' + String(e?.message || e), 400);
       }
     }
+
+
+    // ================= ACCOUNTING MODULE (SAK EP) =================
+    if (path[0] === 'accounting') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const READ = ['admin', 'supervisor', 'direktur'];
+      const WRITE = ['admin', 'supervisor'];
+      if (!requireRole(session, READ)) return err('Forbidden', 403);
+      const raw = getRawSqlite();
+      const uid = session.user.id;
+      const sub = path[1] || '';
+      const parseRange = (url) => ({
+        from: acct.toSec(url.searchParams.get('from')),
+        to: acct.toSec(url.searchParams.get('to')),
+        asOf: acct.toSec(url.searchParams.get('asOf')),
+      });
+      // Auto-post (regenerate auto journals) before reads, if enabled
+      const autoSync = () => { try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('autoSync', e?.message); } };
+
+      // ---- Chart of Accounts ----
+      if (sub === 'accounts') {
+        // list
+        if (path.length === 2 && method === 'GET') {
+          const url = new URL(request.url);
+          const a = url.searchParams.get('archived');
+          let where = '1=1';
+          if (a === '1' || a === 'true') where = 'archived_at IS NOT NULL';
+          else if (a !== 'all') where = 'archived_at IS NULL';
+          const rows = raw.prepare(`SELECT * FROM gl_accounts WHERE ${where} ORDER BY code`).all();
+          return json({ data: rows });
+        }
+        // create
+        if (path.length === 2 && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          const code = String(b.code || '').trim();
+          const name = String(b.name || '').trim();
+          if (!code || !name) return err('Kode dan nama akun wajib diisi', 400);
+          const type = b.type || 'asset';
+          const nb = b.normalBalance || (['liability', 'equity', 'revenue', 'other_income'].includes(type) ? 'credit' : 'debit');
+          const exists = raw.prepare('SELECT 1 FROM gl_accounts WHERE code=?').get(code);
+          if (exists) return err('Kode akun sudah dipakai', 400);
+          const id = uuidv4();
+          try {
+            raw.prepare(`INSERT INTO gl_accounts (id, code, name, type, normal_balance, category, parent_code, cash_flow_category, is_postable, is_system, opening_balance, description, status)
+              VALUES (?,?,?,?,?,?,?,?,?,0,?,?, 'active')`).run(
+              id, code, name, type, nb, b.category || null, b.parentCode || null, b.cashFlowCategory || 'operating',
+              b.isPostable === false ? 0 : 1, Number(b.openingBalance || 0), b.description || null);
+            return json({ data: raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id) });
+          } catch (e) { return err('Gagal membuat akun: ' + (e?.message || e), 400); }
+        }
+        // update / archive / restore / delete
+        const id = path[2];
+        if (id && path.length === 3 && method === 'PATCH') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          if (!cur) return err('Akun tidak ditemukan', 404);
+          const b = await request.json().catch(() => ({}));
+          if (b.code && b.code !== cur.code) {
+            if (cur.is_system) return err('Kode akun sistem tidak dapat diubah', 400);
+            const dup = raw.prepare('SELECT 1 FROM gl_accounts WHERE code=? AND id<>?').get(b.code, id);
+            if (dup) return err('Kode akun sudah dipakai', 400);
+          }
+          const fields = {
+            code: cur.is_system ? cur.code : (b.code ?? cur.code),
+            name: b.name ?? cur.name,
+            type: cur.is_system ? cur.type : (b.type ?? cur.type),
+            normal_balance: cur.is_system ? cur.normal_balance : (b.normalBalance ?? cur.normal_balance),
+            category: b.category ?? cur.category,
+            parent_code: b.parentCode ?? cur.parent_code,
+            cash_flow_category: b.cashFlowCategory ?? cur.cash_flow_category,
+            is_postable: b.isPostable == null ? cur.is_postable : (b.isPostable ? 1 : 0),
+            opening_balance: b.openingBalance == null ? cur.opening_balance : Number(b.openingBalance),
+            description: b.description ?? cur.description,
+          };
+          try {
+            raw.prepare(`UPDATE gl_accounts SET code=?, name=?, type=?, normal_balance=?, category=?, parent_code=?, cash_flow_category=?, is_postable=?, opening_balance=?, description=?, updated_at=unixepoch() WHERE id=?`)
+              .run(fields.code, fields.name, fields.type, fields.normal_balance, fields.category, fields.parent_code, fields.cash_flow_category, fields.is_postable, fields.opening_balance, fields.description, id);
+            return json({ data: raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id) });
+          } catch (e) { return err('Gagal memperbarui akun: ' + (e?.message || e), 400); }
+        }
+        if (id && path.length === 4 && (path[3] === 'archive' || path[3] === 'restore') && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          if (!cur) return err('Akun tidak ditemukan', 404);
+          if (cur.is_system && path[3] === 'archive') return err('Akun sistem tidak dapat diarsipkan', 400);
+          raw.prepare('UPDATE gl_accounts SET archived_at=?, updated_at=unixepoch() WHERE id=?').run(path[3] === 'archive' ? Math.floor(Date.now() / 1000) : null, id);
+          return json({ ok: true });
+        }
+        if (id && path.length === 3 && method === 'DELETE') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          if (!cur) return err('Akun tidak ditemukan', 404);
+          if (cur.is_system) return err('Akun sistem tidak dapat dihapus (arsipkan saja)', 400);
+          const used = raw.prepare('SELECT 1 FROM journal_lines WHERE account_id=? LIMIT 1').get(id);
+          if (used) return err('Akun sudah dipakai di jurnal, tidak dapat dihapus. Arsipkan saja.', 400);
+          raw.prepare('DELETE FROM gl_accounts WHERE id=?').run(id);
+          return json({ ok: true });
+        }
+      }
+
+      // ---- Mapping ----
+      if (sub === 'mapping') {
+        if (method === 'GET') return json({ data: acct.getMapping(raw), labels: acct.MAPPING_LABELS });
+        if (method === 'PUT') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          return json({ data: acct.setMapping(raw, b.mapping || b) });
+        }
+      }
+
+      // ---- Settings (PPN, opening date, autopost) ----
+      if (sub === 'settings') {
+        if (method === 'GET') return json({ data: acct.getAcctSettings(raw) });
+        if (method === 'PUT') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          return json({ data: acct.setAcctSettings(raw, b.settings || b) });
+        }
+      }
+
+      // ---- Sync (manual re-post) ----
+      if (sub === 'sync' && method === 'POST') {
+        try { const r = acct.syncLedger(raw, { createdBy: uid }); return json({ ok: true, ...r }); }
+        catch (e) { return err('Gagal sinkronisasi jurnal: ' + (e?.message || e), 400); }
+      }
+
+      // ---- Journals ----
+      if (sub === 'journals') {
+        if (path.length === 2 && method === 'GET') {
+          autoSync();
+          const url = new URL(request.url);
+          const { from, to } = parseRange(url);
+          const rows = acct.listJournals(raw, { from, to, source: url.searchParams.get('source'), q: url.searchParams.get('q'), limit: Number(url.searchParams.get('limit') || 300) });
+          return json({ data: rows });
+        }
+        if (path.length === 2 && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          const r = acct.createManualJournal(raw, { date: b.date, description: b.description, lines: b.lines || [], createdBy: uid });
+          if (r.error) return err(r.error, 400);
+          return json({ ok: true, ...r });
+        }
+        const jid = path[2];
+        if (jid && path.length === 3 && method === 'GET') {
+          const j = acct.getJournal(raw, jid);
+          if (!j) return err('Jurnal tidak ditemukan', 404);
+          return json({ data: j });
+        }
+        if (jid && path.length === 3 && method === 'DELETE') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const j = raw.prepare('SELECT * FROM journal_entries WHERE id=?').get(jid);
+          if (!j) return err('Jurnal tidak ditemukan', 404);
+          if (j.is_auto) return err('Jurnal otomatis tidak dapat dihapus manual (ubah dokumen sumbernya)', 400);
+          raw.prepare('DELETE FROM journal_entries WHERE id=?').run(jid);
+          return json({ ok: true });
+        }
+      }
+
+      // ---- Reports ----
+      if (sub === 'overview' && method === 'GET') { autoSync(); return json({ data: acct.overview(raw) }); }
+      if (sub === 'trial-balance' && method === 'GET') { autoSync(); const { to } = parseRange(new URL(request.url)); return json({ data: acct.trialBalance(raw, { to }) }); }
+      if (sub === 'ledger' && method === 'GET') { autoSync(); const url = new URL(request.url); const { from, to } = parseRange(url); return json({ data: acct.ledger(raw, { accountId: url.searchParams.get('accountId'), from, to }) }); }
+      if (sub === 'income-statement' && method === 'GET') { autoSync(); const { from, to } = parseRange(new URL(request.url)); return json({ data: acct.incomeStatement(raw, { from, to }) }); }
+      if (sub === 'balance-sheet' && method === 'GET') { autoSync(); const { asOf } = parseRange(new URL(request.url)); return json({ data: acct.balanceSheet(raw, { asOf }) }); }
+      if (sub === 'cash-flow' && method === 'GET') { autoSync(); const { from, to } = parseRange(new URL(request.url)); return json({ data: acct.cashFlow(raw, { from, to }) }); }
+
+      return err('Rute akuntansi tidak ditemukan', 404);
+    }
+
 
 
     // ---------- AGENTIC AI ASSISTANT ----------
