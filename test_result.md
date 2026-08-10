@@ -15202,3 +15202,6 @@ agent_communication:
   
   - agent: "testing"
     message: "✅ ALL TALLY SESSION TESTS PASSED (7/7 steps, 100%). All endpoints working correctly: draft create/update/list/get, finalize to inventory, status locking, DELETE draft, and regression test for /inventory/inbound. The performInbound refactor successfully shares logic between finalize and direct inbound. Database verified via SQLite queries. All test data cleaned up. NO CRITICAL ISSUES FOUND."
+
+    -agent: "main"
+    -message: "BUGFIX (verified via UI): 'UNIQUE constraint failed: surat_jalan.sj_number' when creating Surat Jalan. Root cause: nextSjNumber() used COUNT(*)+1 which collides after any SJ deletion (gaps). Existing numbers were 0001,0002,0006-0009,0011 (count=7 -> produced 0008 which already existed). FIX in /app/app/api/[[...path]]/route.js nextSjNumber(): switched to gap-safe MAX(suffix)+1 plus a while-loop uniqueness guard (same pattern as nextSalesReturnNumber/GRN fix). Verified: created SJ/202608/0012 successfully, SO advanced Packed->Shipped, no error toast."

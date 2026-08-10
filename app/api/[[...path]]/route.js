@@ -1916,8 +1916,18 @@ async function handleRoute(request, { params }) {
     const nextSjNumber = () => {
       const ym = new Date();
       const prefix = `SJ/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.suratJalan).where(like(s.suratJalan.sjNumber, `${prefix}%`)).get();
-      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      const rows = db.select({ n: s.suratJalan.sjNumber }).from(s.suratJalan).where(like(s.suratJalan.sjNumber, `${prefix}%`)).all();
+      let maxNum = 0;
+      for (const r of rows) {
+        const n = parseInt(String(r.n).slice(prefix.length), 10);
+        if (!isNaN(n) && n > maxNum) maxNum = n;
+      }
+      // guard terhadap tabrakan: naikkan sampai benar-benar unik
+      let next = maxNum + 1;
+      while (db.select({ n: s.suratJalan.sjNumber }).from(s.suratJalan).where(eq(s.suratJalan.sjNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextSalesReturnNumber = () => {
       const ym = new Date();
