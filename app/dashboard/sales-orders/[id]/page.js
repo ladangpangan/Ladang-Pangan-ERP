@@ -42,6 +42,9 @@ export default function SODetailPage() {
   const canOperate = ['admin', 'supervisor', 'operator'].includes(role);
   const { data, mutate, isLoading } = useSWR(`/api/sales-orders/${id}`, fetcher);
   const so = data?.data;
+  const [confirmTarget, setConfirmTarget] = useState(null); // status transition dialog target
+  const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'shipped' | 'received'
+  const [transitioning, setTransitioning] = useState(false);
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!so) return <div className="text-center py-20 text-muted-foreground">SO tidak ditemukan</div>;
@@ -49,17 +52,31 @@ export default function SODetailPage() {
   const currentStepIdx = STEPS.indexOf(so.pipelineStatus);
   const allowedNext = SO_FLOW[so.pipelineStatus] || [];
 
-  const transitionStatus = async (target) => {
+  const openTransition = (target) => {
+    if (target === 'Invoiced') setInvoiceBasis('shipped');
+    setConfirmTarget(target);
+  };
+
+  const doTransition = async () => {
+    const target = confirmTarget;
     const body = { status: target };
-    if (target === 'Invoiced') {
-      const useReceived = confirm('Basis perhitungan invoice:\n\nOK = BERAT DITERIMA (dari Penerimaan)\nBatal = BERAT KIRIM (riil dari Surat Jalan)');
-      body.invoiceWeightBasis = useReceived ? 'received' : 'shipped';
-    } else if (!confirm(`Ubah status ke "${target}"?${target === 'Confirmed' ? '\n\nStok akan otomatis dikurangi + prepaid balance (jika subscriber) akan dipotong.' : ''}`)) {
-      return;
+    if (target === 'Invoiced') body.invoiceWeightBasis = invoiceBasis;
+    setTransitioning(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await res.json();
+      if (res.ok) {
+        toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : 'berat kirim'})` : ''));
+        setConfirmTarget(null);
+        mutate();
+      } else {
+        toast.error(j.error || 'Gagal mengubah status');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Gagal mengubah status');
+    } finally {
+      setTransitioning(false);
     }
-    const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await res.json();
-    if (res.ok) { toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : 'berat kirim'})` : '')); mutate(); } else toast.error(j.error);
   };
 
   return (
@@ -78,7 +95,7 @@ export default function SODetailPage() {
         {canEdit && allowedNext.length > 0 && (
           <div className="flex gap-2 flex-wrap">
             {allowedNext.map(a => (
-              <Button key={a} size="sm" variant={a === 'Cancelled' ? 'destructive' : 'default'} onClick={() => transitionStatus(a)}>
+              <Button key={a} size="sm" variant={a === 'Cancelled' ? 'destructive' : 'default'} data-testid={`so-status-btn-${a}`} onClick={() => openTransition(a)}>
                 {a === 'Cancelled' ? <XCircle className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}{a}
               </Button>
             ))}
@@ -162,6 +179,54 @@ export default function SODetailPage() {
         <TabsContent value="payments"><PaymentsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
+
+      {/* Konfirmasi perubahan status (menggantikan native confirm) */}
+      <Dialog open={!!confirmTarget} onOpenChange={(o) => { if (!o && !transitioning) setConfirmTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {confirmTarget === 'Cancelled' ? 'Batalkan SO?' : confirmTarget === 'Invoiced' ? 'Terbitkan Invoice' : `Ubah status ke "${confirmTarget}"?`}
+            </DialogTitle>
+            <DialogDescription>
+              {confirmTarget === 'Confirmed' && 'Stok yang dialokasikan akan dikonsumsi (dipakai) + prepaid balance (jika subscriber) akan dipotong.'}
+              {confirmTarget === 'Cancelled' && 'Stok yang teralokasi akan dilepas kembali menjadi aktif. Tindakan ini tidak dapat dibatalkan.'}
+              {confirmTarget === 'Invoiced' && 'Pilih basis berat yang dipakai untuk menghitung nilai invoice.'}
+              {['Packed', 'Shipped'].includes(confirmTarget) && `SO akan berpindah ke tahap ${confirmTarget}.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {confirmTarget === 'Invoiced' && (
+            <div className="space-y-2 py-1">
+              {[
+                { v: 'shipped', title: 'Berat Kirim (Surat Jalan)', desc: 'Nilai invoice mengikuti berat riil yang dikirim.' },
+                { v: 'received', title: 'Berat Diterima (Penerimaan)', desc: 'Nilai invoice mengikuti berat yang diterima customer (setelah susut).' },
+              ].map(opt => (
+                <label key={opt.v} data-testid={`invoice-basis-${opt.v}`} className={cn('flex items-start gap-3 border rounded-lg p-3 cursor-pointer', invoiceBasis === opt.v ? 'border-emerald-500 bg-emerald-50/60' : 'hover:bg-slate-50')}>
+                  <input type="radio" name="invoiceBasis" className="mt-1 accent-emerald-600" checked={invoiceBasis === opt.v} onChange={() => setInvoiceBasis(opt.v)} />
+                  <div>
+                    <div className="font-medium text-sm">{opt.title}</div>
+                    <div className="text-xs text-muted-foreground">{opt.desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmTarget(null)} disabled={transitioning}>Batal</Button>
+            <Button
+              data-testid="so-status-confirm"
+              variant={confirmTarget === 'Cancelled' ? 'destructive' : 'default'}
+              onClick={doTransition}
+              disabled={transitioning}
+              className={confirmTarget !== 'Cancelled' ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
+            >
+              {transitioning && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {confirmTarget === 'Cancelled' ? 'Ya, Batalkan' : confirmTarget === 'Invoiced' ? 'Terbitkan Invoice' : 'Ya, Lanjutkan'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
