@@ -8,6 +8,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -354,7 +355,7 @@ function CreateSODialog({ onSaved }) {
             <SelectContent>{PAYMENT_TERMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
         </F>
-        <F label="Down Payment (Rp)"><Input type="number" value={form.dpAmount} onChange={e => upd('dpAmount', Number(e.target.value))} /></F>
+        <F label="Down Payment (Rp)"><CurrencyInput value={form.dpAmount} onChange={v => upd('dpAmount', v)} placeholder="0" /></F>
       </div>
 
       <div className="space-y-2">
@@ -430,13 +431,13 @@ function CreateSODialog({ onSaved }) {
                     {isDropship && (
                       <div>
                         <Label className="text-xs">Harga Beli / kg</Label>
-                        <Input type="number" value={it.buyPrice} onChange={e => updItem(i, { buyPrice: Number(e.target.value) })} placeholder="dari supplier" />
+                        <CurrencyInput value={it.buyPrice} onChange={v => updItem(i, { buyPrice: v })} placeholder="dari supplier" />
                         <p className="text-[10px] text-muted-foreground mt-0.5">ke supplier (PO)</p>
                       </div>
                     )}
                     <div>
                       <Label className="text-xs">{isDropship ? 'Harga Jual / kg' : 'Harga / kg'}</Label>
-                      <Input type="number" value={it.unitPrice} onChange={e => updItem(i, { unitPrice: Number(e.target.value) })} />
+                      <CurrencyInput value={it.unitPrice} onChange={v => updItem(i, { unitPrice: v })} placeholder="0" />
                       {isDropship && <p className="text-[10px] text-muted-foreground mt-0.5">ke pembeli</p>}
                     </div>
                     <div>

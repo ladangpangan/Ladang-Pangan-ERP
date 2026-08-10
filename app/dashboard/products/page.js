@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -128,7 +129,7 @@ export default function ProductsPage() {
                   <SelectContent>{PACKAGING_TYPES.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
                 </Select>
               </F>
-              <F label="Harga Dasar (Rp)"><Input type="number" value={form.basePrice} onChange={e => setForm({ ...form, basePrice: Number(e.target.value) })} /></F>
+              <F label="Harga Dasar (Rp)"><CurrencyInput value={form.basePrice} onChange={v => setForm({ ...form, basePrice: v })} placeholder="0" /></F>
               <F label="Min Stock"><Input type="number" value={form.minStock} onChange={e => setForm({ ...form, minStock: Number(e.target.value) })} /></F>
               <F label="Shelf Life (hari)"><Input type="number" value={form.shelfLifeDays} onChange={e => setForm({ ...form, shelfLifeDays: Number(e.target.value) })} /></F>
               <F label="Status">

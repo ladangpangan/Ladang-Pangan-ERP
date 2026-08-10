@@ -8,6 +8,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -572,7 +573,7 @@ function CostsTab({ wo, onSaved, canEdit }) {
                 <DialogHeader><DialogTitle>Tambah Custom Cost</DialogTitle></DialogHeader>
                 <div className="grid grid-cols-2 gap-3">
                   <F label="Nama *" className="col-span-2"><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Listrik, Transport, dll" /></F>
-                  <F label="Nominal (Rp) *"><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: Number(e.target.value) })} /></F>
+                  <F label="Nominal (Rp) *"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} placeholder="0" /></F>
                   <F label="Kategori"><Select value={form.category} onValueChange={v => setForm({ ...form, category: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="maklon">Maklon</SelectItem><SelectItem value="operasional">Operasional</SelectItem><SelectItem value="lain-lain">Lain-lain</SelectItem></SelectContent></Select></F>
                   <F label="Notes" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
                 </div>

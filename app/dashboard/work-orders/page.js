@@ -8,6 +8,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -198,7 +199,7 @@ function CreateWODialog({ onSaved }) {
           {selectedPo && <div className="text-xs text-muted-foreground mt-1">Total PO: Rp {Number(selectedPo.totalAmount).toLocaleString('id-ID')} · Method: {selectedPo.method}</div>}
         </F>
         <F label="Base Cost (Rp) - default dari PO" className="sm:col-span-2">
-          <Input type="number" value={form.baseCost} onChange={e => upd('baseCost', Number(e.target.value))} placeholder={selectedPo ? String(selectedPo.totalAmount) : '0'} />
+          <CurrencyInput value={form.baseCost} onChange={v => upd('baseCost', v)} placeholder={selectedPo ? String(selectedPo.totalAmount) : '0'} />
         </F>
         <F label="Catatan" className="sm:col-span-2"><Textarea rows={2} value={form.notes} onChange={e => upd('notes', e.target.value)} /></F>
       </div>

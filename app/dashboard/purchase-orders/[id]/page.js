@@ -8,6 +8,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -247,8 +248,8 @@ function ItemsTab({ po, onSaved, canEdit }) {
                   <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                   {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-20 ml-auto" value={it.headSupplier || 0} onChange={e => upd(i, 'headSupplier', Number(e.target.value))} /></TableCell>}
                   {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-24 ml-auto" value={it.weightSupplier || 0} onChange={e => upd(i, 'weightSupplier', Number(e.target.value))} /></TableCell>}
-                  {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-20 ml-auto" value={it.headRph || 0} onChange={e => upd(i, 'headRph', Number(e.target.value))} /></TableCell>}
-                  {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-24 ml-auto" value={it.weightRph || 0} onChange={e => upd(i, 'weightRph', Number(e.target.value))} /></TableCell>}
+                  {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-20 ml-auto" value={it.headRph || 0} onChange={v => upd(i, 'headRph', v)} /></TableCell>}
+                  {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-24 ml-auto" value={it.weightRph || 0} onChange={v => upd(i, 'weightRph', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><span className={susut > 0 ? 'text-red-600 font-semibold' : ''}>{susut.toFixed(2)}</span></TableCell>}
                   <TableCell className="text-right font-semibold">Rp {Number(it.hppPerKg || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                 </TableRow>
@@ -466,7 +467,7 @@ function PaymentsTab({ po, onSaved, canEdit }) {
                     <SelectContent><SelectItem value="Transfer">Transfer</SelectItem><SelectItem value="Tunai">Tunai</SelectItem><SelectItem value="QRIS">QRIS</SelectItem></SelectContent>
                   </Select>
                 </F>
-                <F label="Nominal (Rp)" className="col-span-2"><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: Number(e.target.value) })} /></F>
+                <F label="Nominal (Rp)" className="col-span-2"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} placeholder="0" /></F>
                 <F label="Referensi (no bukti)" className="col-span-2"><Input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} /></F>
                 <F label="Adalah DP?">
                   <Select value={form.isDp ? 'yes' : 'no'} onValueChange={v => setForm({ ...form, isDp: v === 'yes' })}>
@@ -618,7 +619,7 @@ function ReturnsTab({ po, onSaved, canOperate }) {
                   </Select>
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
-                <F label="Nominal (Rp)"><Input type="number" value={form.totalAmount} onChange={e => setForm({ ...form, totalAmount: Number(e.target.value) })} /></F>
+                <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
                 <F label="Berat (kg)"><Input type="number" value={form.totalWeight} onChange={e => setForm({ ...form, totalWeight: Number(e.target.value) })} /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
