@@ -1416,12 +1416,25 @@ async function handleRoute(request, { params }) {
       });
       const supplier = db.select().from(s.contacts).where(eq(s.contacts.id, po.supplierId)).get();
       const dropshipCustomer = po.dropshipCustomerId ? db.select().from(s.contacts).where(eq(s.contacts.id, po.dropshipCustomerId)).get() : null;
-      const grnRows = db.select().from(s.grn).where(eq(s.grn.purchaseOrderId, id)).orderBy(desc(s.grn.receivedDate)).all();
+      const grnRowsRaw = db.select().from(s.grn).where(eq(s.grn.purchaseOrderId, id)).orderBy(desc(s.grn.receivedDate)).all();
+      const grnRows = grnRowsRaw.map(gr => {
+        const gItems = db.select().from(s.grnItems).where(eq(s.grnItems.grnId, gr.id)).all().map(gi => ({
+          ...gi, product: db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, gi.productId)).get(),
+        }));
+        const docs = db.select().from(s.grnDocuments).where(eq(s.grnDocuments.grnId, gr.id)).all().map(d => ({
+          id: d.id, originalName: d.originalName, contentType: d.contentType, sizeBytes: d.sizeBytes, viewUrl: `/api/documents/${d.id}`,
+        }));
+        return { ...gr, items: gItems, documents: docs };
+      });
+      const totalPlanWeight = enrichedItems.reduce((a, it) => a + Number(it.weight || 0), 0);
+      const totalReceivedWeight = enrichedItems.reduce((a, it) => a + Number(it.receivedWeight || 0), 0);
+      const weightConfirmed = grnRows.length > 0 && totalReceivedWeight > 0;
+      const weightVariance = weightConfirmed ? Math.round((totalReceivedWeight - totalPlanWeight) * 100) / 100 : 0;
       const payments = db.select().from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, id)).orderBy(desc(s.purchasePayments.paymentDate)).all();
       const returns = db.select().from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, id)).orderBy(desc(s.purchaseReturns.returnDate)).all();
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const outstanding = Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - totalReturns;
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns } });
+      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, weightConfirmed, weightVariance } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -1543,22 +1556,110 @@ async function handleRoute(request, { params }) {
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
       const body = await request.json();
+      const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, id)).all();
+      const bodyItems = Array.isArray(body.items) ? body.items : [];
+      const recvMap = {}; const qtyMap = {};
+      for (const bi of bodyItems) { if (bi.productId) { recvMap[bi.productId] = Number(bi.receivedWeight || 0); qtyMap[bi.productId] = Number(bi.receivedQuantity || 0); } }
+      const totalReceived = poItems.reduce((a, it) => a + (recvMap[it.productId] != null ? recvMap[it.productId] : 0), 0);
       const g = {
         id: uuidv4(),
         grnNumber: nextGrnNumber(),
         purchaseOrderId: id,
         receivedDate: body.receivedDate ? new Date(body.receivedDate) : new Date(),
         receivedBy: body.receivedBy || session.user.name,
+        sjNumber: body.sjNumber || null,
+        driverName: body.driverName || null,
+        vehicleNumber: body.vehicleNumber || null,
+        totalReceivedWeight: totalReceived,
         notes: body.notes || null,
         status: 'confirmed',
         createdAt: new Date(),
       };
       db.insert(s.grn).values(g).run();
+      // GRN line items + update PO item confirmed weight, then recompute PO total (received weight = billing basis)
+      let poTotal = 0;
+      for (const it of poItems) {
+        const hasRecv = recvMap[it.productId] != null;
+        const recvW = hasRecv ? recvMap[it.productId] : Number(it.receivedWeight || 0);
+        if (hasRecv) {
+          db.insert(s.grnItems).values({
+            id: uuidv4(), grnId: g.id, productId: it.productId,
+            planWeight: Number(it.weight || 0), receivedWeight: recvW, receivedQuantity: qtyMap[it.productId] || 0,
+          }).run();
+          db.update(s.purchaseOrderItems).set({ receivedWeight: recvW }).where(eq(s.purchaseOrderItems.id, it.id)).run();
+        }
+        const billW = recvW > 0 ? recvW : Number(it.weight || 0);
+        poTotal += Number(it.unitPrice || 0) * billW;
+      }
+      poTotal += Number(po.additionalCost || 0);
+      db.update(s.purchaseOrder).set({ totalAmount: poTotal, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
       // Auto-transition to Tanda Terima if currently Dikirim
       if (po.pipelineStatus === 'Dikirim') {
         db.update(s.purchaseOrder).set({ pipelineStatus: 'Tanda Terima', updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
       }
-      return json({ data: g }, { status: 201 });
+      return json({ data: { ...g, totalAmount: poTotal } }, { status: 201 });
+    }
+
+    // POST /grns/:grnId/documents - upload Surat Jalan file (multipart) -> persistent disk
+    if (route.startsWith('/grns/') && path.length === 3 && path[2] === 'documents' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const grnId = path[1];
+      const grnRow = db.select().from(s.grn).where(eq(s.grn.id, grnId)).get();
+      if (!grnRow) return err('GRN tidak ditemukan', 404);
+      let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return err('file wajib diisi', 400);
+      const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+      if (!ALLOWED.includes(file.type)) return err('Hanya PDF, JPG, PNG, atau WEBP', 400);
+      const MAX = 10 * 1024 * 1024;
+      if (!file.size || file.size > MAX) return err('Ukuran file maksimal 10MB', 400);
+      const bytes = Buffer.from(new Uint8Array(await file.arrayBuffer()));
+      const docId = uuidv4();
+      const safeName = String(file.name || 'surat-jalan').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 150);
+      const relDir = `grn/${grnId}`;
+      const uploadRoot = nodePath.join(process.cwd(), 'data', 'uploads');
+      const absDir = nodePath.join(uploadRoot, relDir);
+      fs.mkdirSync(absDir, { recursive: true });
+      const storageKey = `${relDir}/${docId}_${safeName}`;
+      fs.writeFileSync(nodePath.join(uploadRoot, storageKey), bytes);
+      db.insert(s.grnDocuments).values({
+        id: docId, grnId, storageKey, originalName: safeName,
+        contentType: file.type, sizeBytes: file.size, createdAt: new Date(),
+      }).run();
+      return json({ data: { id: docId, grnId, originalName: safeName, contentType: file.type, sizeBytes: file.size, viewUrl: `/api/documents/${docId}` } }, { status: 201 });
+    }
+
+    // GET /documents/:id - serve an uploaded GRN document (authenticated)
+    if (route.startsWith('/documents/') && path.length === 2 && method === 'GET') {
+      const { error } = await requireAuth(); if (error) return error;
+      const doc = db.select().from(s.grnDocuments).where(eq(s.grnDocuments.id, path[1])).get();
+      if (!doc) return err('Dokumen tidak ditemukan', 404);
+      const abs = nodePath.join(process.cwd(), 'data', 'uploads', doc.storageKey);
+      if (!fs.existsSync(abs)) return err('File tidak ditemukan di storage', 404);
+      const buf = fs.readFileSync(abs);
+      const disposition = (doc.contentType === 'application/pdf' || doc.contentType.startsWith('image/')) ? 'inline' : 'attachment';
+      return new NextResponse(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': doc.contentType,
+          'Content-Length': String(doc.sizeBytes || buf.length),
+          'Content-Disposition': `${disposition}; filename="${doc.originalName.replace(/"/g, '')}"`,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+
+    // DELETE /documents/:id - remove an uploaded GRN document
+    if (route.startsWith('/documents/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const doc = db.select().from(s.grnDocuments).where(eq(s.grnDocuments.id, path[1])).get();
+      if (!doc) return err('Dokumen tidak ditemukan', 404);
+      try { fs.unlinkSync(nodePath.join(process.cwd(), 'data', 'uploads', doc.storageKey)); } catch {}
+      db.delete(s.grnDocuments).where(eq(s.grnDocuments.id, path[1])).run();
+      return json({ ok: true });
     }
 
     // POST /purchase-orders/:id/payments - record payment

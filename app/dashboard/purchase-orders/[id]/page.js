@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown } from 'lucide-react';
+import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
@@ -248,45 +248,150 @@ function ItemsTab({ po, onSaved, canEdit }) {
 
 function GrnTab({ po, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
-  const [receivedDate, setReceivedDate] = useState(new Date().toISOString().slice(0,10));
+  const [receivedDate, setReceivedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [sjNumber, setSjNumber] = useState('');
+  const [driverName, setDriverName] = useState('');
+  const [vehicleNumber, setVehicleNumber] = useState('');
   const [notes, setNotes] = useState('');
+  const [rows, setRows] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [uploadingId, setUploadingId] = useState(null);
+  const fmt = (n) => 'Rp' + Number(n || 0).toLocaleString('id-ID');
+  const kg = (n) => Number(n || 0).toLocaleString('id-ID') + ' kg';
+
+  const openDialog = () => {
+    setRows((po.items || []).map(it => ({
+      productId: it.productId, name: it.product?.name || it.productId,
+      planWeight: Number(it.weight || 0), unitPrice: Number(it.unitPrice || 0),
+      receivedWeight: String(it.receivedWeight > 0 ? it.receivedWeight : (it.weight || 0)),
+      receivedQuantity: String(it.quantity || 0),
+    })));
+    setOpen(true);
+  };
+  const updRow = (pid, field, val) => setRows(prev => prev.map(r => r.productId === pid ? { ...r, [field]: val } : r));
+  const previewTotal = rows.reduce((a, r) => a + Number(r.unitPrice || 0) * Number(r.receivedWeight || 0), 0) + Number(po.additionalCost || 0);
+
   const create = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`/api/purchase-orders/${po.id}/grn`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ receivedDate, notes }) });
+      const items = rows.map(r => ({ productId: r.productId, receivedWeight: Number(r.receivedWeight || 0), receivedQuantity: Number(r.receivedQuantity || 0) }));
+      const res = await fetch(`/api/purchase-orders/${po.id}/grn`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ receivedDate, sjNumber, driverName, vehicleNumber, notes, items }),
+      });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success('GRN ' + j.data.grnNumber + ' dibuat');
-      setOpen(false); setNotes(''); onSaved();
+      toast.success('GRN ' + j.data.grnNumber + ' dibuat · Total PO direvisi ke ' + fmt(j.data.totalAmount));
+      setOpen(false); setNotes(''); setSjNumber(''); setDriverName(''); setVehicleNumber(''); onSaved();
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   };
+
+  const uploadDoc = async (grnId, file) => {
+    if (!file) return;
+    setUploadingId(grnId);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const res = await fetch(`/api/grns/${grnId}/documents`, { method: 'POST', body: fd });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal upload');
+      toast.success('Surat Jalan diunggah');
+      onSaved();
+    } catch (e) { toast.error(e.message); }
+    finally { setUploadingId(null); }
+  };
+  const deleteDoc = async (docId) => {
+    if (!confirm('Hapus dokumen ini?')) return;
+    try {
+      const res = await fetch(`/api/documents/${docId}`, { method: 'DELETE' });
+      if (!res.ok) { const j = await res.json(); throw new Error(j.error || 'Gagal'); }
+      toast.success('Dokumen dihapus'); onSaved();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const variance = Number(po.weightVariance || 0);
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <div><CardTitle className="text-base">Goods Received Notes (Tanda Terima)</CardTitle><CardDescription>Konfirmasi penerimaan barang dari supplier</CardDescription></div>
+        <div><CardTitle className="text-base">Goods Received Notes (Tanda Terima)</CardTitle><CardDescription>Konfirmasi berat & Surat Jalan supplier</CardDescription></div>
         {canOperate && ['Dikirim', 'Tanda Terima'].includes(po.pipelineStatus) && (
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button size="sm"><Truck className="w-4 h-4 mr-1" />Buat GRN</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>Buat Tanda Terima</DialogTitle></DialogHeader>
-              <div className="space-y-3">
-                <F label="Tanggal Terima"><Input type="date" value={receivedDate} onChange={e => setReceivedDate(e.target.value)} /></F>
+          <Dialog open={open} onOpenChange={(v) => v ? openDialog() : setOpen(false)}>
+            <DialogTrigger asChild><Button size="sm" onClick={openDialog}><Truck className="w-4 h-4 mr-1" />Terima Barang / GRN</Button></DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader><DialogTitle>Terima Barang — Konfirmasi Berat & Surat Jalan</DialogTitle></DialogHeader>
+              <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                <div className="grid grid-cols-2 gap-3">
+                  <F label="No. Surat Jalan (Supplier)"><Input value={sjNumber} onChange={e => setSjNumber(e.target.value)} placeholder="mis. SJ/2026/001" /></F>
+                  <F label="Tanggal Terima"><Input type="date" value={receivedDate} onChange={e => setReceivedDate(e.target.value)} /></F>
+                  <F label="Nama Supir"><Input value={driverName} onChange={e => setDriverName(e.target.value)} placeholder="opsional" /></F>
+                  <F label="No. Kendaraan"><Input value={vehicleNumber} onChange={e => setVehicleNumber(e.target.value)} placeholder="opsional" /></F>
+                </div>
+                <div>
+                  <div className="text-xs font-medium mb-1">Berat Diterima per Item (dari Surat Jalan)</div>
+                  <div className="border rounded-lg divide-y">
+                    <div className="grid grid-cols-12 gap-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground bg-muted/40">
+                      <div className="col-span-5">Produk</div><div className="col-span-2 text-right">Rencana</div>
+                      <div className="col-span-3 text-right">Berat Diterima (kg)</div><div className="col-span-2 text-right">Qty</div>
+                    </div>
+                    {rows.map(r => (
+                      <div key={r.productId} className="grid grid-cols-12 gap-2 px-2 py-1.5 items-center text-sm">
+                        <div className="col-span-5 truncate">{r.name}</div>
+                        <div className="col-span-2 text-right text-muted-foreground">{kg(r.planWeight)}</div>
+                        <div className="col-span-3"><Input type="number" className="h-8 text-right" value={r.receivedWeight} onChange={e => updRow(r.productId, 'receivedWeight', e.target.value)} /></div>
+                        <div className="col-span-2"><Input type="number" className="h-8 text-right" value={r.receivedQuantity} onChange={e => updRow(r.productId, 'receivedQuantity', e.target.value)} /></div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1.5">Total PO akan direvisi ke: <b className="text-foreground">{fmt(previewTotal)}</b> (harga × berat diterima + biaya tambahan)</div>
+                </div>
                 <F label="Catatan"><Textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></F>
               </div>
-              <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+              <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan & Revisi PO</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        {po.weightConfirmed && (
+          <div className={`rounded-lg border p-3 text-sm ${variance === 0 ? 'bg-muted/40' : variance < 0 ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+            <div className="flex items-center gap-2 font-medium"><Scale className="w-4 h-4" />Keterangan Berat</div>
+            <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
+              <div>Berat Rencana:<div className="font-semibold text-sm">{kg(po.totalPlanWeight)}</div></div>
+              <div>Berat Diterima (SJ):<div className="font-semibold text-sm">{kg(po.totalReceivedWeight)}</div></div>
+              <div>Selisih:<div className={`font-semibold text-sm ${variance < 0 ? 'text-amber-700' : variance > 0 ? 'text-blue-700' : ''}`}>{variance > 0 ? '+' : ''}{kg(variance)}</div></div>
+            </div>
+          </div>
+        )}
         {(po.grn || []).length === 0 ? <div className="text-center py-8 text-muted-foreground text-sm">Belum ada GRN</div> :
-          <div className="border rounded-lg divide-y">
+          <div className="space-y-2">
             {po.grn.map(g => (
-              <div key={g.id} className="p-3 flex items-center justify-between text-sm">
-                <div><div className="font-mono font-semibold">{g.grnNumber}</div><div className="text-xs text-muted-foreground">{format(new Date(g.receivedDate), 'dd MMM yyyy')} · {g.receivedBy}</div></div>
-                <Badge>{g.status}</Badge>
+              <div key={g.id} className="border rounded-lg p-3 text-sm space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-mono font-semibold">{g.grnNumber}{g.sjNumber ? <span className="ml-2 text-xs text-muted-foreground">SJ: {g.sjNumber}</span> : null}</div>
+                    <div className="text-xs text-muted-foreground">{format(new Date(g.receivedDate), 'dd MMM yyyy')} · {g.receivedBy} · Diterima {kg(g.totalReceivedWeight)}{g.driverName ? ` · ${g.driverName}` : ''}{g.vehicleNumber ? ` (${g.vehicleNumber})` : ''}</div>
+                  </div>
+                  <Badge>{g.status}</Badge>
+                </div>
+                {(g.items || []).length > 0 && (
+                  <div className="text-xs text-muted-foreground">{g.items.map(i => `${i.product?.name || ''}: ${kg(i.receivedWeight)}`).join(' · ')}</div>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {(g.documents || []).map(d => (
+                    <span key={d.id} className="inline-flex items-center gap-1 text-xs bg-muted rounded px-2 py-1">
+                      <FileText className="w-3.5 h-3.5" />
+                      <a href={d.viewUrl} target="_blank" rel="noopener noreferrer" className="underline max-w-[160px] truncate">{d.originalName}</a>
+                      {canOperate && <button onClick={() => deleteDoc(d.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-3 h-3" /></button>}
+                    </span>
+                  ))}
+                  {canOperate && (
+                    <label className="inline-flex items-center gap-1 text-xs cursor-pointer text-indigo-600 hover:text-indigo-800">
+                      {uploadingId === g.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                      <span>Upload Surat Jalan</span>
+                      <input type="file" className="hidden" accept="application/pdf,image/*" onChange={e => { uploadDoc(g.id, e.target.files?.[0]); e.target.value = ''; }} disabled={uploadingId === g.id} />
+                    </label>
+                  )}
+                </div>
               </div>
             ))}
           </div>}
