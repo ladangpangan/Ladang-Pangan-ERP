@@ -1263,8 +1263,14 @@ async function handleRoute(request, { params }) {
     const nextGrnNumber = () => {
       const ym = new Date();
       const prefix = `GRN/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.grn).where(like(s.grn.grnNumber, `${prefix}%`)).get();
-      const seq = String((Number(row?.c || 0) + 1)).padStart(4, '0');
+      // Gap-safe: ambil suffix numerik tertinggi lalu +1 (COUNT tidak aman jika ada GRN terhapus)
+      const rows = db.select({ n: s.grn.grnNumber }).from(s.grn).where(like(s.grn.grnNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) {
+        const suf = Number(String(r.n || '').slice(prefix.length));
+        if (Number.isFinite(suf) && suf > max) max = suf;
+      }
+      const seq = String(max + 1).padStart(4, '0');
       return `${prefix}${seq}`;
     };
     const nextReturnNumber = () => {
