@@ -362,6 +362,17 @@ function GrnTab({ po, onSaved, canOperate }) {
             </div>
           </div>
         )}
+        {po.tallyDone && (
+          <div className={`rounded-lg border p-3 text-sm ${Math.abs(po.tallyVariance) < 0.01 ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
+            <div className="flex items-center gap-2 font-medium"><Scale className="w-4 h-4" />Rekonsiliasi Tally (Timbang Ulang Inventory)</div>
+            <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
+              <div>Surat Jalan:<div className="font-semibold text-sm">{kg(po.totalReceivedWeight)}</div></div>
+              <div>Hasil Tally:<div className="font-semibold text-sm">{kg(po.tallyWeight)}</div></div>
+              <div>Selisih (Susut):<div className={`font-semibold text-sm ${Math.abs(po.tallyVariance) < 0.01 ? 'text-emerald-700' : 'text-amber-700'}`}>{po.tallyVariance > 0 ? '+' : ''}{kg(po.tallyVariance)}</div></div>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-1">{Math.abs(po.tallyVariance) < 0.01 ? 'Hasil timbang ulang sesuai dengan Surat Jalan.' : (po.tallyVariance < 0 ? 'Terjadi penyusutan dibanding Surat Jalan.' : 'Hasil tally lebih besar dari Surat Jalan — mohon dicek.')}</div>
+          </div>
+        )}
         {(po.grn || []).length === 0 ? <div className="text-center py-8 text-muted-foreground text-sm">Belum ada GRN</div> :
           <div className="space-y-2">
             {po.grn.map(g => (

@@ -12328,3 +12328,261 @@ agent_communication:
     -agent: "main"
     -message: "Test PHASE 1 goods-receipt: GRN with per-item received weight that revises PO total, plus Surat Jalan file upload/download. Steps and cleanup are detailed in the task comment. Login admin@lpi.co.id/admin123. IMPORTANT: capture the PO original total_amount before creating the GRN and restore it during cleanup (delete the created GRN, grn_items, grn_documents, reset received_weight to 0, revert pipeline_status to Draft, delete uploaded files)."
 
+
+#====================================================================================================
+# BACKEND TEST REQUEST (main agent) - PHASE 2/3: Tally reconciliation (SJ vs Tally) in PO & Inventory
+#====================================================================================================
+
+backend:
+  - task: "PHASE 2/3: Tally inbound reconciliation (Surat Jalan vs re-weigh) shown in PO detail & Inventory"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js, app/dashboard/inventory/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW: GET /api/purchase-orders/:id now returns tallyWeight (sum of inventory IN transactions where referenceType='PO' & referenceId=poId), tallyDone (bool), tallyVariance (tallyWeight - totalReceivedWeight). GET /api/inventory now enriches each stock's source (for sourceType='PO') with sjWeight, tallyWeight, tallyVariance (reconciliation summary of the source PO). No schema change (tally inbound already links via sourceBatch/referenceId).
+          NOTE: The only cold storage was previously deleted, so create a temporary one for testing and delete it after.
+          TEST (admin@lpi.co.id/admin123):
+          1. GET /api/purchase-orders -> find PO/202608/0006, get id. GET /api/purchase-orders/<id>; capture original total_amount, pipeline_status, and item productIds+weights.
+          2. Create GRN: POST /api/purchase-orders/<id>/grn { receivedDate: today, sjNumber:'SJ-P23', items: each item {productId, receivedWeight: item.weight, receivedQuantity: item.quantity} }. Expect 201. (This sets received/SJ weight = plan.)
+          3. Create a temp cold storage: POST /api/cold-storages { code:'CS-TMP-P23', name:'Temp P23', capacityKg:100000 } -> capture its id (from response data.id). If the endpoint needs other fields and returns 400, inspect the error and include required fields (e.g., location).
+          4. Tally inbound: POST /api/inventory/inbound { referenceType:'PO', referenceId:<poId>, coldStorageId:<tempCsId>, items: for each PO item {productId, weight: item.weight - 2, quantity: item.quantity, packagingType:'karung'} }. Expect 201; capture transactionId and created stockIds.
+          5. GET /api/purchase-orders/<id> -> VERIFY tallyDone==true, tallyWeight ≈ sum(item.weight-2), tallyVariance ≈ tallyWeight - totalReceivedWeight (should be negative, i.e., susut ~ -2 per item).
+          6. GET /api/inventory -> find a stock row with sourceType=='PO' and source.number=='PO/202608/0006'; VERIFY source.sjWeight>0, source.tallyWeight>0, source.tallyVariance is a number (negative).
+          7. CLEANUP (python3 sqlite3 /app/data/erp.db): delete inventory_stock where transaction_id=<txId> (or id in stockIds); delete inventory_transaction where id=<txId>; delete grn_documents/grn_items/grn for that PO's created GRN; update purchase_order set total_amount=<ORIG>, pipeline_status='<ORIG>' where id=<id>; update purchase_order_items set received_weight=0 where purchase_order_id=<id>; delete cold_storages where id=<tempCsId>. Confirm PO total restored & temp cold storage removed.
+          Report pass/fail per step with the tallyWeight/tallyVariance values and inventory source recon values, and confirm cleanup.
+
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ PHASE 2/3 TALLY RECONCILIATION - ALL TESTS PASSED (7/7 steps, 100%)
+          
+          Comprehensive backend testing completed for tally inbound reconciliation feature.
+          The implementation correctly tracks Surat Jalan weight vs actual tally re-weigh weight,
+          calculates variance (susut/shrinkage), and enriches both PO detail and inventory source objects.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: admin@lpi.co.id / admin123 (Better Auth cookie-based)
+          - Target PO: PO/202608/0006
+          - PO ID: 24b77a8c-9c6d-4422-a763-df79617f8d15
+          - Test method: curl (Python requests had cookie issues)
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Find PO/202608/0006 and capture original state (PASSED)
+             - PO found successfully
+             - PO ID: 24b77a8c-9c6d-4422-a763-df79617f8d15
+             - Original total_amount: Rp 10,624,000
+             - Original pipeline_status: Draft
+             - Items count: 1
+             - Item details:
+               * Product ID: 345b68df-945b-422a-84c0-3723ec8038dd
+               * Weight: 256 kg
+               * Quantity: 10
+          
+          ✅ STEP 2 — Create GRN with Surat Jalan weight (PASSED)
+             - Endpoint: POST /api/purchase-orders/{id}/grn
+             - Payload: receivedDate=2026-08-10, sjNumber=SJ-P23
+             - Items: productId, receivedWeight=256, receivedQuantity=10
+             - Result: 201 Created
+             - GRN ID: 78b199df-5789-4893-af03-860eb60e2b89
+             - **This establishes the SJ weight baseline (256 kg)**
+          
+          ✅ STEP 3 — Create temporary cold storage (PASSED)
+             - Endpoint: POST /api/cold-storages
+             - Payload: code=CS-TMP-P23, name=Temp P23, capacityKg=100000, location=Test Location
+             - Result: 201 Created
+             - Cold Storage ID: 6e5d609c-0b75-4cac-882e-5a22039ff0c2
+             - **Temporary storage created for tally inbound test**
+          
+          ✅ STEP 4 — Create tally inbound with reduced weight (susut) (PASSED)
+             - Endpoint: POST /api/inventory/inbound
+             - Payload: referenceType=PO, referenceId={poId}, coldStorageId={tempCsId}
+             - Items: productId, weight=254 (reduced by 2 kg), quantity=10, packagingType=karung
+             - Result: 201 Created
+             - Transaction ID: 8b914f06-52bd-4763-aca1-00e7f77eaf9f
+             - Stock IDs: ['3ebbe17a-021e-45d2-b853-e2acde01c31d']
+             - **Tally weight (254 kg) is 2 kg less than SJ weight (256 kg) = susut**
+          
+          ✅ STEP 5 — **CRITICAL TEST** — Verify PO tally reconciliation fields (PASSED)
+             - Endpoint: GET /api/purchase-orders/{id}
+             - Result: 200 OK
+             
+             **ACTUAL VALUES OBSERVED:**
+             - tallyDone: True ✓
+             - tallyWeight: 254 kg ✓
+             - tallyVariance: -2 kg ✓
+             - totalReceivedWeight: 256 kg (SJ weight)
+             
+             **EXPECTED VALUES:**
+             - tallyWeight: ~254 kg (sum of tally inbound weights)
+             - tallyVariance: ~-2 kg (tallyWeight - totalReceivedWeight = 254 - 256 = -2)
+             
+             **CRITICAL VERIFICATION:**
+             ✅ tallyDone == true (tally has been completed)
+             ✅ tallyWeight ≈ 254 (matches tally inbound weight)
+             ✅ tallyVariance = -2 (negative = susut/shrinkage)
+             ✅ Variance correctly calculated: tallyWeight - SJ weight = 254 - 256 = -2
+             
+             **THIS IS THE CORE FEATURE:**
+             - PO detail now shows tally reconciliation summary
+             - tallyWeight aggregates all inventory IN transactions for this PO
+             - tallyVariance shows difference between tally and SJ weight
+             - Negative variance indicates susut (weight loss during handling)
+          
+          ✅ STEP 6 — **CRITICAL TEST** — Verify inventory source enrichment (PASSED)
+             - Endpoint: GET /api/inventory/stocks (NOTE: not /api/inventory)
+             - Result: 200 OK
+             - Found stock with sourceType='PO' and source.number='PO/202608/0006'
+             - Stock ID: 3ebbe17a-021e-45d2-b853-e2acde01c31d
+             
+             **ACTUAL SOURCE VALUES OBSERVED:**
+             - source.sjWeight: 256 kg ✓
+             - source.tallyWeight: 254 kg ✓
+             - source.tallyVariance: -2 kg ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ source.sjWeight = 256 (> 0, matches GRN received weight)
+             ✅ source.tallyWeight = 254 (> 0, matches tally inbound weight)
+             ✅ source.tallyVariance = -2 (is a number, negative = susut)
+             
+             **THIS IS THE INVENTORY ENRICHMENT FEATURE:**
+             - Each inventory stock's source object now includes reconciliation data
+             - sjWeight: total received weight from GRN (Surat Jalan)
+             - tallyWeight: total tally weight from inventory inbound
+             - tallyVariance: difference (tally - SJ)
+             - This allows traceability of weight variance at the stock level
+          
+          ✅ STEP 7 — Cleanup and restore original state (PASSED)
+             - Deleted 1 inventory_stock record
+             - Deleted 1 inventory_transaction record
+             - Deleted 0 GRN document records
+             - Deleted 1 GRN item record
+             - Deleted 1 GRN record
+             - Restored PO total_amount to 10,624,000
+             - Restored PO pipeline_status to Draft
+             - Reset 1 PO item received_weight to 0
+             - Deleted 1 cold storage record (CS-TMP-P23)
+             
+             **VERIFICATION:**
+             ✅ PO total restored to 10,624,000 (original: 10,624,000)
+             ✅ tallyDone = False (reset correctly)
+             ✅ Temp cold storage CS-TMP-P23 removed
+             
+             **All cleanup operations completed successfully**
+          
+          === KEY FINDINGS ===
+          
+          ✅ **PO Tally Reconciliation (STEP 5)**:
+          - GET /api/purchase-orders/:id now returns 3 new fields:
+            * tallyDone (boolean): true if any tally inbound exists for this PO
+            * tallyWeight (number): sum of all inventory IN transaction weights where referenceType='PO' and referenceId=poId
+            * tallyVariance (number): tallyWeight - totalReceivedWeight (negative = susut)
+          - Implementation correctly aggregates tally weights from inventory_transaction
+          - Variance calculation accurate: 254 - 256 = -2 kg
+          - Negative variance correctly indicates weight loss (susut)
+          
+          ✅ **Inventory Source Enrichment (STEP 6)**:
+          - GET /api/inventory/stocks enriches each stock's source object (for sourceType='PO')
+          - Source object now includes:
+            * sjWeight: total received weight from GRN (Surat Jalan baseline)
+            * tallyWeight: total tally weight from inventory inbound (actual re-weigh)
+            * tallyVariance: difference between tally and SJ weight
+          - This provides reconciliation data at the stock level
+          - Enables traceability of weight variance per PO source
+          
+          ✅ **Data Flow Verification**:
+          1. GRN creation → sets received_weight (SJ weight) = 256 kg
+          2. Tally inbound → creates inventory stock with weight = 254 kg
+          3. PO detail → aggregates tally weight (254) and calculates variance (-2)
+          4. Inventory source → enriches with sjWeight (256), tallyWeight (254), tallyVariance (-2)
+          5. All data flows correctly through the system
+          
+          ✅ **Susut (Shrinkage) Tracking**:
+          - System correctly tracks weight loss during handling
+          - SJ weight (256 kg) = weight received according to supplier's delivery note
+          - Tally weight (254 kg) = actual weight after re-weighing at warehouse
+          - Variance (-2 kg) = susut (weight loss, possibly due to moisture loss, handling, etc.)
+          - Negative variance correctly indicates loss
+          
+          ✅ **Database Integrity**:
+          - No schema changes required (uses existing inventory_transaction linkage)
+          - Tally inbound links to PO via referenceType='PO' and referenceId=poId
+          - Stock links to PO via sourceBatch=poId and sourceType='PO'
+          - All relationships working correctly
+          
+          ✅ **Cleanup Verification**:
+          - All test data removed successfully
+          - PO restored to original state (total, status, received_weight)
+          - Temp cold storage removed
+          - No orphaned records left in database
+          - System ready for next test run
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Purchase Order (PO/202608/0006):
+          - ID: 24b77a8c-9c6d-4422-a763-df79617f8d15
+          - Original total: Rp 10,624,000
+          - Original status: Draft
+          - Item: 256 kg, 10 qty
+          
+          GRN (Surat Jalan):
+          - GRN ID: 78b199df-5789-4893-af03-860eb60e2b89
+          - SJ Number: SJ-P23
+          - Received weight: 256 kg (matches PO item weight)
+          
+          Tally Inbound:
+          - Transaction ID: 8b914f06-52bd-4763-aca1-00e7f77eaf9f
+          - Tally weight: 254 kg (2 kg less than SJ weight)
+          - Stock ID: 3ebbe17a-021e-45d2-b853-e2acde01c31d
+          
+          Reconciliation Values:
+          - SJ weight (baseline): 256 kg
+          - Tally weight (actual): 254 kg
+          - Variance (susut): -2 kg
+          - Variance %: -0.78% (2/256)
+          
+          Temp Cold Storage:
+          - ID: 6e5d609c-0b75-4cac-882e-5a22039ff0c2
+          - Code: CS-TMP-P23
+          - Name: Temp P23
+          - Capacity: 100,000 kg
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All tally reconciliation features working correctly.
+          PO detail correctly shows tallyWeight, tallyDone, tallyVariance.
+          Inventory source correctly enriched with sjWeight, tallyWeight, tallyVariance.
+          Susut (shrinkage) tracking accurate.
+          Data flow verified end-to-end.
+          Cleanup successful, original state restored.
+          
+          Test Coverage: 7/7 steps passed (100%)
+          - STEP 1: Find PO and capture original state ✓
+          - STEP 2: Create GRN with SJ weight ✓
+          - STEP 3: Create temporary cold storage ✓
+          - STEP 4: Create tally inbound with susut ✓
+          - STEP 5: Verify PO tally fields ✓
+          - STEP 6: Verify inventory source enrichment ✓
+          - STEP 7: Cleanup and restore ✓
+
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "Test PHASE 2/3 tally reconciliation. Full flow: create GRN (SJ weight) on PO/202608/0006, create a TEMP cold storage, do a tally inbound referencing that PO with slightly lower weights, then verify GET /api/purchase-orders/:id returns tallyWeight/tallyVariance and GET /api/inventory source object has sjWeight/tallyWeight/tallyVariance. Clean up EVERYTHING afterward (stocks, transaction, GRN, temp cold storage) and restore PO original total_amount & status. Login admin@lpi.co.id/admin123. Details in the task comment."
+    -agent: "testing"
+    -message: "✅ PHASE 2/3 tally reconciliation testing COMPLETE - ALL TESTS PASSED (7/7, 100%). Verified: (1) GET /api/purchase-orders/:id returns tallyWeight=254, tallyDone=true, tallyVariance=-2 (susut). (2) GET /api/inventory/stocks enriches source with sjWeight=256, tallyWeight=254, tallyVariance=-2. (3) Full flow tested: GRN creation → temp cold storage → tally inbound with reduced weight → PO reconciliation → inventory source enrichment → cleanup. All data flows correctly, variance calculation accurate (254-256=-2), cleanup successful. No critical issues found. Backend implementation working perfectly."
+
+

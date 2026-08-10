@@ -202,6 +202,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
         sourceType: r.sourceType || 'MANUAL',
         sourceNumber: r.source?.number || null,
         sourceOrderDate: r.source?.orderDate || r.source?.startDate || null,
+        recon: (r.sourceType === 'PO' && r.source) ? { sjWeight: r.source.sjWeight || 0, tallyWeight: r.source.tallyWeight || 0, tallyVariance: r.source.tallyVariance || 0 } : null,
         items: [],
         totalWeight: 0,
         productSet: new Set(),
@@ -251,6 +252,17 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
                 {g.sourceOrderDate && (
                   <div className="text-xs text-muted-foreground mt-0.5">
                     {format(new Date(g.sourceOrderDate), 'dd MMM yyyy')}
+                  </div>
+                )}
+                {g.recon && g.recon.sjWeight > 0 && (
+                  <div className="text-[11px] mt-1">
+                    <span className="text-muted-foreground">Ket: Surat Jalan </span>
+                    <b>{g.recon.sjWeight.toLocaleString('id-ID')} kg</b>
+                    <span className="text-muted-foreground"> · Tally </span>
+                    <b>{g.recon.tallyWeight.toLocaleString('id-ID')} kg</b>
+                    <span className={Math.abs(g.recon.tallyVariance) < 0.01 ? 'text-emerald-600' : 'text-amber-600'}>
+                      {' '}· Selisih {g.recon.tallyVariance > 0 ? '+' : ''}{g.recon.tallyVariance.toLocaleString('id-ID')} kg
+                    </span>
                   </div>
                 )}
               </div>

@@ -1430,11 +1430,19 @@ async function handleRoute(request, { params }) {
       const totalReceivedWeight = enrichedItems.reduce((a, it) => a + Number(it.receivedWeight || 0), 0);
       const weightConfirmed = grnRows.length > 0 && totalReceivedWeight > 0;
       const weightVariance = weightConfirmed ? Math.round((totalReceivedWeight - totalPlanWeight) * 100) / 100 : 0;
+      // Tally reconciliation: sum of inbound (re-weigh) transactions for this PO vs Surat Jalan received weight
+      const tallyRows = db.select({ w: sql`coalesce(sum(${s.inventoryTransaction.totalWeight}),0)`, c: sql`count(*)` })
+        .from(s.inventoryTransaction)
+        .where(and(eq(s.inventoryTransaction.transactionType, 'IN'), eq(s.inventoryTransaction.referenceType, 'PO'), eq(s.inventoryTransaction.referenceId, id))).get();
+      const tallyWeight = Math.round((Number(tallyRows?.w || 0)) * 100) / 100;
+      const tallyCount = Number(tallyRows?.c || 0);
+      const tallyDone = tallyCount > 0;
+      const tallyVariance = tallyDone ? Math.round((tallyWeight - totalReceivedWeight) * 100) / 100 : 0;
       const payments = db.select().from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, id)).orderBy(desc(s.purchasePayments.paymentDate)).all();
       const returns = db.select().from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, id)).orderBy(desc(s.purchaseReturns.returnDate)).all();
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const outstanding = Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - totalReturns;
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, weightConfirmed, weightVariance } });
+      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -3448,6 +3456,17 @@ async function handleRoute(request, { params }) {
           excludeReserved[oi.stockId].quantity += Number(oi.quantity || 0);
         }
       }
+      const _poReconMemo = {};
+      const poRecon = (poId) => {
+        if (_poReconMemo[poId] !== undefined) return _poReconMemo[poId];
+        const sj = db.select({ w: sql`coalesce(sum(${s.purchaseOrderItems.receivedWeight}),0)` }).from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, poId)).get();
+        const tw = db.select({ w: sql`coalesce(sum(${s.inventoryTransaction.totalWeight}),0)` }).from(s.inventoryTransaction).where(and(eq(s.inventoryTransaction.transactionType, 'IN'), eq(s.inventoryTransaction.referenceType, 'PO'), eq(s.inventoryTransaction.referenceId, poId))).get();
+        const sjWeight = Math.round(Number(sj?.w || 0) * 100) / 100;
+        const tallyWeight = Math.round(Number(tw?.w || 0) * 100) / 100;
+        const res = { sjWeight, tallyWeight, tallyVariance: Math.round((tallyWeight - sjWeight) * 100) / 100 };
+        _poReconMemo[poId] = res;
+        return res;
+      };
       const enriched = rows.map(r => {
         const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).where(eq(s.products.id, r.productId)).get();
         const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
@@ -3456,6 +3475,7 @@ async function handleRoute(request, { params }) {
         let source = null;
         if (r.sourceType === 'PO' && r.sourceBatch) {
           source = db.select({ id: s.purchaseOrder.id, number: s.purchaseOrder.poNumber, poType: s.purchaseOrder.poType, orderDate: s.purchaseOrder.orderDate }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.sourceBatch)).get();
+          if (source) source = { ...source, ...poRecon(r.sourceBatch) };
         } else if (r.sourceType === 'WO' && r.sourceBatch) {
           source = db.select({ id: s.workOrder.id, number: s.workOrder.woNumber, mode: s.workOrder.mode, startDate: s.workOrder.startDate }).from(s.workOrder).where(eq(s.workOrder.id, r.sourceBatch)).get();
         }
