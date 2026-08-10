@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CurrencyInput } from '@/components/ui/currency-input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -247,7 +248,7 @@ function ItemsTab({ po, onSaved, canEdit }) {
                   <TableCell className="text-right">{it.weight}</TableCell>
                   <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                   {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-20 ml-auto" value={it.headSupplier || 0} onChange={e => upd(i, 'headSupplier', Number(e.target.value))} /></TableCell>}
-                  {isLB && <TableCell className="text-right"><Input disabled={!canEdit} type="number" className="h-8 text-right w-24 ml-auto" value={it.weightSupplier || 0} onChange={e => upd(i, 'weightSupplier', Number(e.target.value))} /></TableCell>}
+                  {isLB && <TableCell className="text-right"><WeightInput disabled={!canEdit} className="h-8 text-right w-24 ml-auto" value={it.weightSupplier || 0} onChange={v => upd(i, 'weightSupplier', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-20 ml-auto" value={it.headRph || 0} onChange={v => upd(i, 'headRph', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-24 ml-auto" value={it.weightRph || 0} onChange={v => upd(i, 'weightRph', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><span className={susut > 0 ? 'text-red-600 font-semibold' : ''}>{susut.toFixed(2)}</span></TableCell>}
@@ -358,7 +359,7 @@ function GrnTab({ po, onSaved, canOperate }) {
                       <div key={r.productId} className="grid grid-cols-12 gap-2 px-2 py-1.5 items-center text-sm">
                         <div className="col-span-5 truncate">{r.name}</div>
                         <div className="col-span-2 text-right text-muted-foreground">{kg(r.planWeight)}</div>
-                        <div className="col-span-3"><Input type="number" className="h-8 text-right" value={r.receivedWeight} onChange={e => updRow(r.productId, 'receivedWeight', e.target.value)} /></div>
+                        <div className="col-span-3"><WeightInput className="h-8 text-right" value={r.receivedWeight} onChange={v => updRow(r.productId, 'receivedWeight', v)} /></div>
                         <div className="col-span-2"><Input type="number" className="h-8 text-right" value={r.receivedQuantity} onChange={e => updRow(r.productId, 'receivedQuantity', e.target.value)} /></div>
                       </div>
                     ))}
@@ -620,7 +621,7 @@ function ReturnsTab({ po, onSaved, canOperate }) {
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
                 <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
-                <F label="Berat (kg)"><Input type="number" value={form.totalWeight} onChange={e => setForm({ ...form, totalWeight: Number(e.target.value) })} /></F>
+                <F label="Berat (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buat Retur</Button></DialogFooter>

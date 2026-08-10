@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CurrencyInput } from '@/components/ui/currency-input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -138,7 +139,7 @@ function ArrivalTab({ wo, onSaved, canOperate }) {
       <CardHeader><CardTitle className="text-base">Kedatangan Live Bird</CardTitle><CardDescription>Catat total berat, total ekor, dan ekor mati. BW rata-rata dihitung otomatis.</CardDescription></CardHeader>
       <CardContent className="space-y-4">
         <div className="grid sm:grid-cols-3 gap-4">
-          <F label="Total Berat (kg) *"><Input type="number" value={form.totalWeight} onChange={e => setForm({ ...form, totalWeight: Number(e.target.value) })} disabled={!canOperate} /></F>
+          <F label="Total Berat (kg) *"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} disabled={!canOperate} placeholder="0" /></F>
           <F label="Total Ekor *"><Input type="number" value={form.totalHeadCount} onChange={e => setForm({ ...form, totalHeadCount: Number(e.target.value) })} disabled={!canOperate} /></F>
           <F label="Ekor Mati"><Input type="number" value={form.ekorMati} onChange={e => setForm({ ...form, ekorMati: Number(e.target.value) })} disabled={!canOperate} /></F>
           <F label="BW Rata-rata (kg/ekor)"><Input value={bwAvg} disabled /></F>
@@ -478,7 +479,7 @@ function OutputsTab({ wo, onSaved, canOperate, canEdit }) {
                   </Select>
                 </TableCell>
                 <TableCell><Select value={r.stage} onValueChange={v => upd(i, 'stage', v)} disabled={!canOperate}><SelectTrigger className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="karkas">Karkas</SelectItem><SelectItem value="boneless">Boneless</SelectItem><SelectItem value="parting">Parting</SelectItem><SelectItem value="by-product">By-Product</SelectItem></SelectContent></Select></TableCell>
-                <TableCell><Input type="number" className="h-9 text-right w-20 ml-auto" value={r.weight} onChange={e => upd(i, 'weight', Number(e.target.value))} disabled={!canOperate} /></TableCell>
+                <TableCell><WeightInput className="h-9 text-right w-20 ml-auto" value={r.weight} onChange={v => upd(i, 'weight', v)} disabled={!canOperate} /></TableCell>
                 <TableCell><Input type="number" className="h-9 text-right w-16 ml-auto" value={r.headCount} onChange={e => upd(i, 'headCount', Number(e.target.value))} disabled={!canOperate} /></TableCell>
                 <TableCell><Input type="number" step="0.01" className="h-9 text-right w-16 ml-auto" value={r.coefficient} onChange={e => upd(i, 'coefficient', Number(e.target.value))} disabled={!canOperate} /></TableCell>
                 <TableCell><Switch checked={!!r.isPremium} onCheckedChange={v => upd(i, 'isPremium', v)} disabled={!canOperate} /></TableCell>

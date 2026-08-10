@@ -7,6 +7,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -466,7 +467,7 @@ function SplitKarungButton({ stock, onDone }) {
           {packs.map((p, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-end">
               <div className="col-span-2 text-sm font-semibold">Pack {i + 1}</div>
-              <div className="col-span-4"><Label className="text-xs">Berat (kg)</Label><Input type="number" step="0.01" value={p.weight} onChange={e => upd(i, 'weight', Number(e.target.value))} /></div>
+              <div className="col-span-4"><Label className="text-xs">Berat (kg)</Label><WeightInput value={p.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
               <div className="col-span-4"><Label className="text-xs">Qty</Label><Input type="number" value={p.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} /></div>
               <div className="col-span-2"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
             </div>
