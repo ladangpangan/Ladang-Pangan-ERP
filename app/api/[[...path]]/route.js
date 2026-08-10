@@ -1345,20 +1345,61 @@ async function handleRoute(request, { params }) {
       const tW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : sjW;
       return basis === 'tally' ? tW : sjW;
     };
+    // Peta berat "Penerimaan Customer (SO)" per produk untuk SO dropship (fallback: berat kirim / pesanan)
+    const getSoRecvMap = (soId) => {
+      const map = {};
+      if (!soId) return map;
+      // Aggregate received weight from sales_order_receipt_items (customer receipts)
+      const receiptItems = db.select({
+        productId: s.salesOrderReceiptItems.productId,
+        receivedWeight: s.salesOrderReceiptItems.receivedWeight
+      })
+        .from(s.salesOrderReceiptItems)
+        .innerJoin(s.salesOrderReceipts, eq(s.salesOrderReceiptItems.receiptId, s.salesOrderReceipts.id))
+        .where(eq(s.salesOrderReceipts.salesOrderId, soId))
+        .all();
+      
+      if (receiptItems.length > 0) {
+        // Use actual receipt data if available
+        for (const ri of receiptItems) {
+          map[ri.productId] = (map[ri.productId] || 0) + Number(ri.receivedWeight || 0);
+        }
+      } else {
+        // Fallback to shipped/ordered weight if no receipts
+        const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+        for (const si of soItems) {
+          const w = Number(si.shippedWeight || 0) > 0 ? Number(si.shippedWeight) : Number(si.weight || 0);
+          map[si.productId] = (map[si.productId] || 0) + w;
+        }
+      }
+      return map;
+    };
     const computePoInvoice = (poId, basisArg) => {
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, poId)).get();
       if (!po) return { totalAmount: 0, basis: 'shipped' };
       const items = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, poId)).all();
-      const basis = ((basisArg || po.invoiceWeightBasis || 'shipped') === 'tally') ? 'tally' : 'shipped';
+      // Dropship: basis 'grn' (=Surat Jalan SO / GRN PO) atau 'so_receipt' (Penerimaan Customer SO). Non-dropship: 'shipped' / 'tally'.
+      let basis;
+      if (po.isDropship) {
+        const cand = basisArg || po.invoiceWeightBasis;
+        basis = ['grn', 'so_receipt'].includes(cand) ? cand : 'grn';
+      } else {
+        basis = ((basisArg || po.invoiceWeightBasis || 'shipped') === 'tally') ? 'tally' : 'shipped';
+      }
       const addCost = Number(po.additionalCost || 0);
-      const totalBill = items.reduce((a, it) => a + poBillWeight(it, basis), 0) || 1;
+      const soRecvMap = (po.isDropship && basis === 'so_receipt') ? getSoRecvMap(po.salesOrderId) : null;
+      const billOf = (it) => {
+        if (soRecvMap) return soRecvMap[it.productId] != null ? soRecvMap[it.productId] : poBillWeight(it, 'shipped');
+        return poBillWeight(it, basis === 'grn' ? 'shipped' : basis);
+      };
+      const totalBill = items.reduce((a, it) => a + billOf(it), 0) || 1;
       let subtotal = 0;
       for (const it of items) {
-        const billW = poBillWeight(it, basis);
+        const billW = billOf(it);
         const share = totalBill > 0 ? (billW / totalBill) * addCost : 0;
         const itemCost = Number(it.unitPrice || 0) * billW;
         subtotal += itemCost;
-        // HPP/kg dari rekonsiliasi tally (berat diterima riil)
+        // HPP/kg dari berat riil (tally bila ada, jika tidak = berat tagih)
         const tallyW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : billW;
         const hppPerKg = tallyW > 0 ? (itemCost + share) / tallyW : 0;
         db.update(s.purchaseOrderItems).set({ additionalCostShare: share, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
@@ -1368,9 +1409,14 @@ async function handleRoute(request, { params }) {
       return { totalAmount: finalTotal, basis };
     };
     // Preview total for a given basis WITHOUT persisting (for UI selector)
-    const previewPoTotal = (po, items, basis) => {
+    const previewPoTotal = (po, items, basis, soRecvMap) => {
       const addCost = Number(po.additionalCost || 0);
-      const subtotal = items.reduce((a, it) => a + Number(it.unitPrice || 0) * poBillWeight(it, basis), 0);
+      const subtotal = items.reduce((a, it) => {
+        let w;
+        if (basis === 'so_receipt' && soRecvMap) w = soRecvMap[it.productId] != null ? soRecvMap[it.productId] : poBillWeight(it, 'shipped');
+        else w = poBillWeight(it, basis === 'grn' ? 'shipped' : basis);
+        return a + Number(it.unitPrice || 0) * w;
+      }, 0);
       return Math.round((subtotal + addCost) * 100) / 100;
     };
 
@@ -1496,10 +1542,21 @@ async function handleRoute(request, { params }) {
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const outstanding = Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - totalReturns;
       const totalTallyWeight = Math.round(enrichedItems.reduce((a, it) => a + Number(it.tallyWeight || 0), 0) * 100) / 100;
-      const invoiceWeightBasis = po.invoiceWeightBasis || 'shipped';
+      const invoiceWeightBasis = po.invoiceWeightBasis || (po.isDropship ? 'grn' : 'shipped');
       const invoiceShippedTotal = previewPoTotal(po, enrichedItems, 'shipped');
       const invoiceTallyTotal = previewPoTotal(po, enrichedItems, 'tally');
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal } });
+      // Dropship: preview basis GRN PO vs Penerimaan Customer (SO) + link ke SO
+      let invoiceGrnTotal = null, invoiceSoReceiptTotal = null, linkedSalesOrder = null;
+      if (po.isDropship) {
+        const soRecvMap = getSoRecvMap(po.salesOrderId);
+        invoiceGrnTotal = previewPoTotal(po, enrichedItems, 'grn');
+        invoiceSoReceiptTotal = previewPoTotal(po, enrichedItems, 'so_receipt', soRecvMap);
+        if (po.salesOrderId) {
+          linkedSalesOrder = db.select({ id: s.salesOrder.id, soNumber: s.salesOrder.soNumber, pipelineStatus: s.salesOrder.pipelineStatus })
+            .from(s.salesOrder).where(eq(s.salesOrder.id, po.salesOrderId)).get() || null;
+        }
+      }
+      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -1875,7 +1932,9 @@ async function handleRoute(request, { params }) {
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
       const body = await request.json().catch(() => ({}));
-      const basis = body.basis === 'tally' ? 'tally' : 'shipped';
+      let basis;
+      if (po.isDropship) basis = (body.basis === 'so_receipt') ? 'so_receipt' : 'grn';
+      else basis = body.basis === 'tally' ? 'tally' : 'shipped';
       const res = computePoInvoice(id, basis);
       const upd = { invoiceWeightBasis: basis, updatedAt: new Date() };
       if (body.invoiceNumber !== undefined) upd.invoiceNumber = body.invoiceNumber || null;
@@ -1984,6 +2043,54 @@ async function handleRoute(request, { params }) {
       return { totalPaid, totalReturns, netTotal, paymentStatus: ps };
     };
 
+    // Sinkronkan GRN PO Dropship agar SAMA dengan Surat Jalan SO (berat kirim riil per produk).
+    // Membuat/menimpa satu GRN "auto" per SO, lalu recompute invoice PO + majukan status PO (siap invoice).
+    const syncDropshipPoGrn = (soId, userName) => {
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so || so.fulfillmentType !== 'dropship' || !so.autoPoId) return;
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get();
+      if (!po) return;
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+      const shippedByProduct = {};
+      for (const it of soItems) {
+        const eff = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
+        shippedByProduct[it.productId] = (shippedByProduct[it.productId] || 0) + eff;
+      }
+      const tag = `AUTO-SJ:${soId}`;
+      // hapus GRN auto lama untuk SO ini agar tidak dobel
+      const oldGrns = db.select().from(s.grn).where(and(eq(s.grn.purchaseOrderId, po.id), eq(s.grn.notes, tag))).all();
+      for (const og of oldGrns) {
+        db.delete(s.grnItems).where(eq(s.grnItems.grnId, og.id)).run();
+        db.delete(s.grn).where(eq(s.grn.id, og.id)).run();
+      }
+      const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.id)).all();
+      const grnId = uuidv4();
+      const totalRecv = poItems.reduce((a, it) => a + (shippedByProduct[it.productId] || 0), 0);
+      const sjRef = db.select({ n: s.suratJalan.sjNumber }).from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, soId)).orderBy(desc(s.suratJalan.createdAt)).get();
+      db.insert(s.grn).values({
+        id: grnId, grnNumber: nextGrnNumber(), purchaseOrderId: po.id,
+        receivedDate: new Date(), receivedBy: userName || 'Sistem (Auto SJ)',
+        sjNumber: sjRef?.n || null, driverName: null, vehicleNumber: null,
+        totalReceivedWeight: totalRecv, notes: tag, status: 'confirmed', createdAt: new Date(),
+      }).run();
+      for (const it of poItems) {
+        const recvW = shippedByProduct[it.productId] || 0;
+        db.insert(s.grnItems).values({
+          id: uuidv4(), grnId, productId: it.productId,
+          planWeight: Number(it.weight || 0), receivedWeight: recvW, receivedQuantity: 0,
+        }).run();
+        db.update(s.purchaseOrderItems).set({ receivedWeight: recvW }).where(eq(s.purchaseOrderItems.id, it.id)).run();
+      }
+      // hitung ulang invoice PO memakai basis dropship (default grn = Surat Jalan SO / GRN PO)
+      const basis = (po.invoiceWeightBasis === 'so_receipt') ? 'so_receipt' : 'grn';
+      computePoInvoice(po.id, basis);
+      // 5a: majukan status PO dropship ke 'Tanda Terima' (siap invoice) jika belum
+      if (!['Tanda Terima', 'Selesai', 'Dibatalkan'].includes(po.pipelineStatus)) {
+        db.update(s.purchaseOrder).set({ pipelineStatus: 'Tanda Terima', updatedAt: new Date() }).where(eq(s.purchaseOrder.id, po.id)).run();
+      }
+    };
+
+
     // GET /sales-orders
     if (route === '/sales-orders' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -2088,6 +2195,7 @@ async function handleRoute(request, { params }) {
             id: poId, poNumber: poNum, supplierId: body.supplierId,
             poType: 'Produk Jadi', method: null, orderDate: nowP, expectedDate: expectedDate,
             pipelineStatus: 'Draft', isDropship: true, dropshipCustomerId: body.customerId,
+            salesOrderId: id,
             additionalCost: 0, dpAmount: 0, notes: `Auto dari SO Dropship ${soNumber}`,
             createdBy: session.user.email, createdAt: nowP, updatedAt: nowP,
           }).run();
@@ -2254,7 +2362,13 @@ async function handleRoute(request, { params }) {
       const grossProfit = Math.round(revenue - cogsTotal - sellerShipping);
       const grossMarginPct = revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : 0;
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated } });
+      // Link ke PO Dropship terkait (klik langsung pindah)
+      let linkedPurchaseOrder = null;
+      if (so.fulfillmentType === 'dropship' && so.autoPoId) {
+        linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
+          .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
+      }
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
@@ -2613,20 +2727,9 @@ async function handleRoute(request, { params }) {
           db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
         }
         db.update(s.salesOrder).set({ totalAmount: subT - discT, discountTotal: discT, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
-        // 2) Untuk SO Dropship, sinkronkan berat PO otomatis ke berat kirim riil lalu hitung ulang HPP/total PO
+        // 2) Untuk SO Dropship: sinkronkan GRN PO otomatis = berat kirim Surat Jalan (SJ SO = GRN PO), lalu recompute HPP/total PO + majukan status PO
         if (so.fulfillmentType === 'dropship' && so.autoPoId) {
-          const shippedByProduct = {};
-          for (const it of soItemsNow) {
-            const eff = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
-            shippedByProduct[it.productId] = (shippedByProduct[it.productId] || 0) + eff;
-          }
-          const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, so.autoPoId)).all();
-          for (const pit of poItems) {
-            if (shippedByProduct[pit.productId] !== undefined) {
-              db.update(s.purchaseOrderItems).set({ weight: shippedByProduct[pit.productId] }).where(eq(s.purchaseOrderItems.id, pit.id)).run();
-            }
-          }
-          recalcPoHpp(so.autoPoId);
+          syncDropshipPoGrn(id, session.user.name);
         }
       }
       // Auto-transition Packed -> Shipped when SJ created + create Shipping concern

@@ -69,6 +69,13 @@ export default function PODetailPage() {
             {po.isDropship && <Badge variant="secondary" className="bg-purple-100 text-purple-700">Dropship</Badge>}
           </div>
           <p className="text-muted-foreground text-sm mt-1">{po.supplier?.displayName} · {po.orderDate && format(new Date(po.orderDate), 'dd MMM yyyy')}</p>
+          {po.isDropship && po.linkedSalesOrder && (
+            <Link href={`/dashboard/sales-orders/${po.linkedSalesOrder.id}`} className="inline-flex items-center gap-1.5 mt-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 transition">
+              <ShoppingCart className="w-3.5 h-3.5" /> SO terkait: {po.linkedSalesOrder.soNumber}
+              <Badge variant="outline" className="ml-1 text-[10px] border-indigo-300">{po.linkedSalesOrder.pipelineStatus}</Badge>
+              <ArrowLeft className="w-3 h-3 rotate-180" />
+            </Link>
+          )}
         </div>
         {canEdit && allowedNext.length > 0 && (
           <div className="flex gap-2 flex-wrap">
@@ -484,7 +491,8 @@ function PaymentsTab({ po, onSaved, canEdit }) {
 }
 
 function InvoiceBasisCard({ po, onSaved }) {
-  const [basis, setBasis] = useState(po.invoiceWeightBasis || 'shipped');
+  const isDrop = !!po.isDropship;
+  const [basis, setBasis] = useState(po.invoiceWeightBasis || (isDrop ? 'grn' : 'shipped'));
   const [invoiceNumber, setInvoiceNumber] = useState(po.invoiceNumber || '');
   const [invoiceDate, setInvoiceDate] = useState(po.invoiceDate ? new Date(po.invoiceDate).toISOString().slice(0, 10) : '');
   const [saving, setSaving] = useState(false);
@@ -493,7 +501,10 @@ function InvoiceBasisCard({ po, onSaved }) {
   const tallyAvailable = Number(po.totalTallyWeight || 0) > 0;
   const shippedTotal = Number(po.invoiceShippedTotal ?? po.totalAmount ?? 0);
   const tallyTotal = Number(po.invoiceTallyTotal ?? po.totalAmount ?? 0);
-  const selectedTotal = basis === 'tally' ? tallyTotal : shippedTotal;
+  const grnTotal = Number(po.invoiceGrnTotal ?? po.totalAmount ?? 0);
+  const soReceiptTotal = Number(po.invoiceSoReceiptTotal ?? po.totalAmount ?? 0);
+  const basisLabel = (b) => ({ grn: 'GRN PO / Surat Jalan SO', so_receipt: 'Penerimaan Customer (SO)', tally: 'Rekonsiliasi Tally', shipped: 'Surat Jalan' }[b] || b);
+  const selectedTotal = isDrop ? (basis === 'so_receipt' ? soReceiptTotal : grnTotal) : (basis === 'tally' ? tallyTotal : shippedTotal);
   const apply = async () => {
     setSaving(true);
     try {
@@ -503,7 +514,7 @@ function InvoiceBasisCard({ po, onSaved }) {
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success(`Total tagihan diterapkan: ${fmt(j.data.totalAmount)} (basis: ${basis === 'tally' ? 'Rekonsiliasi Tally' : 'Surat Jalan'})`);
+      toast.success(`Total tagihan diterapkan: ${fmt(j.data.totalAmount)} (basis: ${basisLabel(j.data.invoiceWeightBasis || basis)})`);
       onSaved();
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
@@ -525,15 +536,28 @@ function InvoiceBasisCard({ po, onSaved }) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2"><Receipt className="w-4 h-4" />Basis Invoice PO</CardTitle>
-        <CardDescription>Pilih dasar perhitungan total tagihan ke supplier: berat <b>Surat Jalan (dikirim)</b> atau hasil <b>Rekonsiliasi Tally (diterima)</b>.</CardDescription>
+        <CardTitle className="text-base flex items-center gap-2"><Receipt className="w-4 h-4" />Basis Invoice PO {isDrop && <Badge variant="outline" className="border-indigo-300 text-indigo-700 text-[10px]">Dropship</Badge>}</CardTitle>
+        <CardDescription>
+          {isDrop
+            ? <>Dropship: pilih dasar tagihan supplier — berat <b>GRN PO / Surat Jalan SO</b> (dikirim) atau <b>Penerimaan Customer (SO)</b>. Barang tidak masuk gudang, jadi <b>tanpa Rekonsiliasi Tally</b>.</>
+            : <>Pilih dasar perhitungan total tagihan ke supplier: berat <b>Surat Jalan (dikirim)</b> atau hasil <b>Rekonsiliasi Tally (diterima)</b>.</>}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-col sm:flex-row gap-3">
-          <Option value="shipped" title="Surat Jalan (Dikirim)" desc={`Berat SJ: ${kg(po.totalReceivedWeight)}`} total={shippedTotal} />
-          <Option value="tally" title="Rekonsiliasi Tally (Diterima)" desc={tallyAvailable ? `Berat Tally: ${kg(po.totalTallyWeight)}` : 'Belum ada data tally'} total={tallyTotal} disabled={!tallyAvailable} />
+          {isDrop ? (
+            <>
+              <Option value="grn" title="GRN PO / Surat Jalan SO" desc={`Berat kirim SJ = GRN: ${kg(po.totalReceivedWeight)}`} total={grnTotal} />
+              <Option value="so_receipt" title="Penerimaan Customer (SO)" desc="Berat riil diterima customer (setelah susut kirim)" total={soReceiptTotal} />
+            </>
+          ) : (
+            <>
+              <Option value="shipped" title="Surat Jalan (Dikirim)" desc={`Berat SJ: ${kg(po.totalReceivedWeight)}`} total={shippedTotal} />
+              <Option value="tally" title="Rekonsiliasi Tally (Diterima)" desc={tallyAvailable ? `Berat Tally: ${kg(po.totalTallyWeight)}` : 'Belum ada data tally'} total={tallyTotal} disabled={!tallyAvailable} />
+            </>
+          )}
         </div>
-        {!tallyAvailable && <div className="text-[11px] text-amber-600">Basis Tally aktif setelah barang ditimbang ulang lewat Tally Inbound.</div>}
+        {!isDrop && !tallyAvailable && <div className="text-[11px] text-amber-600">Basis Tally aktif setelah barang ditimbang ulang lewat Tally Inbound.</div>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <F label="No. Invoice Supplier (opsional)"><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} placeholder="mis. INV/2026/001" /></F>
           <F label="Tanggal Invoice (opsional)"><Input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} /></F>

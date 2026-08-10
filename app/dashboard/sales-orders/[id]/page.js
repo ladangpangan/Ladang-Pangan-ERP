@@ -88,9 +88,17 @@ export default function SODetailPage() {
             <h1 className="text-2xl font-bold tracking-tight">{so.soNumber}</h1>
             <Badge className={SO_STATUS_COLOR[so.pipelineStatus]}>{so.pipelineStatus}</Badge>
             {so.customer?.isSubscriber && <Badge variant="outline">Subscriber</Badge>}
+            {so.fulfillmentType === 'dropship' && <Badge variant="secondary" className="bg-purple-100 text-purple-700">Dropship</Badge>}
             {so.invoiceNumber && <Badge variant="secondary" className="font-mono">{so.invoiceNumber}</Badge>}
           </div>
           <p className="text-muted-foreground text-sm mt-1">{so.customer?.displayName} · {so.orderDate && format(new Date(so.orderDate), 'dd MMM yyyy')}</p>
+          {so.fulfillmentType === 'dropship' && so.linkedPurchaseOrder && (
+            <Link href={`/dashboard/purchase-orders/${so.linkedPurchaseOrder.id}`} className="inline-flex items-center gap-1.5 mt-1.5 rounded-md border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 transition">
+              <Truck className="w-3.5 h-3.5" /> PO Dropship: {so.linkedPurchaseOrder.poNumber}
+              <Badge variant="outline" className="ml-1 text-[10px] border-purple-300">{so.linkedPurchaseOrder.pipelineStatus}</Badge>
+              <ArrowLeft className="w-3 h-3 rotate-180" />
+            </Link>
+          )}
         </div>
         {canEdit && allowedNext.length > 0 && (
           <div className="flex gap-2 flex-wrap">
