@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 import { id as idLocale } from 'date-fns/locale';
 import FloatingAIAssistant from '@/components/floating-ai-assistant';
+import { setPdfCompany } from '@/lib/pdf/invoice';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
@@ -62,6 +63,7 @@ const NAV = [
       { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur'] },
       { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur'] },
       { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['supervisor', 'direktur'] },
+      { href: '/dashboard/settings', label: 'Setting', icon: Settings, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
     ],
   },
 ];
@@ -78,6 +80,14 @@ export default function DashboardShell({ user, children }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const role = user?.role || 'operator';
+
+  // Muat profil perusahaan untuk header PDF (nama, alamat, kontak, logo)
+  useEffect(() => {
+    fetch('/api/settings/company', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (j?.data?.value) setPdfCompany(j.data.value); })
+      .catch(() => {});
+  }, []);
 
   const handleLogout = async () => {
     await authClient.signOut();
