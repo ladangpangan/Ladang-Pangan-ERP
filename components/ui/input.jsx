@@ -2,7 +2,11 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-const Input = React.forwardRef(({ className, type, ...props }, ref) => {
+const Input = React.forwardRef(({ className, type, value, ...props }, ref) => {
+  // Perbaikan UX: field angka bernilai 0 (number) tidak bisa di-backspace karena
+  // controlled value memaksa "0" muncul lagi. Tampilkan 0 sebagai kosong agar bisa
+  // dihapus & diketik ulang; gunakan placeholder untuk menampilkan 0 bila perlu.
+  const displayValue = (type === 'number' && value === 0) ? '' : value;
   return (
     <input
       type={type}
@@ -11,6 +15,7 @@ const Input = React.forwardRef(({ className, type, ...props }, ref) => {
         className
       )}
       ref={ref}
+      value={displayValue}
       {...props} />
   );
 })
