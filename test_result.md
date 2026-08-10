@@ -12919,3 +12919,15 @@ agent_communication:
       - Switch invoice basis (tally ↔ shipped) ✓
       - Verify HPP uses tally weight ✓
       - Cleanup ✓
+
+
+test_plan:
+  current_focus:
+    - "Tally Inbound revamp: 2-step wizard, Kode Simpan preview, SJ remaining, report/CSV"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "FRONTEND TEST (pending user approval) for revamped Tally Inbound at /tally/inbound. Login admin@lpi.co.id/admin123. NOTE: there are currently NO cold storages in DB (all were test data, removed). The test agent should FIRST create a cold storage via POST /api/cold-storages (e.g. {code:'CS-QA', name:'CS QA', capacity:100000, address:'-'}) so step 1 can proceed; clean it up after. Also a PO with GRN Surat Jalan (receivedWeight>0) is needed to show SJ remaining - PO/202608/0013 has received_weight=2483 for Boneless Paha Premium; if usable pick it, else just verify non-SJ behavior. THINGS TO VERIFY: (1) Two-step wizard: Step 1 shows 'Lokasi Penyimpanan' (Cold Storage + Zona) and 'Referensi Sumber'; a 'Lanjut ke Input Item' button (disabled until Cold Storage chosen and, if PO/WO selected, a ref chosen). Step 2 shows 'Input Item'. A step indicator (1/2) and an 'Ubah' button to go back. (2) KODE SIMPAN: In step 2 a centered medium 'Kode Simpan' code is shown (format YYMMDDxxxx). When you click 'Catat' (after choosing product + weight), the displayed Kode Simpan advances to the NEXT code automatically, and the staged item keeps the previously shown code (check 'Daftar' dialog shows the kode per item). (3) FIELDS PERSIST on Catat: after clicking Catat, Produk, Jenis Kemasan, and Kadaluarsa remain filled; only Berat resets to empty. (4) SISA SJ: For a PO with SJ weight, a grey box shows 'Berat Dikirim (Surat Jalan)', 'Sudah di-tally', and 'Sisa belum di-tally' which DECREASES each time you Catat that product. A 'Pakai sisa SJ (X kg)' button fills the weight with remaining. (5) SIMPAN: after Simpan, a report dialog 'Laporan Tally Inbound' opens automatically listing each item with Kode Simpan, product, packaging, weight and TOTAL, plus an 'Unduh Laporan (CSV)' button that downloads a CSV. A green banner also stays with 'Lihat Laporan' + 'Unduh (CSV)'. Verify inbound POST succeeds (stocks created with the assigned kodeSimpan) and no console errors. CLEAN UP any stock/transaction/cold storage created during the test."
