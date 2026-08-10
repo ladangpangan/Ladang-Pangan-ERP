@@ -454,7 +454,7 @@ export default function TallyInboundPage() {
                 {currentSjWeight > 0 ? (
                   <>
                     <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Berat Surat Jalan (referensi)</span>
+                      <span className="text-muted-foreground">Berat Dikirim (Surat Jalan)</span>
                       <span className="font-semibold text-slate-700">{currentSjWeight} kg</span>
                     </div>
                     {currentStagedWeight > 0 && (
@@ -465,7 +465,7 @@ export default function TallyInboundPage() {
                     )}
                     {currentVariance !== null && (
                       <div className="flex items-center justify-between pt-0.5 border-t border-slate-200">
-                        <span className="text-muted-foreground">Selisih (Tally − SJ)</span>
+                        <span className="text-muted-foreground">Selisih (Diterima − Dikirim)</span>
                         <span className={`font-bold ${currentVariance < 0 ? 'text-amber-600' : currentVariance > 0 ? 'text-blue-600' : 'text-emerald-600'}`}>
                           {currentVariance > 0 ? '+' : ''}{currentVariance} kg
                           {currentSjWeight > 0 && ` (${currentVariance > 0 ? '+' : ''}${Math.round((currentVariance / currentSjWeight) * 1000) / 10}%)`}
