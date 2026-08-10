@@ -1556,6 +1556,18 @@ async function handleRoute(request, { params }) {
             .from(s.salesOrder).where(eq(s.salesOrder.id, po.salesOrderId)).get() || null;
         }
       }
+      // Berat tertagih per item (billedWeight) sesuai basis invoice terpilih -> dipakai PDF PO/Invoice
+      {
+        const eb = invoiceWeightBasis;
+        const soRecvMapBill = (po.isDropship && eb === 'so_receipt') ? getSoRecvMap(po.salesOrderId) : null;
+        for (const it of enrichedItems) {
+          let bw;
+          if (soRecvMapBill) bw = soRecvMapBill[it.productId] != null ? soRecvMapBill[it.productId] : poBillWeight(it, 'shipped');
+          else bw = poBillWeight(it, eb === 'grn' ? 'shipped' : eb);
+          it.billedWeight = Math.round(Number(bw || 0) * 1000) / 1000;
+          it.billedBasis = eb;
+        }
+      }
       return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder } });
     }
 
@@ -2338,6 +2350,20 @@ async function handleRoute(request, { params }) {
         it.cogs = Math.round(allocs.reduce((a, b) => a + Number(b.hppPerKg || 0) * Number(b.weight || 0), 0));
         it.hppAvgPerKg = it.allocatedWeight > 0 ? Math.round(it.cogs / it.allocatedWeight) : 0;
         cogsTotal += it.cogs;
+      }
+      // Dropship: COGS = HPP PO Dropship (biaya beli ke supplier), bukan alokasi stok gudang
+      if (so.fulfillmentType === 'dropship' && so.autoPoId) {
+        const poRow = db.select({ total: s.purchaseOrder.totalAmount }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get();
+        const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, so.autoPoId)).all();
+        const poHppByProduct = {};
+        for (const pit of poItems) poHppByProduct[pit.productId] = Number(pit.hppPerKg || 0);
+        for (const it of enrichedItems) {
+          const w = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0);
+          const hpp = poHppByProduct[it.productId] || 0;
+          it.cogs = Math.round(hpp * w);
+          it.hppAvgPerKg = Math.round(hpp);
+        }
+        cogsTotal = Number(poRow?.total || enrichedItems.reduce((a, it) => a + Number(it.cogs || 0), 0));
       }
       const customer = db.select().from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
       const sjRows = db.select().from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, id)).orderBy(desc(s.suratJalan.deliveryDate)).all();
