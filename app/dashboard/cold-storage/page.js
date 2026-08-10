@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -83,7 +84,7 @@ export default function ColdStoragePage() {
               <F label="Nama *"><Input value={csForm.name} onChange={e => setCsForm({ ...csForm, name: e.target.value })} /></F>
               <F label="Lokasi" className="col-span-2"><Input value={csForm.location || ''} onChange={e => setCsForm({ ...csForm, location: e.target.value })} /></F>
               <F label="Rentang Suhu"><Input value={csForm.temperatureRange || ''} onChange={e => setCsForm({ ...csForm, temperatureRange: e.target.value })} placeholder="-18 to -22 C" /></F>
-              <F label="Kapasitas (kg)"><Input type="number" value={csForm.capacityKg} onChange={e => setCsForm({ ...csForm, capacityKg: Number(e.target.value) })} /></F>
+              <F label="Kapasitas (kg)"><WeightInput value={csForm.capacityKg} onChange={v => setCsForm({ ...csForm, capacityKg: v })} placeholder="0" /></F>
               <F label="Status">
                 <Select value={csForm.status} onValueChange={v => setCsForm({ ...csForm, status: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>

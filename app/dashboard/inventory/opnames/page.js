@@ -7,6 +7,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -170,7 +171,7 @@ function OpnameDetailDialog({ id, onClose, onRefresh, canApprove, canCreate }) {
                   <TableCell className="text-right">{it.systemQty}</TableCell>
                   <TableCell><Input type="number" className="h-8 text-right w-20 ml-auto" value={it.physicalQty} onChange={e => upd(it.id, 'physicalQty', e.target.value)} disabled={!editable} /></TableCell>
                   <TableCell className="text-right">{Number(it.systemWeight).toFixed(2)}</TableCell>
-                  <TableCell><Input type="number" step="0.01" className="h-8 text-right w-24 ml-auto" value={it.physicalWeight} onChange={e => upd(it.id, 'physicalWeight', e.target.value)} disabled={!editable} /></TableCell>
+                  <TableCell><WeightInput className="h-8 text-right w-24 ml-auto" value={it.physicalWeight} onChange={v => upd(it.id, 'physicalWeight', v)} disabled={!editable} /></TableCell>
                   <TableCell className={`text-right ${dq < 0 ? 'text-red-600' : dq > 0 ? 'text-emerald-600' : ''}`}>{dq}</TableCell>
                   <TableCell className={`text-right ${dw < 0 ? 'text-red-600' : dw > 0 ? 'text-emerald-600' : ''}`}>{dw.toFixed(2)}</TableCell>
                 </TableRow>

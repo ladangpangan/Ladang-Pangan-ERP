@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CurrencyInput } from '@/components/ui/currency-input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -291,7 +292,7 @@ function CreatePODialog({ onSaved }) {
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Berat (kg)</Label>
-                  <Input type="number" placeholder="0" value={it.weight} onChange={e => updItem(i, 'weight', Number(e.target.value))} />
+                  <WeightInput placeholder="0" value={it.weight} onChange={v => updItem(i, 'weight', v)} />
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Harga/kg (Rp)</Label>

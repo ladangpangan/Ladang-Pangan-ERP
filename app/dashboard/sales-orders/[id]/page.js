@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CurrencyInput } from '@/components/ui/currency-input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -506,7 +507,7 @@ function SjTab({ so, onSaved, canOperate }) {
                     {(so.items || []).map(it => (
                       <div key={it.id} className="flex items-center gap-2 text-sm">
                         <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
-                        <Input type="number" className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={e => setItemWeights(w => ({ ...w, [it.id]: e.target.value }))} placeholder="kg riil" />
+                        <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
                       </div>
                     ))}
                   </div>
@@ -750,7 +751,7 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
                 <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
-                <F label="Berat (kg)"><Input type="number" value={form.totalWeight} onChange={e => setForm({ ...form, totalWeight: Number(e.target.value) })} /></F>
+                <F label="Berat (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buat Retur</Button></DialogFooter>

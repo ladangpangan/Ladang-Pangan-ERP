@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { WeightInput } from '@/components/ui/weight-input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -730,12 +731,11 @@ export default function TallyInboundPage() {
                     </Button>
                   )}
                 </div>
-                <Input
-                  type="number" inputMode="decimal" step="0.1"
+                <WeightInput
                   value={draft.weight}
-                  onChange={(e) => setDraft({ ...draft, weight: e.target.value })}
+                  onChange={(v) => setDraft({ ...draft, weight: v })}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); catat(); } }}
-                  className="text-xl font-bold h-12" placeholder="0.0"
+                  className="text-xl font-bold h-12" placeholder="0,0"
                 />
                 {refType === 'PO' && draft.productId && (
                   <div className="text-[11px] rounded-md bg-slate-100 px-2 py-1.5 space-y-0.5">
