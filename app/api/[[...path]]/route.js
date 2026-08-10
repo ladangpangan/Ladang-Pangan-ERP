@@ -3832,7 +3832,7 @@ async function handleRoute(request, { params }) {
         if (!hppPerKg) hppPerKg = getProductHpp(it.productId);
         db.insert(s.inventoryStock).values({
           id: stkId, productId: it.productId,
-          coldStorageId: body.coldStorageId, zoneId: body.zoneId || null,
+          coldStorageId: body.coldStorageId, zoneId: it.zoneId || body.zoneId || null,
           kodeSimpan,
           packagingType: it.packagingType || 'karung',
           quantity: Number(it.quantity || 0),
