@@ -12931,3 +12931,198 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: "FRONTEND TEST (pending user approval) for revamped Tally Inbound at /tally/inbound. Login admin@lpi.co.id/admin123. NOTE: there are currently NO cold storages in DB (all were test data, removed). The test agent should FIRST create a cold storage via POST /api/cold-storages (e.g. {code:'CS-QA', name:'CS QA', capacity:100000, address:'-'}) so step 1 can proceed; clean it up after. Also a PO with GRN Surat Jalan (receivedWeight>0) is needed to show SJ remaining - PO/202608/0013 has received_weight=2483 for Boneless Paha Premium; if usable pick it, else just verify non-SJ behavior. THINGS TO VERIFY: (1) Two-step wizard: Step 1 shows 'Lokasi Penyimpanan' (Cold Storage + Zona) and 'Referensi Sumber'; a 'Lanjut ke Input Item' button (disabled until Cold Storage chosen and, if PO/WO selected, a ref chosen). Step 2 shows 'Input Item'. A step indicator (1/2) and an 'Ubah' button to go back. (2) KODE SIMPAN: In step 2 a centered medium 'Kode Simpan' code is shown (format YYMMDDxxxx). When you click 'Catat' (after choosing product + weight), the displayed Kode Simpan advances to the NEXT code automatically, and the staged item keeps the previously shown code (check 'Daftar' dialog shows the kode per item). (3) FIELDS PERSIST on Catat: after clicking Catat, Produk, Jenis Kemasan, and Kadaluarsa remain filled; only Berat resets to empty. (4) SISA SJ: For a PO with SJ weight, a grey box shows 'Berat Dikirim (Surat Jalan)', 'Sudah di-tally', and 'Sisa belum di-tally' which DECREASES each time you Catat that product. A 'Pakai sisa SJ (X kg)' button fills the weight with remaining. (5) SIMPAN: after Simpan, a report dialog 'Laporan Tally Inbound' opens automatically listing each item with Kode Simpan, product, packaging, weight and TOTAL, plus an 'Unduh Laporan (CSV)' button that downloads a CSV. A green banner also stays with 'Lihat Laporan' + 'Unduh (CSV)'. Verify inbound POST succeeds (stocks created with the assigned kodeSimpan) and no console errors. CLEAN UP any stock/transaction/cold storage created during the test."
+
+  - task: "NEW: GET /api/dashboard/supplier-shrinkage endpoint"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW dashboard endpoint for supplier shrinkage analysis. Aggregates purchase_order_items where received_weight > 0 and PO pipeline_status != 'Dibatalkan'. Returns per-supplier summary with:
+          - sjWeight (sum of receivedWeight from Surat Jalan)
+          - tallyWeight (sum of tallyWeight from inventory inbound)
+          - poCount (number of unique POs)
+          - tallyDone (boolean, true if tallyWeight > 0)
+          - susut (sjWeight - tallyWeight, only when tallyDone)
+          - susutPct (susut/sjWeight * 100 rounded to 1 decimal, null when tally not done)
+          Plus totals object with aggregated values.
+          Access control: admin/supervisor/direktur only (operator gets 403).
+          TEST: Login admin@lpi.co.id/admin123. GET /api/dashboard/supplier-shrinkage → 200 with correct JSON structure. Verify CV. Ratu Indonesia (PO/202608/0013) appears with sjWeight=2483, tallyWeight=0, tallyDone=false, susut=0, susutPct=null. Test access control: no auth → 401, operator → 403.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ NEW DASHBOARD ENDPOINT VERIFIED - ALL TESTS PASSED (3/3, 100%)
+          
+          Comprehensive backend testing completed for the NEW GET /api/dashboard/supplier-shrinkage endpoint.
+          The endpoint correctly aggregates Surat Jalan weight vs Tally weight per supplier.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (curl)
+          - Credentials tested: admin@lpi.co.id/admin123, operator@lpi.co.id/operator123
+          - Test method: curl (Python requests had cookie issues)
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Authenticated Request (Admin) - PASSED
+             - Login successful as admin@lpi.co.id ✓
+             - GET /api/dashboard/supplier-shrinkage → 200 ✓
+             - Response has correct structure: { data: [...], totals: {...} } ✓
+             - 'data' is an array with 1 supplier ✓
+             - 'totals' has all required fields: sjWeight, tallyWeight, susut, susutPct ✓
+             
+             **Totals Values:**
+             - sjWeight: 2483 kg
+             - tallyWeight: 0 kg
+             - susut: 0 kg
+             - susutPct: 0%
+             
+             **CV. Ratu Indonesia Found:**
+             - supplierId: 4215a0c1-3b6d-4290-892f-d29dad8bea62 ✓
+             - supplierName: CV. Ratu Indonesia ✓
+             - supplierCode: RPH-001 ✓
+             - poCount: 1 (number type) ✓
+             - sjWeight: 2483 kg (number type) ✓
+             - tallyWeight: 0 kg (number type) ✓
+             - tallyDone: false (boolean type) ✓
+             - susut: 0 kg (number type) ✓
+             - susutPct: null (null type) ✓
+             
+             **Data Row Structure Verified:**
+             ✅ All required fields present: supplierId, supplierName, supplierCode, poCount, sjWeight, tallyWeight, tallyDone, susut, susutPct
+             ✅ All field types correct (numbers, boolean, null)
+             
+             **Business Logic Verified:**
+             ✅ sjWeight = 2483 (matches PO/202608/0013 received_weight)
+             ✅ tallyDone = false (no tally done yet, tallyWeight = 0)
+             ✅ susut = 0 (only calculated when tallyDone = true)
+             ✅ susutPct = null (only calculated when tallyDone = true)
+             
+             **This matches the expected behavior from the review request:**
+             - PO/202608/0013 (supplier CV. Ratu Indonesia) has received_weight=2483
+             - No tally done yet (tally_weight=0)
+             - Should appear with tallyDone=false, susut=0, susutPct=null ✓
+          
+          ✅ TEST 2 — Unauthenticated Request - PASSED
+             - GET /api/dashboard/supplier-shrinkage without auth → 401 ✓
+             - Correct error response: {"error":"Unauthorized"} ✓
+             - Access control working correctly ✓
+          
+          ✅ TEST 3 — Operator Request (Should be 403) - PASSED
+             - Login successful as operator@lpi.co.id ✓
+             - GET /api/dashboard/supplier-shrinkage → 403 ✓
+             - Correct error response: Forbidden ✓
+             - Role-based access control working correctly ✓
+             - Only admin/supervisor/direktur can access (operator denied) ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Endpoint Implementation (lines 4088-4128 in route.js)**:
+          - Correctly filters purchase_order_items where receivedWeight > 0
+          - Correctly excludes POs with pipeline_status = 'Dibatalkan'
+          - Aggregates per supplier (supplierId as key)
+          - Calculates sjWeight (sum of receivedWeight)
+          - Calculates tallyWeight (sum of tallyWeight from items)
+          - Counts unique POs per supplier (poSet.size)
+          - Determines tallyDone (tallyWeight > 0)
+          - Calculates susut (sjWeight - tallyWeight, only when tallyDone)
+          - Calculates susutPct (susut/sjWeight * 100, rounded to 1 decimal, null when not tallyDone)
+          - Enriches with supplier name and code from contacts table
+          - Sorts by susut descending (highest shrinkage first)
+          - Returns totals object with aggregated values
+          
+          ✅ **Response Structure**:
+          - JSON shape: { data: [...], totals: {...} } ✓
+          - Each data row has all required fields ✓
+          - Field types correct (numbers, boolean, null) ✓
+          - Totals object has all required fields ✓
+          
+          ✅ **Business Logic**:
+          - When tallyDone = false (no tally yet):
+            * susut = 0 (not calculated)
+            * susutPct = null (not calculated)
+          - When tallyDone = true (tally completed):
+            * susut = sjWeight - tallyWeight
+            * susutPct = (susut / sjWeight) * 100, rounded to 1 decimal
+          - This logic is correct and matches the requirement ✓
+          
+          ✅ **Access Control**:
+          - Requires authentication (401 without auth) ✓
+          - Requires role: admin, supervisor, or direktur ✓
+          - Operator role denied (403) ✓
+          - Implementation at line 4091: requireRole(session, ['admin', 'supervisor', 'direktur']) ✓
+          
+          ✅ **Data Integrity**:
+          - CV. Ratu Indonesia data matches database:
+            * PO/202608/0013 has received_weight = 2483 kg
+            * PO/202608/0013 has tally_weight = 0 kg
+            * PO/202608/0013 has pipeline_status = 'Selesai' (not 'Dibatalkan')
+          - Endpoint correctly aggregates this data ✓
+          - No data corruption or calculation errors ✓
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Response JSON:
+          ```json
+          {
+            "data": [
+              {
+                "supplierId": "4215a0c1-3b6d-4290-892f-d29dad8bea62",
+                "supplierName": "CV. Ratu Indonesia",
+                "supplierCode": "RPH-001",
+                "poCount": 1,
+                "sjWeight": 2483,
+                "tallyWeight": 0,
+                "tallyDone": false,
+                "susut": 0,
+                "susutPct": null
+              }
+            ],
+            "totals": {
+              "sjWeight": 2483,
+              "tallyWeight": 0,
+              "susut": 0,
+              "susutPct": 0
+            }
+          }
+          ```
+          
+          Database Values (PO/202608/0013):
+          - PO ID: 8b5fa0ee-dd15-4313-8cc9-e6678d39ee3b
+          - Supplier ID: 4215a0c1-3b6d-4290-892f-d29dad8bea62
+          - Supplier Name: CV. Ratu Indonesia
+          - Supplier Code: RPH-001
+          - Status: Selesai (not 'Dibatalkan')
+          - Item received_weight: 2483 kg
+          - Item tally_weight: 0 kg
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All supplier shrinkage dashboard endpoint features working correctly.
+          Response structure matches specification.
+          Business logic correct (susut and susutPct calculation).
+          Access control working correctly.
+          Data integrity verified.
+          
+          Test Coverage: 3/3 tests passed (100%)
+          - Authenticated request (admin) ✓
+          - Unauthenticated request (401) ✓
+          - Operator request (403) ✓
+
+
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: "✅ NEW DASHBOARD ENDPOINT TESTING COMPLETE - ALL TESTS PASSED (3/3, 100%). Tested GET /api/dashboard/supplier-shrinkage endpoint. Verified: (1) Returns 200 with correct JSON structure { data: [...], totals: {...} }. (2) CV. Ratu Indonesia (PO/202608/0013) appears with sjWeight=2483, tallyWeight=0, tallyDone=false, susut=0, susutPct=null (matches expected behavior - no tally done yet). (3) Access control working: 401 without auth, 403 for operator role. (4) All data row fields present and correct types: supplierId, supplierName, supplierCode, poCount (number), sjWeight (number), tallyWeight (number), tallyDone (bool), susut (number), susutPct (null when tally not done). (5) Totals object correct with sjWeight, tallyWeight, susut, susutPct. Business logic verified: susut and susutPct only calculated when tallyDone=true. Implementation at lines 4088-4128 in route.js working correctly. No critical issues found. Backend implementation working perfectly."

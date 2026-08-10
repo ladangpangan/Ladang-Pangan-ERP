@@ -20,6 +20,7 @@ import {
   ListChecks, ClipboardCheck, Package, FileText, Tag, Download, FileSpreadsheet
 } from 'lucide-react';
 import { PACKAGING_TYPES, pkgLabel, pkgShort } from '@/lib/constants';
+import { generateTallyInboundPDF } from '@/lib/pdf/invoice';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 
@@ -324,6 +325,17 @@ export default function TallyInboundPage() {
     toast.success('Laporan CSV diunduh');
   };
 
+  const downloadPDF = () => {
+    if (!lastSaved) return;
+    try {
+      const doc = generateTallyInboundPDF(lastSaved);
+      doc.save(`TallyInbound_${format(lastSaved.time, 'yyyyMMdd_HHmm')}.pdf`);
+      toast.success('Laporan PDF diunduh');
+    } catch (e) {
+      toast.error('Gagal membuat PDF: ' + e.message);
+    }
+  };
+
   return (
     <div className="max-w-md mx-auto p-4 min-h-screen flex flex-col bg-slate-50">
       {/* Header */}
@@ -375,10 +387,13 @@ export default function TallyInboundPage() {
             </div>
             <div className="flex gap-2 pt-1 border-t border-emerald-200">
               <Button size="sm" variant="outline" onClick={() => setReportOpen(true)} className="h-8 flex-1 text-xs border-emerald-300">
-                <FileText className="w-3.5 h-3.5 mr-1" /> Lihat Laporan
+                <FileText className="w-3.5 h-3.5 mr-1" /> Laporan
+              </Button>
+              <Button size="sm" variant="outline" onClick={downloadPDF} className="h-8 flex-1 text-xs border-emerald-300">
+                <Download className="w-3.5 h-3.5 mr-1" /> PDF
               </Button>
               <Button size="sm" variant="outline" onClick={downloadCSV} className="h-8 flex-1 text-xs border-emerald-300">
-                <Download className="w-3.5 h-3.5 mr-1" /> Unduh (CSV)
+                <Download className="w-3.5 h-3.5 mr-1" /> CSV
               </Button>
             </div>
           </CardContent>
@@ -710,9 +725,14 @@ export default function TallyInboundPage() {
                   <div className="col-span-3 text-right text-emerald-700">{lastSaved.totalWeight.toFixed(1)} kg</div>
                 </div>
               </div>
-              <Button onClick={downloadCSV} className="w-full bg-emerald-600 hover:bg-emerald-700">
-                <Download className="w-4 h-4 mr-1" /> Unduh Laporan (CSV)
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={downloadPDF} className="flex-1 bg-emerald-600 hover:bg-emerald-700">
+                  <Download className="w-4 h-4 mr-1" /> Unduh PDF
+                </Button>
+                <Button onClick={downloadCSV} variant="outline" className="flex-1">
+                  <Download className="w-4 h-4 mr-1" /> Unduh CSV
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>

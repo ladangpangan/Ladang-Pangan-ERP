@@ -5,13 +5,16 @@ import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory } from 'lucide-react';
+import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory, TrendingDown } from 'lucide-react';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
 export default function DashboardHome() {
   const { data: sum } = useSWR('/api/dashboard/summary', fetcher, { refreshInterval: 30000 });
+  const { data: shr } = useSWR('/api/dashboard/supplier-shrinkage', fetcher, { refreshInterval: 60000 });
   const s = sum?.data;
+  const shrRows = shr?.data || [];
+  const shrTotals = shr?.totals;
 
   return (
     <div className="space-y-6">
@@ -55,6 +58,66 @@ export default function DashboardHome() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Rekap Susut per Supplier (Surat Jalan vs Tally) */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base"><TrendingDown className="w-4 h-4 text-amber-600" />Rekap Susut per Supplier</CardTitle>
+              <CardDescription>Selisih Berat Dikirim (Surat Jalan) vs Berat Diterima (Tally) — pantau kualitas kiriman supplier</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {shrRows.length === 0 ? (
+                <div className="text-sm text-muted-foreground text-center py-6">Belum ada data penerimaan (Surat Jalan) untuk dihitung.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-muted-foreground border-b">
+                        <th className="text-left font-medium py-2">Supplier</th>
+                        <th className="text-right font-medium py-2">PO</th>
+                        <th className="text-right font-medium py-2">Dikirim (SJ)</th>
+                        <th className="text-right font-medium py-2">Diterima (Tally)</th>
+                        <th className="text-right font-medium py-2">Susut</th>
+                        <th className="text-right font-medium py-2">%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shrRows.map(r => {
+                        const pct = r.susutPct;
+                        const pctColor = pct === null ? 'text-muted-foreground' : pct >= 5 ? 'text-red-600' : pct >= 2 ? 'text-amber-600' : 'text-emerald-600';
+                        return (
+                          <tr key={r.supplierId} className="border-b last:border-0 hover:bg-slate-50">
+                            <td className="py-2">
+                              <div className="font-medium">{r.supplierName}</div>
+                              <div className="text-xs text-muted-foreground font-mono">{r.supplierCode}</div>
+                            </td>
+                            <td className="text-right">{r.poCount}</td>
+                            <td className="text-right">{r.sjWeight.toLocaleString('id-ID')} kg</td>
+                            <td className="text-right">{r.tallyDone ? `${r.tallyWeight.toLocaleString('id-ID')} kg` : <span className="text-xs text-muted-foreground">belum tally</span>}</td>
+                            <td className="text-right font-semibold">{r.tallyDone ? `${r.susut.toLocaleString('id-ID')} kg` : '-'}</td>
+                            <td className={`text-right font-bold ${pctColor}`}>{pct === null ? '-' : `${pct}%`}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    {shrTotals && (
+                      <tfoot>
+                        <tr className="border-t font-semibold bg-slate-50/60">
+                          <td className="py-2">TOTAL</td>
+                          <td></td>
+                          <td className="text-right">{shrTotals.sjWeight.toLocaleString('id-ID')} kg</td>
+                          <td className="text-right">{shrTotals.tallyWeight.toLocaleString('id-ID')} kg</td>
+                          <td className="text-right">{shrTotals.susut.toLocaleString('id-ID')} kg</td>
+                          <td className={`text-right ${shrTotals.susutPct >= 5 ? 'text-red-600' : shrTotals.susutPct >= 2 ? 'text-amber-600' : 'text-emerald-600'}`}>{shrTotals.susutPct}%</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                  <div className="text-[11px] text-muted-foreground mt-2">Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Quick nav to reports */}
           <Card>
