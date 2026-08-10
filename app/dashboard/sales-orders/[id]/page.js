@@ -680,21 +680,22 @@ function GrossProfitCard({ so }) {
   const gp = Number(so.grossProfit ?? (revenue - cogs - shipping));
   const margin = Number(so.grossMarginPct ?? (revenue > 0 ? Math.round((gp / revenue) * 1000) / 10 : 0));
   const bearer = so.shippingBearer === 'buyer' ? 'Pembeli' : 'Penjual';
+  const isDrop = so.fulfillmentType === 'dropship';
   return (
     <Card className="border-emerald-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-emerald-600" />Gross Profit {so.invoiceNumber ? `· ${so.invoiceNumber}` : '(estimasi)'}</CardTitle>
-        <CardDescription>Laba kotor = Penjualan − HPP (kode simpan terpilih) − Biaya kirim (bila ditanggung penjual)</CardDescription>
+        <CardDescription>Laba kotor = Penjualan − HPP ({isDrop ? 'HPP PO Dropship' : 'kode simpan terpilih'}) − Biaya kirim (bila ditanggung penjual)</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
           <div><div className="text-xs text-muted-foreground">Penjualan</div><div className="font-semibold">{rp(revenue)}</div></div>
-          <div><div className="text-xs text-muted-foreground">HPP (COGS)</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
+          <div><div className="text-xs text-muted-foreground">HPP (COGS){isDrop && so.linkedPurchaseOrder ? ` · ${so.linkedPurchaseOrder.poNumber}` : ''}</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
           <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className="font-semibold text-red-600">{shipping > 0 ? '-' + rp(shipping) : rp(0)}</div></div>
           <div><div className="text-xs text-muted-foreground">Gross Profit</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{rp(gp)}</div></div>
           <div><div className="text-xs text-muted-foreground">Margin</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{margin}%</div></div>
         </div>
-        {cogs === 0 && <div className="text-[11px] text-amber-600 mt-2">HPP belum tersedia — pastikan kode simpan sudah dialokasikan pada tab Items.</div>}
+        {cogs === 0 && <div className="text-[11px] text-amber-600 mt-2">{isDrop ? 'HPP belum tersedia — pastikan PO Dropship sudah punya berat GRN/Surat Jalan.' : 'HPP belum tersedia — pastikan kode simpan sudah dialokasikan pada tab Items.'}</div>}
       </CardContent>
     </Card>
   );

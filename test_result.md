@@ -15489,3 +15489,232 @@ agent_communication:
   
   - agent: "testing"
     message: "✅ ALL DROPSHIP SO<->PO LINKAGE TESTS PASSED (7/7, 100%). All endpoints working correctly: bidirectional linkage (SO↔PO), GRN auto-sync from Surat Jalan (GRN received = SJ shipped), PO status auto-advance to 'Tanda Terima', invoice basis options (grn/so_receipt with tally coercion), customer receipt integration, and non-dropship regression. BUGFIX APPLIED: Updated getSoRecvMap to aggregate from sales_order_receipt_items (actual customer receipts) instead of sales_order_items.received_weight. All test data cleaned up. NO CRITICAL ISSUES FOUND."
+
+    -agent: "main"
+    -message: |
+      REFINEMENTS to dropship (needs backend verification):
+      1) SO detail (GET /api/sales-orders/:id) COGS for DROPSHIP now = HPP PO Dropship (linked PO totalAmount), NOT 0 (dropship has no stock allocation). Per-item it.cogs = PO item hppPerKg * (shippedWeight||weight); it.hppAvgPerKg = PO hppPerKg. grossProfit = revenue - cogsTotal(PO HPP) - sellerShipping.
+      2) PO detail (GET /api/purchase-orders/:id) now returns per-item billedWeight (= weight billed per invoiceWeightBasis: dropship 'grn' -> receivedWeight/GRN, 'so_receipt' -> SO customer received weight; non-dropship 'shipped'->receivedWeight, 'tally'->tallyWeight). PDF PO uses billedWeight so it reflects GRN/basis.
+      TEST (login admin@lpi.co.id/admin123): Create dropship SO (ordered 10kg, sell 27000, buy 21600) -> Confirmed -> Packed -> create Surat Jalan shipped 9.5kg. Then:
+      - GET PO :autoPoId -> items[0].billedWeight == 9.5, totalAmount == 21600*9.5 = 205200.
+      - GET SO :id -> cogsTotal == 205200 (== PO total, not 0), items[0].cogs ~= 205200, grossProfit == revenue - 205200 - sellerShipping. Confirm cogsTotal != 0.
+      - POST /api/purchase-orders/:autoPoId/invoice {basis:'so_receipt'} after recording a customer receipt of 9.0kg -> GET PO -> items[0].billedWeight == 9.0, totalAmount == 21600*9.0 = 194400. GET SO -> cogsTotal == 194400 and grossProfit updates accordingly.
+      CLEANUP: delete all created test rows (SO, SO items, receipts+items, surat_jalan, auto PO+items, auto GRN+items, payments, commissions). Confirm DB restored.
+  - agent: "testing"
+    message: |
+      ✅ ALL DROPSHIP REFINEMENTS TESTS PASSED (10/10 steps, 100%)
+      
+      Comprehensive backend testing completed for TWO dropship refinements:
+      1. SO cogsTotal = HPP PO Dropship (linked PO totalAmount), NOT 0
+      2. PO per-item billedWeight based on invoice basis (grn/so_receipt)
+      
+      === TEST ENVIRONMENT ===
+      - Base URL: http://localhost:3000/api
+      - Auth: admin@lpi.co.id / admin123
+      - Database: SQLite at /app/data/erp.db
+      - Supplier: CV. Ratu Indonesia (RPH-001)
+      - Customer: SPPG Genengan Malang (CUST-002)
+      - Product: Sayap Premium Medium 10-12/Pack (SYP-001, basePrice Rp27,000)
+      
+      === TEST RESULTS ===
+      
+      ✅ STEP 1 — Find Supplier, Customer, Product:
+         - Supplier: CV. Ratu Indonesia (RPH-001) ✓
+         - Customer: SPPG Genengan Malang (CUST-002) ✓
+         - Product: Sayap Premium Medium 10-12/Pack (SYP-001) ✓
+      
+      ✅ STEP 2 — Create Dropship SO:
+         - SO Number: SO/202608/0024
+         - SO ID: c1c0009e-6dfd-43b9-970f-3687ff1c6980
+         - Ordered: 10kg, sell Rp27,000, buy Rp21,600
+         - SO totalAmount: Rp 270,000 (27,000 × 10kg) ✓
+         - autoPoId: 71752534-2bec-4f19-aa9c-16b18af22991 ✓
+      
+      ✅ STEP 3 — Advance SO Status:
+         - Draft → Confirmed ✓
+         - Confirmed → Packed ✓
+      
+      ✅ STEP 4 — Create Surat Jalan (shipped 9.5kg):
+         - SJ Number: SJ/202608/0014
+         - SJ ID: ee3f25a1-9022-4916-825b-cbd8e61f26fb
+         - Shipped weight: 9.5kg (NOT 10kg ordered) ✓
+      
+      ✅ STEP 5 — **VERIFY Refinement 2** (PO billedWeight with 'grn' basis):
+         - PO Number: PO/202608/0018
+         - Invoice basis: 'grn' ✓
+         - **Item billedWeight: 9.5kg** (expected: 9.5kg) ✓
+         - **PO totalAmount: Rp 205,200** (21,600 × 9.5kg) ✓
+         - GRN: GRN/202608/0011 (AUTO-SJ sync) ✓
+         - GRN received weight: 9.5kg (matches SJ shipped) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ billedWeight == 9.5kg (GRN received weight, NOT 10kg ordered)
+         ✅ PO totalAmount == Rp 205,200 (21,600 × 9.5)
+      
+      ✅ STEP 6 — **VERIFY Refinement 1** (SO cogsTotal with 'grn' basis):
+         - SO Number: SO/202608/0024
+         - SO totalAmount (revenue): Rp 256,500 (27,000 × 9.5kg) ✓
+         - **cogsTotal: Rp 205,200** (expected: Rp 205,200) ✓
+         - **grossProfit: Rp 51,300** (256,500 - 205,200 - 0) ✓
+         - sellerShipping: Rp 0 ✓
+         - **Item cogs: Rp 205,200** (per-item) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ cogsTotal is NOT 0 (was 0 before refinement)
+         ✅ cogsTotal == Rp 205,200 (equals PO totalAmount)
+         ✅ grossProfit == Rp 51,300 (revenue - cogsTotal - sellerShipping)
+         ✅ Item cogs > 0 (calculated from PO HPP)
+      
+      ✅ STEP 7 — Record Customer Receipt (9.0kg):
+         - Receipt Number: RCP/202608/0010
+         - Receipt ID: 4eed6455-7651-4e68-b120-5ddb80b2b8b1
+         - Received weight: 9.0kg (customer shrinkage: 0.5kg from 9.5kg shipped) ✓
+      
+      ✅ STEP 8 — Change Invoice Basis to 'so_receipt':
+         - Invoice basis changed: 'grn' → 'so_receipt' ✓
+         - PO totalAmount updated: Rp 205,200 → Rp 194,400 ✓
+      
+      ✅ STEP 8a — **VERIFY Refinement 2** (PO billedWeight with 'so_receipt' basis):
+         - Invoice basis: 'so_receipt' ✓
+         - **Item billedWeight: 9.0kg** (expected: 9.0kg) ✓
+         - **PO totalAmount: Rp 194,400** (21,600 × 9.0kg) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ billedWeight == 9.0kg (customer received weight, NOT 9.5kg GRN)
+         ✅ PO totalAmount == Rp 194,400 (21,600 × 9.0)
+      
+      ✅ STEP 8b — **VERIFY Refinement 1** (SO cogsTotal with 'so_receipt' basis):
+         - SO totalAmount (revenue): Rp 256,500 (unchanged) ✓
+         - **cogsTotal: Rp 194,400** (expected: Rp 194,400) ✓
+         - **grossProfit: Rp 62,100** (256,500 - 194,400 - 0) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ cogsTotal updated to Rp 194,400 (follows PO totalAmount)
+         ✅ grossProfit updated to Rp 62,100 (increased due to lower COGS)
+      
+      ✅ STEP 9 — Switch Back to 'grn' Basis:
+         - Invoice basis changed: 'so_receipt' → 'grn' ✓
+         - PO totalAmount restored: Rp 194,400 → Rp 205,200 ✓
+      
+      ✅ STEP 9a — **VERIFY Refinement 2** (PO billedWeight restored):
+         - Invoice basis: 'grn' ✓
+         - **Item billedWeight: 9.5kg** (restored) ✓
+         - **PO totalAmount: Rp 205,200** (restored) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ billedWeight restored to 9.5kg (GRN basis)
+         ✅ PO totalAmount restored to Rp 205,200
+      
+      ✅ STEP 9b — **VERIFY Refinement 1** (SO cogsTotal restored):
+         - **cogsTotal: Rp 205,200** (restored) ✓
+         - **grossProfit: Rp 51,300** (restored) ✓
+         
+         **CRITICAL VERIFICATION:**
+         ✅ cogsTotal restored to Rp 205,200
+         ✅ grossProfit restored to Rp 51,300
+      
+      ✅ STEP 10 — Cleanup:
+         - Deleted sales_order_receipt_items: 1 row ✓
+         - Deleted sales_order_receipts: 1 row ✓
+         - Deleted surat_jalan: 1 row ✓
+         - Deleted grn_items: 1 row ✓
+         - Deleted grn: 1 row ✓
+         - Deleted purchase_order_items: 1 row ✓
+         - Deleted purchase_order: 1 row ✓
+         - Deleted sales_order_items: 1 row ✓
+         - Deleted sales_order: 1 row ✓
+         - Database restored to original state ✓
+      
+      === KEY FINDINGS ===
+      
+      ✅ **REFINEMENT 1 VERIFIED (SO cogsTotal = PO HPP)**:
+      - Implementation at lines 2354-2367 in route.js:
+        * Line 2355: `if (so.fulfillmentType === 'dropship' && so.autoPoId)`
+        * Line 2356: `const poRow = db.select({ total: s.purchaseOrder.totalAmount }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get();`
+        * Line 2366: `cogsTotal = Number(poRow?.total || enrichedItems.reduce((a, it) => a + Number(it.cogs || 0), 0));`
+      - For dropship SO, cogsTotal = linked PO totalAmount (NOT 0)
+      - Per-item cogs calculated from PO hppPerKg × (shippedWeight || weight)
+      - grossProfit = revenue - cogsTotal - sellerShipping
+      - cogsTotal updates dynamically when PO invoice basis changes
+      
+      ✅ **REFINEMENT 2 VERIFIED (PO billedWeight per basis)**:
+      - Implementation at lines 1559-1570 in route.js:
+        * Line 1561: `const eb = invoiceWeightBasis;`
+        * Line 1562: `const soRecvMapBill = (po.isDropship && eb === 'so_receipt') ? getSoRecvMap(po.salesOrderId) : null;`
+        * Line 1565: `if (soRecvMapBill) bw = soRecvMapBill[it.productId] != null ? soRecvMapBill[it.productId] : poBillWeight(it, 'shipped');`
+        * Line 1566: `else bw = poBillWeight(it, eb === 'grn' ? 'shipped' : eb);`
+        * Line 1567: `it.billedWeight = Math.round(Number(bw || 0) * 1000) / 1000;`
+      - For dropship PO with 'grn' basis: billedWeight = GRN receivedWeight (9.5kg)
+      - For dropship PO with 'so_receipt' basis: billedWeight = customer receivedWeight (9.0kg)
+      - PO totalAmount recomputed based on billedWeight × buyPrice
+      - Invoice basis switching works correctly (grn ↔ so_receipt)
+      
+      ✅ **Data Integrity**:
+      - SO totalAmount recomputed when SJ created (270,000 → 256,500)
+      - PO totalAmount recomputed when invoice basis changed (205,200 ↔ 194,400)
+      - SO cogsTotal follows PO totalAmount (205,200 ↔ 194,400)
+      - grossProfit recalculated correctly (51,300 ↔ 62,100)
+      - All foreign key relationships maintained
+      - Cleanup successful (no orphaned records)
+      
+      === ACTUAL VALUES OBSERVED ===
+      
+      **Weights**:
+      - Ordered: 10.0kg
+      - Shipped (SJ): 9.5kg
+      - Received (Customer): 9.0kg
+      - GRN received: 9.5kg (matches SJ shipped) ✓
+      
+      **Prices**:
+      - Sell price (unitPrice): Rp 27,000
+      - Buy price (buyPrice): Rp 21,600
+      - Margin: Rp 5,400 per kg
+      
+      **SO Totals**:
+      - Initial (ordered): Rp 270,000 (27,000 × 10)
+      - After SJ (shipped): Rp 256,500 (27,000 × 9.5)
+      
+      **PO Totals**:
+      - Initial (ordered): Rp 216,000 (21,600 × 10)
+      - After GRN (grn basis): Rp 205,200 (21,600 × 9.5)
+      - After receipt (so_receipt basis): Rp 194,400 (21,600 × 9.0)
+      - Restored (grn basis): Rp 205,200 (21,600 × 9.5)
+      
+      **SO COGS & Profit**:
+      - With 'grn' basis:
+        * cogsTotal: Rp 205,200 (NOT 0) ✓
+        * grossProfit: Rp 51,300 (256,500 - 205,200 - 0) ✓
+      - With 'so_receipt' basis:
+        * cogsTotal: Rp 194,400 (updated) ✓
+        * grossProfit: Rp 62,100 (256,500 - 194,400 - 0) ✓
+      - Restored 'grn' basis:
+        * cogsTotal: Rp 205,200 (restored) ✓
+        * grossProfit: Rp 51,300 (restored) ✓
+      
+      **PO billedWeight**:
+      - With 'grn' basis: 9.5kg (GRN received) ✓
+      - With 'so_receipt' basis: 9.0kg (customer received) ✓
+      - Restored 'grn' basis: 9.5kg (restored) ✓
+      
+      === NO CRITICAL ISSUES FOUND ===
+      
+      All dropship refinements working correctly.
+      Refinement 1: SO cogsTotal = PO HPP (NOT 0) - VERIFIED ✓
+      Refinement 2: PO billedWeight per basis (grn/so_receipt) - VERIFIED ✓
+      Invoice basis switching working correctly.
+      COGS and grossProfit calculations accurate.
+      Data integrity maintained.
+      Cleanup successful.
+      
+      Test Coverage: 10/10 steps passed (100%)
+      - STEP 1: Find supplier, customer, product ✓
+      - STEP 2: Create dropship SO ✓
+      - STEP 3: Advance SO status ✓
+      - STEP 4: Create Surat Jalan ✓
+      - STEP 5: Verify Refinement 2 (grn basis) ✓
+      - STEP 6: Verify Refinement 1 (grn basis) ✓
+      - STEP 7: Record customer receipt ✓
+      - STEP 8: Verify Refinements (so_receipt basis) ✓
+      - STEP 9: Verify Refinements (grn basis restored) ✓
+      - STEP 10: Cleanup ✓
+
