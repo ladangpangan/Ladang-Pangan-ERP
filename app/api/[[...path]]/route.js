@@ -1080,7 +1080,15 @@ async function handleRoute(request, { params }) {
       if (q) conds.push(or(like(s.products.name, `%${q}%`), like(s.products.sku, `%${q}%`)));
       if (conds.length) query = query.where(and(...conds));
       const rows = query.orderBy(desc(s.products.createdAt)).all();
-      return json({ data: rows });
+      // Rata-rata tertimbang HPP/kg dari stok aktif (referensi valuasi untuk SO)
+      const hppAgg = db.all(sql`SELECT product_id as pid, SUM(hpp_per_kg * weight) as v, SUM(weight) as w FROM inventory_stock WHERE status = 'active' AND (archived_at IS NULL) GROUP BY product_id`);
+      const hppMap = {};
+      for (const a of hppAgg) {
+        const w = Number(a.w || 0);
+        hppMap[a.pid] = w > 0 ? Math.round(Number(a.v || 0) / w) : 0;
+      }
+      const enriched = rows.map(r => ({ ...r, avgHppPerKg: hppMap[r.id] || 0 }));
+      return json({ data: enriched });
     }
     if (route === '/products' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
