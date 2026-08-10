@@ -83,7 +83,7 @@ export default function DashboardHome() {
                       <tr className="text-xs text-muted-foreground border-b">
                         <th className="text-left font-medium py-2">Supplier</th>
                         <th className="text-right font-medium py-2">PO</th>
-                        <th className="text-right font-medium py-2">Dikirim (SJ)</th>
+                        <th className="text-right font-medium py-2">Dikirim (ditally)</th>
                         <th className="text-right font-medium py-2">Diterima (Tally)</th>
                         <th className="text-right font-medium py-2">Susut</th>
                         <th className="text-right font-medium py-2">%</th>
@@ -100,8 +100,8 @@ export default function DashboardHome() {
                               <div className="text-xs text-muted-foreground font-mono">{r.supplierCode}</div>
                             </td>
                             <td className="text-right">{r.poCount}</td>
-                            <td className="text-right">{r.sjWeight.toLocaleString('id-ID')} kg</td>
-                            <td className="text-right">{r.tallyDone ? `${r.tallyWeight.toLocaleString('id-ID')} kg` : <span className="text-xs text-muted-foreground">belum tally</span>}</td>
+                            <td className="text-right">{r.tallyDone ? `${r.sjTallied.toLocaleString('id-ID')} kg` : <span className="text-xs text-muted-foreground">belum tally</span>}</td>
+                            <td className="text-right">{r.tallyDone ? `${r.tallyWeight.toLocaleString('id-ID')} kg` : '-'}</td>
                             <td className="text-right font-semibold">{r.tallyDone ? `${r.susut.toLocaleString('id-ID')} kg` : '-'}</td>
                             <td className={`text-right font-bold ${pctColor}`}>{pct === null ? '-' : `${pct}%`}</td>
                           </tr>
@@ -113,7 +113,7 @@ export default function DashboardHome() {
                         <tr className="border-t font-semibold bg-slate-50/60">
                           <td className="py-2">TOTAL</td>
                           <td></td>
-                          <td className="text-right">{shrTotals.sjWeight.toLocaleString('id-ID')} kg</td>
+                          <td className="text-right">{(shrTotals.sjTallied ?? 0).toLocaleString('id-ID')} kg</td>
                           <td className="text-right">{shrTotals.tallyWeight.toLocaleString('id-ID')} kg</td>
                           <td className="text-right">{shrTotals.susut.toLocaleString('id-ID')} kg</td>
                           <td className={`text-right ${shrTotals.susutPct >= 5 ? 'text-red-600' : shrTotals.susutPct >= 2 ? 'text-amber-600' : 'text-emerald-600'}`}>{shrTotals.susutPct}%</td>
@@ -121,7 +121,7 @@ export default function DashboardHome() {
                       </tfoot>
                     )}
                   </table>
-                  <div className="text-[11px] text-muted-foreground mt-2">Klik baris supplier untuk rincian per PO &amp; produk · Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
+                  <div className="text-[11px] text-muted-foreground mt-2">Kolom &quot;Dikirim (ditally)&quot; = berat SJ untuk item yang sudah ditally · Klik baris untuk rincian per PO &amp; produk · Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
                 </div>
               )}
             </CardContent>

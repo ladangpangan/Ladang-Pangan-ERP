@@ -4104,32 +4104,43 @@ async function handleRoute(request, { params }) {
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, it.purchaseOrderId)).get();
         if (!po || po.status === 'Dibatalkan') continue;
         const key = po.supplierId;
-        if (!bySupplier[key]) bySupplier[key] = { supplierId: key, sjWeight: 0, tallyWeight: 0, poSet: new Set() };
+        if (!bySupplier[key]) bySupplier[key] = { supplierId: key, sjWeight: 0, tallyWeight: 0, sjTallied: 0, susut: 0, tallyItems: 0, poSet: new Set() };
+        const tW = Number(it.tallyWeight || 0);
         bySupplier[key].sjWeight += sjW;
-        bySupplier[key].tallyWeight += Number(it.tallyWeight || 0);
+        bySupplier[key].tallyWeight += tW;
+        // susut hanya untuk item yang SUDAH ditally (tally > 0); item belum ditally tidak dianggap susut
+        if (tW > 0) {
+          bySupplier[key].sjTallied += sjW;
+          bySupplier[key].susut += (sjW - tW);
+          bySupplier[key].tallyItems += 1;
+        }
         bySupplier[key].poSet.add(po.id);
       }
       const rows = Object.values(bySupplier).map(r => {
         const c = db.select({ displayName: s.contacts.displayName, code: s.contacts.code }).from(s.contacts).where(eq(s.contacts.id, r.supplierId)).get();
         const sjWeight = Math.round(r.sjWeight * 100) / 100;
         const tallyWeight = Math.round(r.tallyWeight * 100) / 100;
-        const tallyDone = tallyWeight > 0;
-        const susut = tallyDone ? Math.round((sjWeight - tallyWeight) * 100) / 100 : 0;
-        const susutPct = (tallyDone && sjWeight > 0) ? Math.round((susut / sjWeight) * 1000) / 10 : null;
+        const sjTallied = Math.round(r.sjTallied * 100) / 100;
+        const tallyDone = r.tallyItems > 0;
+        const susut = tallyDone ? Math.round(r.susut * 100) / 100 : 0;
+        // % susut dihitung atas dasar berat SJ item yang sudah ditally (bukan total SJ)
+        const susutPct = (tallyDone && sjTallied > 0) ? Math.round((susut / sjTallied) * 1000) / 10 : null;
         return {
           supplierId: r.supplierId,
           supplierName: c?.displayName || '-',
           supplierCode: c?.code || '-',
           poCount: r.poSet.size,
-          sjWeight, tallyWeight, tallyDone, susut, susutPct,
+          sjWeight, tallyWeight, sjTallied, tallyDone, susut, susutPct,
         };
       }).sort((a, b) => (b.susut) - (a.susut));
+      const sumSjTallied = Math.round(rows.reduce((a, b) => a + b.sjTallied, 0) * 100) / 100;
       const totals = {
         sjWeight: Math.round(rows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100,
         tallyWeight: Math.round(rows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100,
+        sjTallied: sumSjTallied,
         susut: Math.round(rows.reduce((a, b) => a + b.susut, 0) * 100) / 100,
       };
-      totals.susutPct = totals.sjWeight > 0 ? Math.round((totals.susut / totals.sjWeight) * 1000) / 10 : 0;
+      totals.susutPct = sumSjTallied > 0 ? Math.round((totals.susut / sumSjTallied) * 1000) / 10 : 0;
       return json({ data: rows, totals } );
     }
 
@@ -4160,22 +4171,25 @@ async function handleRoute(request, { params }) {
         });
         const sjWeight = Math.round(itemRows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100;
         const tallyWeight = Math.round(itemRows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100;
-        const tallyDone = tallyWeight > 0;
-        const susut = tallyDone ? Math.round((sjWeight - tallyWeight) * 100) / 100 : 0;
+        // dasar % susut = SJ item yang sudah ditally saja
+        const sjTallied = Math.round(itemRows.filter(i => i.tallyDone).reduce((a, b) => a + b.sjWeight, 0) * 100) / 100;
+        const susut = Math.round(itemRows.reduce((a, b) => a + b.susut, 0) * 100) / 100;
+        const tallyDone = sjTallied > 0;
         poRows.push({
           poId: po.id, poNumber: po.poNumber, status: po.pipelineStatus,
-          orderDate: po.orderDate, sjWeight, tallyWeight, tallyDone, susut,
-          susutPct: (tallyDone && sjWeight > 0) ? Math.round((susut / sjWeight) * 1000) / 10 : null,
+          orderDate: po.orderDate, sjWeight, tallyWeight, sjTallied, tallyDone, susut,
+          susutPct: (tallyDone && sjTallied > 0) ? Math.round((susut / sjTallied) * 1000) / 10 : null,
           items: itemRows,
         });
       }
       poRows.sort((a, b) => (b.orderDate ? new Date(b.orderDate).getTime() : 0) - (a.orderDate ? new Date(a.orderDate).getTime() : 0));
+      const sumSjTallied = Math.round(poRows.reduce((a, b) => a + (b.sjTallied || 0), 0) * 100) / 100;
       const totals = {
         sjWeight: Math.round(poRows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100,
         tallyWeight: Math.round(poRows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100,
         susut: Math.round(poRows.reduce((a, b) => a + b.susut, 0) * 100) / 100,
       };
-      totals.susutPct = totals.sjWeight > 0 ? Math.round((totals.susut / totals.sjWeight) * 1000) / 10 : 0;
+      totals.susutPct = sumSjTallied > 0 ? Math.round((totals.susut / sumSjTallied) * 1000) / 10 : 0;
       return json({ data: { supplier: { name: supplier?.displayName || '-', code: supplier?.code || '-' }, pos: poRows, totals } });
     }
 

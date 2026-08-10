@@ -13635,3 +13635,253 @@ test_plan:
 agent_communication:
     -agent: "testing"
     -message: "✅ SUPPLIER-SHRINKAGE DRILL-DOWN ENDPOINT TESTING COMPLETE - ALL TESTS PASSED (3/3, 100%) - CRITICAL BUG FIXED. Tested NEW GET /api/dashboard/supplier-shrinkage/:supplierId endpoint. CRITICAL BUG FOUND AND FIXED: totals.susut was calculated as sjWeight - tallyWeight (2484.4) instead of sum of PO susut values (1.4). Root cause: line 4177 didn't respect tallyDone logic. Fixed to sum individual PO susut values at line 4175. After fix, all tests passed. Verified: (1) Returns 200 with correct JSON structure { data: { supplier: {name, code}, pos: [...], totals: {...} } }. (2) CV. Ratu Indonesia has 2 POs: PO/202608/0013 (tallyDone=false, susut=0, susutPct=null) and PO/202608/0014 (tallyDone=true, susut=1.4, susutPct=0.6). (3) Per-PO totals = sum of items. (4) Top-level totals = sum of POs (sjWeight=2733, tallyWeight=248.6, susut=1.4, susutPct=0.1). (5) Access control working: 401 without auth, 403 for operator. (6) Business logic verified: susut and susutPct only calculated when tallyDone=true. Implementation at lines 4136-4179 in route.js working correctly after fix. No critical issues remaining. I FIXED THE BUG DURING TESTING - main agent should NOT fix it again."
+
+backend:
+  - task: "RE-VERIFICATION: Susut (shrinkage) percentage logic on dashboard endpoints after fix"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          RE-VERIFICATION REQUEST: After previous fix, verify susut% logic on TWO dashboard endpoints.
+          BACKGROUND: Previously susut% was wrongly computed by treating a supplier's TOTAL shipped weight (including PO items NOT yet tallied) as if all were shrinkage.
+          FIX: susut and susut% must consider ONLY items that have been tallied (tally_weight > 0).
+          New field 'sjTallied' = sum of received_weight (Surat Jalan) for items with tally_weight > 0.
+          susut = sum(received_weight - tally_weight) over tallied items only.
+          susutPct = susut / sjTallied * 100 (1 decimal), null/0 when no tallied items.
+          
+          TEST A - GET /api/dashboard/supplier-shrinkage:
+          - 200. Each row has fields: supplierId, supplierName, supplierCode, poCount, sjWeight (total received), tallyWeight, sjTallied, tallyDone, susut, susutPct.
+          - For supplier 'CV. Ratu Indonesia': verify susutPct is a SMALL realistic number (roughly 0.6%, definitely NOT ~90%), susut roughly 1.4 kg, sjTallied roughly 250 kg (the tallied PO only), tallyWeight ~248.6. sjWeight may be larger (~2733) because it includes a not-yet-tallied PO - that's expected.
+          - totals: sjWeight, tallyWeight, sjTallied, susut, susutPct. Verify totals.susutPct = totals.susut / totals.sjTallied * 100 (NOT divided by total sjWeight). Should be small (~0.6%), not ~90%.
+          
+          TEST B - GET /api/dashboard/supplier-shrinkage/<CV Ratu supplierId>:
+          - 200. pos[] each: sjWeight, tallyWeight, sjTallied, tallyDone, susut, susutPct, items[].
+          - PO/202608/0013 -> tallyDone=false, susut 0, susutPct null (not tallied).
+          - PO/202608/0014 -> tallyDone=true, susut ~1.4, susutPct ~0.6 (susut/sjTallied where sjTallied ~250).
+          - totals.susutPct must be based on sum(sjTallied) (~250), giving ~0.6% (NOT based on total sjWeight ~2733 which would give ~0.05%, and NOT ~90%).
+          - No 500 errors.
+          
+          Report the actual numeric values for CV. Ratu in both endpoints and confirm susutPct is the small tallied-based value. Do NOT modify or delete data.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ RE-VERIFICATION COMPLETE - ALL TESTS PASSED (2/2, 100%)
+          
+          Comprehensive re-verification completed for susut (shrinkage) percentage logic on BOTH dashboard endpoints.
+          The fix is WORKING CORRECTLY - susutPct is calculated based on sjTallied (tallied items only), NOT total sjWeight.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (curl with Origin header)
+          - Credentials: admin@lpi.co.id/admin123
+          - Test method: Bash script with curl + jq
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST A — GET /api/dashboard/supplier-shrinkage (LIST ENDPOINT) - PASSED
+             
+             **Response Structure:**
+             - HTTP 200 OK ✓
+             - JSON structure: { data: [...], totals: {...} } ✓
+             - All required fields present ✓
+             
+             **CV. Ratu Indonesia Data:**
+             - supplierId: 4215a0c1-3b6d-4290-892f-d29dad8bea62 ✓
+             - supplierName: CV. Ratu Indonesia ✓
+             - supplierCode: RPH-001 ✓
+             - poCount: 2 ✓
+             - sjWeight (total received): 2733 kg ✓
+             - tallyWeight: 248.6 kg ✓
+             - sjTallied (tallied items only): 250 kg ✓
+             - tallyDone: true ✓
+             - susut: 1.4 kg ✓
+             - susutPct: 0.6% ✓
+             
+             **CRITICAL VERIFICATION #1:**
+             ✅ susutPct = 0.6% (SMALL, realistic value, NOT ~90%)
+             ✅ This confirms the bug is FIXED
+             ✅ susutPct is calculated based on sjTallied (250 kg), NOT sjWeight (2733 kg)
+             
+             **Expected vs Actual:**
+             - Expected susut: ~1.4 kg → Actual: 1.4 kg ✓
+             - Expected sjTallied: ~250 kg → Actual: 250 kg ✓
+             - Expected tallyWeight: ~248.6 kg → Actual: 248.6 kg ✓
+             - Expected susutPct: ~0.6% → Actual: 0.6% ✓
+             - Expected sjWeight: ~2733 kg (includes not-yet-tallied PO) → Actual: 2733 kg ✓
+             
+             **Verification:**
+             ✅ sjWeight (2733) > sjTallied (250) - includes not-yet-tallied PO
+             ✅ susutPct calculation: 1.4 / 250 * 100 = 0.6% (CORRECT)
+             ✅ If it used sjWeight: 1.4 / 2733 * 100 = 0.05% (WRONG, but not the case)
+             ✅ Old bug would give: ~90% (NOT the case, bug is FIXED)
+             
+             **Totals:**
+             - sjWeight: 2733 kg ✓
+             - tallyWeight: 248.6 kg ✓
+             - sjTallied: 250 kg ✓
+             - susut: 1.4 kg ✓
+             - susutPct: 0.6% ✓
+             
+             **CRITICAL VERIFICATION #2 (TOTALS):**
+             ✅ totals.susutPct = 0.6% (based on sjTallied 250 kg, NOT sjWeight 2733 kg)
+             ✅ Calculation: 1.4 / 250 * 100 = 0.6% (CORRECT)
+             ✅ NOT based on sjWeight: 1.4 / 2733 * 100 = 0.05% (would be wrong)
+             ✅ totals.susutPct is SMALL (0.6%), NOT ~90% (bug is FIXED)
+          
+          ✅ TEST B — GET /api/dashboard/supplier-shrinkage/:supplierId (DETAIL ENDPOINT) - PASSED
+             
+             **Response Structure:**
+             - HTTP 200 OK ✓
+             - JSON structure: { data: { supplier: {...}, pos: [...], totals: {...} } } ✓
+             - Supplier: CV. Ratu Indonesia (RPH-001) ✓
+             - POs found: 2 ✓
+             
+             **PO/202608/0013 (NOT TALLIED):**
+             - poNumber: PO/202608/0013 ✓
+             - sjWeight: 2483 kg ✓
+             - tallyWeight: 0 kg ✓
+             - sjTallied: 0 kg ✓
+             - tallyDone: false ✓
+             - susut: 0 kg ✓
+             - susutPct: null ✓
+             - items[0]: Boneless Paha Premium (BLP-001), sjWeight=2483, tallyWeight=0, tallyDone=false, susut=0, susutPct=null ✓
+             
+             **CRITICAL VERIFICATION #3:**
+             ✅ tallyDone = false (not tallied) - CORRECT
+             ✅ susut = 0 (not calculated for untallied PO) - CORRECT
+             ✅ susutPct = null (not calculated for untallied PO) - CORRECT
+             
+             **PO/202608/0014 (TALLIED):**
+             - poNumber: PO/202608/0014 ✓
+             - sjWeight: 250 kg ✓
+             - tallyWeight: 248.6 kg ✓
+             - sjTallied: 250 kg ✓
+             - tallyDone: true ✓
+             - susut: 1.4 kg ✓
+             - susutPct: 0.6% ✓
+             - items[0]: Sayap Premium Medium 10-12/Pack (SYP-001), sjWeight=250, tallyWeight=248.6, tallyDone=true, susut=1.4, susutPct=0.6 ✓
+             
+             **CRITICAL VERIFICATION #4:**
+             ✅ tallyDone = true (tallied) - CORRECT
+             ✅ susut = 1.4 kg (expected ~1.4) - CORRECT
+             ✅ susutPct = 0.6% (expected ~0.6) - CORRECT
+             ✅ sjTallied = 250 kg (expected ~250) - CORRECT
+             ✅ susutPct calculation: 1.4 / 250 * 100 = 0.6% (based on sjTallied, NOT sjWeight) - CORRECT
+             
+             **Totals:**
+             - sjWeight: 2733 kg ✓
+             - tallyWeight: 248.6 kg ✓
+             - susut: 1.4 kg ✓
+             - susutPct: 0.6% ✓
+             
+             **CRITICAL VERIFICATION #5 (TOTALS):**
+             ✅ sum(sjTallied) for tallied POs: 250 kg (only PO/202608/0014 is tallied)
+             ✅ Expected susutPct: 1.4 / 250 * 100 = 0.6% (based on sjTallied)
+             ✅ Actual susutPct: 0.6% - CORRECT
+             ✅ NOT based on total sjWeight: 1.4 / 2733 * 100 = 0.05% (would be wrong)
+             ✅ totals.susutPct is SMALL (0.6%), NOT ~90% (bug is FIXED)
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Bug Fix Verified (CRITICAL)**:
+          - susutPct is calculated based on sjTallied (tallied items only), NOT total sjWeight
+          - CV. Ratu Indonesia susutPct = 0.6% (SMALL, realistic, NOT ~90%)
+          - The old bug (treating total shipped weight as if all were shrinkage) is FIXED
+          
+          ✅ **Field 'sjTallied' Working Correctly**:
+          - sjTallied = sum of received_weight for items with tally_weight > 0
+          - For CV. Ratu: sjTallied = 250 kg (only PO/202608/0014 is tallied)
+          - sjWeight = 2733 kg (includes PO/202608/0013 which is NOT tallied)
+          - sjTallied < sjWeight (as expected when some POs are not tallied)
+          
+          ✅ **Susut Calculation Correct**:
+          - susut = sum(received_weight - tally_weight) over tallied items only
+          - For CV. Ratu: susut = 1.4 kg (only from PO/202608/0014)
+          - Untallied PO/202608/0013 has susut = 0 (not calculated)
+          
+          ✅ **SusutPct Calculation Correct**:
+          - susutPct = susut / sjTallied * 100 (1 decimal)
+          - For CV. Ratu: susutPct = 1.4 / 250 * 100 = 0.6%
+          - null when no tallied items (PO/202608/0013)
+          
+          ✅ **Totals Calculation Correct**:
+          - totals.susutPct = totals.susut / totals.sjTallied * 100
+          - For CV. Ratu: totals.susutPct = 1.4 / 250 * 100 = 0.6%
+          - NOT based on total sjWeight (2733 kg)
+          
+          ✅ **Business Logic Verified**:
+          - Untallied POs (tallyDone=false): susut=0, susutPct=null
+          - Tallied POs (tallyDone=true): susut and susutPct calculated correctly
+          - Per-PO totals = sum of items
+          - Top-level totals = sum of POs (respecting tallyDone logic)
+          
+          ✅ **Implementation Verified (lines 4094-4194 in route.js)**:
+          - List endpoint (4094-4145): sjTallied aggregation correct (line 4113)
+          - Detail endpoint (4147-4194): sjTallied per PO correct (line 4175)
+          - susutPct calculation uses sjTallied, not sjWeight (lines 4127, 4143, 4181, 4192)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          **TEST A (List Endpoint):**
+          - CV. Ratu Indonesia:
+            * poCount: 2
+            * sjWeight: 2733 kg (includes not-yet-tallied PO)
+            * tallyWeight: 248.6 kg
+            * sjTallied: 250 kg (tallied PO only)
+            * susut: 1.4 kg
+            * susutPct: 0.6% (SMALL, NOT ~90%)
+          - Totals:
+            * sjWeight: 2733 kg
+            * tallyWeight: 248.6 kg
+            * sjTallied: 250 kg
+            * susut: 1.4 kg
+            * susutPct: 0.6% (based on sjTallied, NOT sjWeight)
+          
+          **TEST B (Detail Endpoint):**
+          - PO/202608/0013 (NOT TALLIED):
+            * sjWeight: 2483 kg
+            * tallyWeight: 0 kg
+            * sjTallied: 0 kg
+            * tallyDone: false
+            * susut: 0 kg
+            * susutPct: null
+          - PO/202608/0014 (TALLIED):
+            * sjWeight: 250 kg
+            * tallyWeight: 248.6 kg
+            * sjTallied: 250 kg
+            * tallyDone: true
+            * susut: 1.4 kg
+            * susutPct: 0.6% (1.4 / 250 * 100)
+          - Totals:
+            * sjWeight: 2733 kg
+            * tallyWeight: 248.6 kg
+            * susut: 1.4 kg
+            * susutPct: 0.6% (based on sjTallied ~250, NOT sjWeight ~2733)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All susut (shrinkage) percentage logic working correctly after fix.
+          susutPct is calculated based on sjTallied (tallied items only), NOT total sjWeight.
+          CV. Ratu Indonesia susutPct is SMALL (0.6%), NOT ~90%.
+          The bug is FIXED and verified.
+          
+          Test Coverage: 2/2 tests passed (100%)
+          - TEST A: GET /api/dashboard/supplier-shrinkage ✓
+          - TEST B: GET /api/dashboard/supplier-shrinkage/:supplierId ✓
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: "✅ SUSUT PERCENTAGE RE-VERIFICATION COMPLETE - ALL TESTS PASSED (2/2, 100%). Re-verified susut (shrinkage) percentage logic on TWO dashboard endpoints after fix. CRITICAL VERIFICATION: susutPct is calculated based on sjTallied (tallied items only), NOT total sjWeight. CV. Ratu Indonesia: susutPct = 0.6% (SMALL, realistic, NOT ~90%), susut = 1.4 kg, sjTallied = 250 kg (tallied PO only), tallyWeight = 248.6 kg, sjWeight = 2733 kg (includes not-yet-tallied PO). TEST A (list endpoint): All fields present, susutPct = 0.6%, totals.susutPct = 0.6% (based on sjTallied 250, NOT sjWeight 2733). TEST B (detail endpoint): PO/202608/0013 (tallyDone=false, susut=0, susutPct=null), PO/202608/0014 (tallyDone=true, susut=1.4, susutPct=0.6), totals.susutPct = 0.6% (based on sjTallied ~250, NOT sjWeight ~2733). The bug is FIXED - susutPct is SMALL (0.6%), NOT ~90%. Implementation at lines 4094-4194 in route.js verified correct. No critical issues found. Backend working perfectly."
