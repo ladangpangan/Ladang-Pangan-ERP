@@ -428,7 +428,9 @@ function PaymentsTab({ po, onSaved, canEdit }) {
     finally { setSaving(false); }
   };
   return (
-    <Card>
+    <div className="space-y-3">
+      {canEdit && <InvoiceBasisCard po={po} onSaved={onSaved} />}
+      <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div><CardTitle className="text-base">Pembayaran</CardTitle><CardDescription>Transfer / Tunai / QRIS · DP atau pelunasan</CardDescription></div>
         {canEdit && (
@@ -475,6 +477,71 @@ function PaymentsTab({ po, onSaved, canEdit }) {
               ))}
             </TableBody>
           </Table>}
+      </CardContent>
+    </Card>
+    </div>
+  );
+}
+
+function InvoiceBasisCard({ po, onSaved }) {
+  const [basis, setBasis] = useState(po.invoiceWeightBasis || 'shipped');
+  const [invoiceNumber, setInvoiceNumber] = useState(po.invoiceNumber || '');
+  const [invoiceDate, setInvoiceDate] = useState(po.invoiceDate ? new Date(po.invoiceDate).toISOString().slice(0, 10) : '');
+  const [saving, setSaving] = useState(false);
+  const fmt = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const kg = (n) => Number(n || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 }) + ' kg';
+  const tallyAvailable = Number(po.totalTallyWeight || 0) > 0;
+  const shippedTotal = Number(po.invoiceShippedTotal ?? po.totalAmount ?? 0);
+  const tallyTotal = Number(po.invoiceTallyTotal ?? po.totalAmount ?? 0);
+  const selectedTotal = basis === 'tally' ? tallyTotal : shippedTotal;
+  const apply = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/purchase-orders/${po.id}/invoice`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ basis, invoiceNumber: invoiceNumber || undefined, invoiceDate: invoiceDate || undefined }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success(`Total tagihan diterapkan: ${fmt(j.data.totalAmount)} (basis: ${basis === 'tally' ? 'Rekonsiliasi Tally' : 'Surat Jalan'})`);
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  const Option = ({ value, title, desc, total, disabled }) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setBasis(value)}
+      className={`flex-1 text-left rounded-lg border p-3 transition ${basis === value ? 'border-emerald-500 ring-1 ring-emerald-500 bg-emerald-50/60' : 'border-border hover:bg-slate-50'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold">{title}</span>
+        {basis === value && <Badge className="bg-emerald-600 text-white text-[10px]">Dipilih</Badge>}
+      </div>
+      <div className="text-[11px] text-muted-foreground mt-0.5">{desc}</div>
+      <div className="text-lg font-bold mt-1">{fmt(total)}</div>
+    </button>
+  );
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2"><Receipt className="w-4 h-4" />Basis Invoice PO</CardTitle>
+        <CardDescription>Pilih dasar perhitungan total tagihan ke supplier: berat <b>Surat Jalan (dikirim)</b> atau hasil <b>Rekonsiliasi Tally (diterima)</b>.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Option value="shipped" title="Surat Jalan (Dikirim)" desc={`Berat SJ: ${kg(po.totalReceivedWeight)}`} total={shippedTotal} />
+          <Option value="tally" title="Rekonsiliasi Tally (Diterima)" desc={tallyAvailable ? `Berat Tally: ${kg(po.totalTallyWeight)}` : 'Belum ada data tally'} total={tallyTotal} disabled={!tallyAvailable} />
+        </div>
+        {!tallyAvailable && <div className="text-[11px] text-amber-600">Basis Tally aktif setelah barang ditimbang ulang lewat Tally Inbound.</div>}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <F label="No. Invoice Supplier (opsional)"><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} placeholder="mis. INV/2026/001" /></F>
+          <F label="Tanggal Invoice (opsional)"><Input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} /></F>
+        </div>
+        <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t">
+          <div className="text-sm">Total tagihan terpilih: <b className="text-emerald-700">{fmt(selectedTotal)}</b></div>
+          <Button size="sm" onClick={apply} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Terapkan sebagai Total Tagihan</Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -551,15 +618,15 @@ function HppTab({ po }) {
     <div className="space-y-4">
       <Card>
         <CardHeader><CardTitle className="text-base">Ringkasan HPP</CardTitle>
-          <CardDescription>Rumus: HPP = (harga/kg × berat) + biaya tambahan per kg (proporsional per berat). {po.method === 'Timbang Kandang' ? 'Susut menaikkan HPP/kg efektif.' : 'Susut memotong invoice.'}</CardDescription>
+          <CardDescription>HPP/kg dihitung dari <b>Rekonsiliasi Tally (berat diterima riil)</b>. Basis invoice terpilih: <b>{totals.invoiceWeightBasis === 'tally' ? 'Rekonsiliasi Tally' : 'Surat Jalan'}</b>. Susut = Berat Dikirim (SJ) − Berat Diterima (Tally).</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
           <Stat label="Subtotal Items" value={`Rp ${Number(totals.subtotal).toLocaleString('id-ID')}`} />
           <Stat label="Biaya Tambahan" value={`Rp ${Number(totals.additionalCost).toLocaleString('id-ID')}`} />
           <Stat label="Total HPP" value={`Rp ${Number(totals.totalHpp).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} highlight />
           <Stat label="Rata-rata HPP/kg" value={`Rp ${Number(totals.avgHppPerKg).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} highlight />
-          <Stat label="Berat Dibayar" value={`${totals.totalWeightBilled} kg`} />
-          <Stat label="Berat Aktual (RPH)" value={`${totals.totalWeightActual} kg`} />
+          <Stat label="Berat Ditagih (Invoice)" value={`${totals.totalWeightBilled} kg`} />
+          <Stat label="Berat Diterima (Tally)" value={`${totals.totalWeightActual} kg`} />
           <Stat label="Total Susut" value={`${totals.totalSusut.toFixed(2)} kg`} />
           <Stat label="Grand Total (Invoice)" value={`Rp ${Number(totals.grandTotal).toLocaleString('id-ID')}`} highlight />
         </CardContent>
