@@ -4197,6 +4197,43 @@ async function handleRoute(request, { params }) {
       return json({ data: { deleted: true } });
     }
 
+    // ================= APP SETTINGS (key-value JSON) =================
+    const ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications'];
+    // GET /settings/:key
+    if (route.startsWith('/settings/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const key = path[1];
+      if (!ALLOWED_SETTINGS.includes(key)) return err('Setting tidak dikenal', 404);
+      const row = db.select().from(s.appSettings).where(eq(s.appSettings.key, key)).get();
+      let value = {};
+      if (row?.value) { try { value = JSON.parse(row.value); } catch { value = {}; } }
+      return json({ data: { key, value, updatedAt: row?.updatedAt || null } });
+    }
+    // PUT /settings/:key
+    if (route.startsWith('/settings/') && path.length === 2 && (method === 'PUT' || method === 'POST')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const key = path[1];
+      if (!ALLOWED_SETTINGS.includes(key)) return err('Setting tidak dikenal', 404);
+      const body = await request.json().catch(() => ({}));
+      const val = JSON.stringify(body?.value !== undefined ? body.value : body);
+      const existing = db.select().from(s.appSettings).where(eq(s.appSettings.key, key)).get();
+      if (existing) db.update(s.appSettings).set({ value: val, updatedAt: new Date() }).where(eq(s.appSettings.key, key)).run();
+      else db.insert(s.appSettings).values({ key, value: val, updatedAt: new Date() }).run();
+      let value = {}; try { value = JSON.parse(val); } catch {}
+      return json({ data: { key, value } });
+    }
+
+    // PUT /account/profile — update nama user sendiri
+    if (route === '/account/profile' && (method === 'PUT' || method === 'POST')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json().catch(() => ({}));
+      const name = String(body.name || '').trim();
+      if (!name) return err('Nama wajib diisi');
+      db.update(s.user).set({ name, updatedAt: new Date() }).where(eq(s.user.id, session.user.id)).run();
+      return json({ data: { id: session.user.id, name } });
+    }
+
+
     // POST /inventory/outbound - non-sales (sample) or damage
     if (route === '/inventory/outbound' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
