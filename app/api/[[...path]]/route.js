@@ -4085,6 +4085,49 @@ async function handleRoute(request, { params }) {
       } });
     }
 
+    // GET /dashboard/supplier-shrinkage - rekap susut (Surat Jalan vs Tally) per supplier
+    if (route === '/dashboard/supplier-shrinkage' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const poItems = db.select().from(s.purchaseOrderItems).all();
+      const bySupplier = {};
+      for (const it of poItems) {
+        const sjW = Number(it.receivedWeight || 0);
+        if (sjW <= 0) continue;
+        const po = db.select({ id: s.purchaseOrder.id, supplierId: s.purchaseOrder.supplierId, status: s.purchaseOrder.pipelineStatus })
+          .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, it.purchaseOrderId)).get();
+        if (!po || po.status === 'Dibatalkan') continue;
+        const key = po.supplierId;
+        if (!bySupplier[key]) bySupplier[key] = { supplierId: key, sjWeight: 0, tallyWeight: 0, poSet: new Set() };
+        bySupplier[key].sjWeight += sjW;
+        bySupplier[key].tallyWeight += Number(it.tallyWeight || 0);
+        bySupplier[key].poSet.add(po.id);
+      }
+      const rows = Object.values(bySupplier).map(r => {
+        const c = db.select({ displayName: s.contacts.displayName, code: s.contacts.code }).from(s.contacts).where(eq(s.contacts.id, r.supplierId)).get();
+        const sjWeight = Math.round(r.sjWeight * 100) / 100;
+        const tallyWeight = Math.round(r.tallyWeight * 100) / 100;
+        const tallyDone = tallyWeight > 0;
+        const susut = tallyDone ? Math.round((sjWeight - tallyWeight) * 100) / 100 : 0;
+        const susutPct = (tallyDone && sjWeight > 0) ? Math.round((susut / sjWeight) * 1000) / 10 : null;
+        return {
+          supplierId: r.supplierId,
+          supplierName: c?.displayName || '-',
+          supplierCode: c?.code || '-',
+          poCount: r.poSet.size,
+          sjWeight, tallyWeight, tallyDone, susut, susutPct,
+        };
+      }).sort((a, b) => (b.susut) - (a.susut));
+      const totals = {
+        sjWeight: Math.round(rows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100,
+        tallyWeight: Math.round(rows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100,
+        susut: Math.round(rows.reduce((a, b) => a + b.susut, 0) * 100) / 100,
+      };
+      totals.susutPct = totals.sjWeight > 0 ? Math.round((totals.susut / totals.sjWeight) * 1000) / 10 : 0;
+      return json({ data: rows, totals } );
+    }
+
+
     // =====================================================================
     // PURCHASE REPORTS
     // =====================================================================
