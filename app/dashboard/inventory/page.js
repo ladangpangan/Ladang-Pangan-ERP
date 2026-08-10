@@ -31,7 +31,7 @@ export default function InventoryPage() {
 
   const [filter, setFilter] = useState({ cs: 'all', product: 'all', status: 'active', sort: 'FEFO', q: '' });
   const [selected, setSelected] = useState([]);
-  const [viewMode, setViewMode] = useState('flat'); // 'flat' or 'grouped'
+  const [viewMode, setViewMode] = useState('grouped'); // 'flat' or 'grouped' (default: grouped by PO/WO)
   const [expandedGroups, setExpandedGroups] = useState({}); // { key: bool }
   const [view, setView] = useState('active');
   const sort = useSort();
@@ -219,12 +219,14 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
     return (b.sourceOrderDate || 0) - (a.sourceOrderDate || 0);
   });
 
-  const toggleGroup = (key) => setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleGroup = (key, currentlyOpen) => setExpandedGroups(prev => ({ ...prev, [key]: !currentlyOpen }));
 
   return (
     <div className="divide-y">
       {groupsList.map(g => {
-        const isExpanded = expandedGroups[g.key] !== false; // default expanded
+        // Default: PO groups CLOSED, other sources (WO/MANUAL) OPEN. User can toggle.
+        const defaultOpen = g.sourceType !== 'PO';
+        const isExpanded = expandedGroups[g.key] === undefined ? defaultOpen : expandedGroups[g.key];
         const Icon = g.sourceType === 'PO' ? ShoppingCart : g.sourceType === 'WO' ? ClipboardList : Package;
         const badgeColor = g.sourceType === 'PO' ? 'bg-blue-100 text-blue-700 border-blue-200' :
                            g.sourceType === 'WO' ? 'bg-purple-100 text-purple-700 border-purple-200' :
@@ -233,7 +235,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
           <div key={g.key}>
             <button
               type="button"
-              onClick={() => toggleGroup(g.key)}
+              onClick={() => toggleGroup(g.key, isExpanded)}
               className="w-full flex items-center gap-3 p-4 hover:bg-slate-50 text-left"
             >
               {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}

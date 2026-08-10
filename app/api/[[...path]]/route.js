@@ -1321,6 +1321,45 @@ async function handleRoute(request, { params }) {
       return { totalAmount: finalTotal, susutTotal };
     };
 
+    // Compute PO billable total + HPP based on chosen weight basis.
+    //  - basis 'shipped' -> billable weight = Surat Jalan (receivedWeight), fallback plan weight
+    //  - basis 'tally'   -> billable weight = Tally Inbound (tallyWeight), fallback SJ, fallback plan
+    // HPP/kg ALWAYS references actual tally weight (fallback to billable weight when no tally yet).
+    const poBillWeight = (it, basis) => {
+      const plan = Number(it.weight || 0);
+      const sjW = Number(it.receivedWeight || 0) > 0 ? Number(it.receivedWeight) : plan;
+      const tW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : sjW;
+      return basis === 'tally' ? tW : sjW;
+    };
+    const computePoInvoice = (poId, basisArg) => {
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, poId)).get();
+      if (!po) return { totalAmount: 0, basis: 'shipped' };
+      const items = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, poId)).all();
+      const basis = ((basisArg || po.invoiceWeightBasis || 'shipped') === 'tally') ? 'tally' : 'shipped';
+      const addCost = Number(po.additionalCost || 0);
+      const totalBill = items.reduce((a, it) => a + poBillWeight(it, basis), 0) || 1;
+      let subtotal = 0;
+      for (const it of items) {
+        const billW = poBillWeight(it, basis);
+        const share = totalBill > 0 ? (billW / totalBill) * addCost : 0;
+        const itemCost = Number(it.unitPrice || 0) * billW;
+        subtotal += itemCost;
+        // HPP/kg dari rekonsiliasi tally (berat diterima riil)
+        const tallyW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : billW;
+        const hppPerKg = tallyW > 0 ? (itemCost + share) / tallyW : 0;
+        db.update(s.purchaseOrderItems).set({ additionalCostShare: share, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
+      }
+      const finalTotal = Math.round((subtotal + addCost) * 100) / 100;
+      db.update(s.purchaseOrder).set({ totalAmount: finalTotal, invoiceWeightBasis: basis, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, poId)).run();
+      return { totalAmount: finalTotal, basis };
+    };
+    // Preview total for a given basis WITHOUT persisting (for UI selector)
+    const previewPoTotal = (po, items, basis) => {
+      const addCost = Number(po.additionalCost || 0);
+      const subtotal = items.reduce((a, it) => a + Number(it.unitPrice || 0) * poBillWeight(it, basis), 0);
+      return Math.round((subtotal + addCost) * 100) / 100;
+    };
+
     // GET /purchase-orders - list with filters
     if (route === '/purchase-orders' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -1442,7 +1481,11 @@ async function handleRoute(request, { params }) {
       const returns = db.select().from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, id)).orderBy(desc(s.purchaseReturns.returnDate)).all();
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const outstanding = Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - totalReturns;
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance } });
+      const totalTallyWeight = Math.round(enrichedItems.reduce((a, it) => a + Number(it.tallyWeight || 0), 0) * 100) / 100;
+      const invoiceWeightBasis = po.invoiceWeightBasis || 'shipped';
+      const invoiceShippedTotal = previewPoTotal(po, enrichedItems, 'shipped');
+      const invoiceTallyTotal = previewPoTotal(po, enrichedItems, 'tally');
+      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -1584,8 +1627,7 @@ async function handleRoute(request, { params }) {
         createdAt: new Date(),
       };
       db.insert(s.grn).values(g).run();
-      // GRN line items + update PO item confirmed weight, then recompute PO total (received weight = billing basis)
-      let poTotal = 0;
+      // GRN line items + update PO item confirmed weight (Surat Jalan / berat dikirim)
       for (const it of poItems) {
         const hasRecv = recvMap[it.productId] != null;
         const recvW = hasRecv ? recvMap[it.productId] : Number(it.receivedWeight || 0);
@@ -1596,11 +1638,9 @@ async function handleRoute(request, { params }) {
           }).run();
           db.update(s.purchaseOrderItems).set({ receivedWeight: recvW }).where(eq(s.purchaseOrderItems.id, it.id)).run();
         }
-        const billW = recvW > 0 ? recvW : Number(it.weight || 0);
-        poTotal += Number(it.unitPrice || 0) * billW;
       }
-      poTotal += Number(po.additionalCost || 0);
-      db.update(s.purchaseOrder).set({ totalAmount: poTotal, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      // Recompute PO total + HPP based on the PO's chosen invoice basis (default Surat Jalan)
+      const { totalAmount: poTotal } = computePoInvoice(id, po.invoiceWeightBasis);
       // Auto-transition to Tanda Terima if currently Dikirim
       if (po.pipelineStatus === 'Dikirim') {
         db.update(s.purchaseOrder).set({ pipelineStatus: 'Tanda Terima', updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
@@ -1765,19 +1805,30 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
-      recalcPoHpp(id);
+      const itemsRaw = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, id)).all();
+      // New flow when GRN (Surat Jalan) or Tally data exists -> HPP referenced from Tally
+      const usesReconFlow = itemsRaw.some(it => Number(it.receivedWeight || 0) > 0 || Number(it.tallyWeight || 0) > 0);
+      const basis = po.invoiceWeightBasis || 'shipped';
+      if (usesReconFlow) computePoInvoice(id, basis); else recalcPoHpp(id);
       const items = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, id)).all();
       const rows = items.map(it => {
         const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, it.productId)).get();
         const isLB = po.poType === 'Live Bird';
         const method = po.method || 'Timbang Ulang';
-        let weightBilled = it.weight, weightActual = it.weight;
-        if (isLB) {
+        let weightBilled = it.weight, weightActual = it.weight, susut = 0;
+        if (usesReconFlow) {
+          const plan = Number(it.weight || 0);
+          const sjW = Number(it.receivedWeight || 0) > 0 ? Number(it.receivedWeight) : plan;
+          const tallyW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : sjW;
+          weightBilled = basis === 'tally' ? tallyW : sjW;
+          weightActual = tallyW; // HPP references actual re-weigh (tally)
+          susut = Math.round(Math.max(0, sjW - tallyW) * 100) / 100;
+        } else if (isLB) {
           if (method === 'Timbang Ulang') { weightBilled = Number(it.weightRph || it.weight); weightActual = weightBilled; }
           else { weightBilled = Number(it.weightSupplier || it.weight); weightActual = Number(it.weightRph || weightBilled); }
+          susut = Math.max(0, Number(it.weightSupplier || 0) - Number(it.weightRph || 0));
         }
         const itemCost = Number(it.unitPrice) * weightBilled;
-        const susut = isLB ? Math.max(0, Number(it.weightSupplier || 0) - Number(it.weightRph || 0)) : 0;
         return {
           ...it, product: p,
           weightBilled, weightActual, susut,
@@ -1795,10 +1846,31 @@ async function handleRoute(request, { params }) {
         totalSusut: rows.reduce((a, b) => a + b.susut, 0),
         totalHpp: rows.reduce((a, b) => a + b.hppTotal, 0),
         grandTotal: Number(po.totalAmount || 0),
+        invoiceWeightBasis: basis,
+        hppBasis: 'tally',
       };
       totals.avgHppPerKg = totals.totalWeightActual > 0 ? totals.totalHpp / totals.totalWeightActual : 0;
       return json({ data: { po, items: rows, totals } });
     }
+
+    // POST /purchase-orders/:id/invoice - set invoice basis (Surat Jalan / Tally) & recompute total
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'invoice' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const id = path[1];
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
+      if (!po) return err('Not found', 404);
+      const body = await request.json().catch(() => ({}));
+      const basis = body.basis === 'tally' ? 'tally' : 'shipped';
+      const res = computePoInvoice(id, basis);
+      const upd = { invoiceWeightBasis: basis, updatedAt: new Date() };
+      if (body.invoiceNumber !== undefined) upd.invoiceNumber = body.invoiceNumber || null;
+      if (body.invoiceDate) upd.invoiceDate = new Date(body.invoiceDate);
+      if (body.dueDate) upd.dueDate = new Date(body.dueDate);
+      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, id)).run();
+      return json({ data: { id, totalAmount: res.totalAmount, invoiceWeightBasis: basis } });
+    }
+
     // ===================================================================== END PURCHASE
 
     // =====================================================================
@@ -3611,6 +3683,23 @@ async function handleRoute(request, { params }) {
           transactionId: txId,
         }).run();
         createdStocks.push({ id: stkId, kodeSimpan, weight: Number(it.weight || 0), quantity: Number(it.quantity || 0), productId: it.productId });
+      }
+      // For PO-sourced inbound: accumulate actual re-weigh (tally) weight per PO item, then
+      // recompute PO total + HPP (HPP always references tally weight).
+      if (body.referenceType === 'PO' && body.referenceId) {
+        const perProduct = {};
+        for (const it of body.items) {
+          perProduct[it.productId] = (perProduct[it.productId] || 0) + Number(it.weight || 0);
+        }
+        for (const [productId, w] of Object.entries(perProduct)) {
+          const poi = db.select().from(s.purchaseOrderItems)
+            .where(and(eq(s.purchaseOrderItems.purchaseOrderId, body.referenceId), eq(s.purchaseOrderItems.productId, productId))).get();
+          if (poi) {
+            const newTally = Math.round((Number(poi.tallyWeight || 0) + w) * 100) / 100;
+            db.update(s.purchaseOrderItems).set({ tallyWeight: newTally }).where(eq(s.purchaseOrderItems.id, poi.id)).run();
+          }
+        }
+        try { computePoInvoice(body.referenceId); } catch (e) {}
       }
       return json({ data: { transactionId: txId, stocks: createdStocks, stockIds: createdStocks.map(s => s.id) } }, { status: 201 });
     }
