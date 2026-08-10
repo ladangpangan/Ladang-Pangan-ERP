@@ -6,6 +6,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -952,9 +953,9 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
               </div>
             </Field>
             {form.isSubscriber ? (
-              <Field label="Prepaid Balance (Rp)"><Input type="number" value={form.prepaidBalance} onChange={e => set('prepaidBalance', Number(e.target.value))} /></Field>
+              <Field label="Prepaid Balance (Rp)"><CurrencyInput value={form.prepaidBalance} onChange={v => set('prepaidBalance', v)} placeholder="0" /></Field>
             ) : (
-              <Field label="Credit Limit (Rp)"><Input type="number" value={form.creditLimit} onChange={e => set('creditLimit', Number(e.target.value))} /></Field>
+              <Field label="Credit Limit (Rp)"><CurrencyInput value={form.creditLimit} onChange={v => set('creditLimit', v)} placeholder="0" /></Field>
             )}
           </>
         )}

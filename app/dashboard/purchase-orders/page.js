@@ -8,6 +8,7 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -255,8 +256,8 @@ function CreatePODialog({ onSaved }) {
             <SelectContent>{PAYMENT_TERMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
         </F>
-        <F label="Down Payment (Rp)"><Input type="number" value={form.dpAmount} onChange={e => update('dpAmount', Number(e.target.value))} /></F>
-        <F label="Biaya Tambahan / Ongkir (Rp)" className="sm:col-span-2"><Input type="number" value={form.additionalCost} onChange={e => update('additionalCost', Number(e.target.value))} /></F>
+        <F label="Down Payment (Rp)"><CurrencyInput value={form.dpAmount} onChange={v => update('dpAmount', v)} placeholder="0" /></F>
+        <F label="Biaya Tambahan / Ongkir (Rp)" className="sm:col-span-2"><CurrencyInput value={form.additionalCost} onChange={v => update('additionalCost', v)} placeholder="0" /></F>
       </div>
 
       <div className="space-y-2">
@@ -294,7 +295,7 @@ function CreatePODialog({ onSaved }) {
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Harga/kg (Rp)</Label>
-                  <Input type="number" placeholder="0" value={it.unitPrice} onChange={e => updItem(i, 'unitPrice', Number(e.target.value))} />
+                  <CurrencyInput placeholder="0" value={it.unitPrice} onChange={v => updItem(i, 'unitPrice', v)} />
                 </div>
               </div>
               <div className="text-[11px] text-muted-foreground pl-0.5">

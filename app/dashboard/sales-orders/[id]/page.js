@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CurrencyInput } from '@/components/ui/currency-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -591,7 +592,7 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <Label className="text-xs">Biaya Kirim (Rp)</Label>
-            <Input type="number" inputMode="numeric" value={cost} onChange={e => setCost(e.target.value)} disabled={!canEdit} className="mt-1" placeholder="0" />
+            <CurrencyInput value={cost} onChange={v => setCost(v)} disabled={!canEdit} className="mt-1" placeholder="0" />
           </div>
           <div>
             <Label className="text-xs">Ditanggung</Label>
@@ -648,7 +649,7 @@ function PaymentsTab({ so, onSaved, canEdit }) {
                     <SelectContent><SelectItem value="Transfer">Transfer</SelectItem><SelectItem value="Tunai">Tunai</SelectItem><SelectItem value="QRIS">QRIS</SelectItem></SelectContent>
                   </Select>
                 </F>
-                <F label="Nominal (Rp)" className="col-span-2"><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: Number(e.target.value) })} /></F>
+                <F label="Nominal (Rp)" className="col-span-2"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} placeholder="0" /></F>
                 <F label="Referensi" className="col-span-2"><Input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} /></F>
                 <F label="Adalah DP?">
                   <Select value={form.isDp ? 'yes' : 'no'} onValueChange={v => setForm({ ...form, isDp: v === 'yes' })}>
@@ -748,7 +749,7 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                   </Select>
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
-                <F label="Nominal (Rp)"><Input type="number" value={form.totalAmount} onChange={e => setForm({ ...form, totalAmount: Number(e.target.value) })} /></F>
+                <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
                 <F label="Berat (kg)"><Input type="number" value={form.totalWeight} onChange={e => setForm({ ...form, totalWeight: Number(e.target.value) })} /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
