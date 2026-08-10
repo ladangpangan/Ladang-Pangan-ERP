@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import nodePath from 'path';
-import { eq, and, like, or, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, like, or, ne, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getDb } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
@@ -4132,6 +4132,53 @@ async function handleRoute(request, { params }) {
       totals.susutPct = totals.sjWeight > 0 ? Math.round((totals.susut / totals.sjWeight) * 1000) / 10 : 0;
       return json({ data: rows, totals } );
     }
+
+    // GET /dashboard/supplier-shrinkage/:supplierId - rincian susut per PO & produk untuk 1 supplier
+    if (route.startsWith('/dashboard/supplier-shrinkage/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const supplierId = path[2];
+      const supplier = db.select({ displayName: s.contacts.displayName, code: s.contacts.code }).from(s.contacts).where(eq(s.contacts.id, supplierId)).get();
+      const pos = db.select().from(s.purchaseOrder)
+        .where(and(eq(s.purchaseOrder.supplierId, supplierId), ne(s.purchaseOrder.pipelineStatus, 'Dibatalkan'))).all();
+      const productName = (pid) => {
+        const p = db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, pid)).get();
+        return { name: p?.name || '-', sku: p?.sku || '-' };
+      };
+      const poRows = [];
+      for (const po of pos) {
+        const items = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.id)).all();
+        const relItems = items.filter(it => Number(it.receivedWeight || 0) > 0);
+        if (relItems.length === 0) continue;
+        const itemRows = relItems.map(it => {
+          const pn = productName(it.productId);
+          const sjW = Math.round(Number(it.receivedWeight || 0) * 100) / 100;
+          const tW = Math.round(Number(it.tallyWeight || 0) * 100) / 100;
+          const done = tW > 0;
+          const su = done ? Math.round((sjW - tW) * 100) / 100 : 0;
+          return { productId: it.productId, productName: pn.name, sku: pn.sku, sjWeight: sjW, tallyWeight: tW, tallyDone: done, susut: su, susutPct: (done && sjW > 0) ? Math.round((su / sjW) * 1000) / 10 : null };
+        });
+        const sjWeight = Math.round(itemRows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100;
+        const tallyWeight = Math.round(itemRows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100;
+        const tallyDone = tallyWeight > 0;
+        const susut = tallyDone ? Math.round((sjWeight - tallyWeight) * 100) / 100 : 0;
+        poRows.push({
+          poId: po.id, poNumber: po.poNumber, status: po.pipelineStatus,
+          orderDate: po.orderDate, sjWeight, tallyWeight, tallyDone, susut,
+          susutPct: (tallyDone && sjWeight > 0) ? Math.round((susut / sjWeight) * 1000) / 10 : null,
+          items: itemRows,
+        });
+      }
+      poRows.sort((a, b) => (b.orderDate ? new Date(b.orderDate).getTime() : 0) - (a.orderDate ? new Date(a.orderDate).getTime() : 0));
+      const totals = {
+        sjWeight: Math.round(poRows.reduce((a, b) => a + b.sjWeight, 0) * 100) / 100,
+        tallyWeight: Math.round(poRows.reduce((a, b) => a + b.tallyWeight, 0) * 100) / 100,
+        susut: Math.round(poRows.reduce((a, b) => a + b.susut, 0) * 100) / 100,
+      };
+      totals.susutPct = totals.sjWeight > 0 ? Math.round((totals.susut / totals.sjWeight) * 1000) / 10 : 0;
+      return json({ data: { supplier: { name: supplier?.displayName || '-', code: supplier?.code || '-' }, pos: poRows, totals } });
+    }
+
 
 
     // =====================================================================
