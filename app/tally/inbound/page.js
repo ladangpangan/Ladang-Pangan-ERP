@@ -165,6 +165,7 @@ export default function TallyInboundPage() {
     if (!draft.weight || Number(draft.weight) <= 0) return toast.error('Berat harus > 0');
     const product = products.find(p => p.id === draft.productId);
     const assignedKode = nextKode(staged.length);
+    const zoneObj = zones.find(z => z.id === zoneId);
     setStaged(prev => ([...prev, {
       ...draft,
       _id: Math.random().toString(36).slice(2),
@@ -173,8 +174,10 @@ export default function TallyInboundPage() {
       productSku: product?.sku,
       weight: Number(draft.weight),
       quantity: Number(draft.quantity || 1),
+      zoneId: zoneId || null,
+      zoneCode: zoneObj?.code || null,
     }]));
-    // 3.2: pertahankan Produk, Jenis Kemasan, Kadaluarsa (reset berat saja)
+    // 3.2: pertahankan Produk, Jenis Kemasan, Kadaluarsa, Zona (reset berat saja)
     setDraft(d => ({ ...d, weight: '' }));
     toast.success(`${assignedKode ? assignedKode + ' · ' : ''}${product?.name} ${draft.weight} kg dicatat`);
   };
@@ -245,6 +248,7 @@ export default function TallyInboundPage() {
         packagingType: it.packagingType,
         expiredDate: it.expiredDate || undefined,
         kodeSimpan: it.kodeSimpan || undefined,
+        zoneId: it.zoneId || undefined,
       })),
     };
 
@@ -454,17 +458,6 @@ export default function TallyInboundPage() {
                 </Select>
                 {coldStorages.length === 0 && <div className="text-[11px] text-amber-600">Belum ada cold storage. Buat dulu di menu Cold Storage & Zones.</div>}
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Zona {zones.length > 0 ? '(opsional)' : ''}</Label>
-                <Select value={zoneId} onValueChange={setZoneId} disabled={!coldStorageId}>
-                  <SelectTrigger><SelectValue placeholder={coldStorageId ? 'Pilih zona' : 'Pilih CS dulu'} /></SelectTrigger>
-                  <SelectContent>
-                    {zones.map(z => (
-                      <SelectItem key={z.id} value={z.id}>{z.code} - {z.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
             </CardContent>
           </Card>
 
@@ -614,7 +607,7 @@ export default function TallyInboundPage() {
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">Berat (kg) *</Label>
+                  <Label className="text-xs">Berat (kg) * <span className="text-emerald-600 font-normal">— tekan Enter untuk Catat</span></Label>
                   {refType === 'PO' && draft.productId && currentSjWeight > 0 && (
                     <Button
                       type="button" size="sm" variant="outline" onClick={pakaiBeratSJ}
@@ -628,6 +621,7 @@ export default function TallyInboundPage() {
                   type="number" inputMode="decimal" step="0.1"
                   value={draft.weight}
                   onChange={(e) => setDraft({ ...draft, weight: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); catat(); } }}
                   className="text-xl font-bold h-12" placeholder="0.0"
                 />
                 {refType === 'PO' && draft.productId && (
@@ -671,9 +665,24 @@ export default function TallyInboundPage() {
                   <Input type="number" inputMode="numeric" min="1" value={draft.quantity} onChange={(e) => setDraft({ ...draft, quantity: e.target.value })} placeholder="Jumlah kemasan" />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Kadaluarsa</Label>
-                <Input type="date" value={draft.expiredDate} onChange={(e) => setDraft({ ...draft, expiredDate: e.target.value })} />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Kadaluarsa</Label>
+                  <Input type="date" value={draft.expiredDate} onChange={(e) => setDraft({ ...draft, expiredDate: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Zona {zones.length > 0 ? '(opsional)' : ''}</Label>
+                  <Select value={zoneId || 'none'} onValueChange={(v) => setZoneId(v === 'none' ? '' : v)} disabled={!coldStorageId || zones.length === 0}>
+                    <SelectTrigger><SelectValue placeholder={zones.length === 0 ? 'Tidak ada zona' : 'Pilih zona'} /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Tanpa zona</SelectItem>
+                      {zones.map(z => (
+                        <SelectItem key={z.id} value={z.id}>{z.code} - {z.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {zoneId && <div className="text-[10px] text-emerald-600">Tetap dipakai s/d diubah manual</div>}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -730,6 +739,7 @@ export default function TallyInboundPage() {
                       {it.kodeSimpan && <span className="font-mono text-emerald-700">{it.kodeSimpan}</span>}
                       {it.kodeSimpan && ' · '}
                       <span className="font-mono">{it.productSku}</span> · {pkgLabel(it.packagingType)} × {Number(it.quantity || 1)}
+                      {it.zoneCode && ` · Zona ${it.zoneCode}`}
                       {it.expiredDate && ` · Exp ${format(new Date(it.expiredDate), 'dd MMM yy')}`}
                     </div>
                   </div>

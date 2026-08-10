@@ -241,6 +241,173 @@ frontend:
           - Surat Jalan PDF button: ✓
 
 
+
+  - task: "Tally Inbound per-item zoneId support (POST /api/inventory/inbound)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE: Tally Inbound now supports per-item zoneId with header-level fallback.
+          IMPLEMENTATION (route.js line 3835): inventoryStock.zoneId = `it.zoneId || body.zoneId || null`
+          - Per-item zoneId takes precedence over header-level zoneId
+          - Falls back to header zoneId if per-item not provided
+          - Falls back to null if neither provided
+          - Backward compatible with existing behavior (header-level zoneId only)
+          FRONTEND: Zona selector moved from Section 1 to Section 2 (next to Kadaluarsa), persistent state, captured per-item at record time.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TALLY INBOUND PER-ITEM ZONEID - ALL TESTS PASSED (3/3, 100%)
+          
+          Comprehensive backend testing completed for the NEW per-item zoneId feature in POST /api/inventory/inbound.
+          The implementation allows each inventory item to have its own zone assignment with proper fallback logic.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: SQLite at /app/data/erp.db
+          - Cold Storage: Cold Storage Utama (existing, with 2 zones)
+          - Zone A: Z-A (ID: b8f3ac91-ee7b-4fc9-ad2c-47a93bc67c3a)
+          - Zone B: Z-B (ID: 1bd13c92-a829-4e0b-ad7c-b1b56ecf3b85)
+          - Product: Sayap Premium Medium 10-12/Pack (ID: 78469ace-b58e-4a29-b8a1-bc83c54b5c31)
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Per-item zona precedence + null fallback (PASSED):
+             Setup:
+             - POST /api/inventory/inbound with NO header zoneId
+             - Item 1: zoneId=zoneA, weight=5 kg
+             - Item 2: zoneId=zoneB, weight=6 kg
+             - Item 3: NO zoneId, weight=7 kg
+             
+             Result: 201 Created
+             - Transaction ID: 53ff90dc-0fbf-4b93-bfec-e9c497df6b65
+             - 3 stocks created
+             
+             **CRITICAL VERIFICATION (via SQLite query):**
+             - Stock 1 (2608100011): zone_id = b8f3ac91-ee7b-4fc9-ad2c-47a93bc67c3a (zoneA) ✓
+             - Stock 2 (2608100012): zone_id = 1bd13c92-a829-4e0b-ad7c-b1b56ecf3b85 (zoneB) ✓
+             - Stock 3 (2608100013): zone_id = NULL ✓
+             
+             **KEY FINDING:**
+             ✅ Per-item zoneId takes precedence (Stock 1 & 2)
+             ✅ Null fallback works when no zoneId provided (Stock 3)
+             ✅ Each item can have different zone assignment
+          
+          ✅ TEST 2 — Header-level fallback + per-item override (PASSED):
+             Setup:
+             - POST /api/inventory/inbound with header zoneId=zoneA
+             - Item 1: NO per-item zoneId, weight=4 kg
+             - Item 2: per-item zoneId=zoneB, weight=5 kg
+             
+             Result: 201 Created
+             - Transaction ID: 109d6007-3f0b-4646-a07d-7e5b39887bc4
+             - 2 stocks created
+             
+             **CRITICAL VERIFICATION (via SQLite query):**
+             - Stock 1 (2608100014): zone_id = b8f3ac91-ee7b-4fc9-ad2c-47a93bc67c3a (zoneA) ✓
+             - Stock 2 (2608100015): zone_id = 1bd13c92-a829-4e0b-ad7c-b1b56ecf3b85 (zoneB) ✓
+             
+             **KEY FINDING:**
+             ✅ Header zoneId used as fallback when per-item not provided (Stock 1)
+             ✅ Per-item zoneId overrides header zoneId (Stock 2)
+             ✅ Backward compatibility maintained (header-level zoneId still works)
+          
+          ✅ TEST 3 — No regression (PASSED):
+             Setup:
+             - POST /api/inventory/inbound with basic payload (no zoneId at all)
+             - Item 1: weight=10 kg, quantity=2
+             
+             Result: 201 Created
+             - Transaction ID: 79003213-adb0-43ae-aeba-90c24a46ae73
+             - 1 stock created
+             
+             **VERIFICATION:**
+             - Stock (2608100016): kodeSimpan auto-generated ✓
+             - Weight: 10 kg (correct) ✓
+             - Quantity: 2 (correct) ✓
+             
+             **KEY FINDING:**
+             ✅ Basic inbound functionality still works
+             ✅ kodeSimpan auto-generation working
+             ✅ No breaking changes to existing behavior
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (line 3835 in route.js)**:
+          - Implementation: `zoneId: it.zoneId || body.zoneId || null`
+          - Per-item zoneId takes precedence over header zoneId
+          - Falls back to header zoneId if per-item not provided
+          - Falls back to null if neither provided
+          - All three fallback levels working correctly
+          
+          ✅ **Precedence Logic**:
+          1. Per-item zoneId (it.zoneId) - HIGHEST priority
+          2. Header-level zoneId (body.zoneId) - FALLBACK
+          3. null - DEFAULT when neither provided
+          
+          ✅ **Backward Compatibility**:
+          - Existing code using only header zoneId continues to work
+          - No breaking changes to API contract
+          - Optional per-item zoneId field (not required)
+          
+          ✅ **Data Integrity**:
+          - zone_id correctly persisted to inventory_stock table
+          - Each stock can have different zone assignment
+          - Verified via direct SQLite queries (not just API response)
+          - All zone_id values match expected values
+          
+          ✅ **Use Cases Supported**:
+          1. Mixed zones per inbound (some items in Zone A, some in Zone B)
+          2. Header-level zone for all items (backward compatible)
+          3. No zone assignment (null) when not applicable
+          4. Per-item override of header zone
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          TEST 1 (Per-item precedence):
+          - Transaction: 53ff90dc-0fbf-4b93-bfec-e9c497df6b65
+          - Stock 1: 2608100011, 5 kg, zone_id=zoneA (per-item)
+          - Stock 2: 2608100012, 6 kg, zone_id=zoneB (per-item)
+          - Stock 3: 2608100013, 7 kg, zone_id=null (no zoneId)
+          
+          TEST 2 (Header fallback + override):
+          - Transaction: 109d6007-3f0b-4646-a07d-7e5b39887bc4
+          - Header zoneId: zoneA
+          - Stock 1: 2608100014, 4 kg, zone_id=zoneA (header fallback)
+          - Stock 2: 2608100015, 5 kg, zone_id=zoneB (per-item override)
+          
+          TEST 3 (No regression):
+          - Transaction: 79003213-adb0-43ae-aeba-90c24a46ae73
+          - Stock: 2608100016, 10 kg, quantity=2
+          - kodeSimpan auto-generated correctly
+          
+          === CLEANUP ===
+          ✅ All test data cleaned up successfully:
+          - 6 inventory_stock rows deleted
+          - 3 inventory_transaction rows deleted
+          - Database restored to original state
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All per-item zoneId features working correctly.
+          Precedence logic working as designed.
+          Backward compatibility maintained.
+          No regression in basic functionality.
+          Data integrity verified via direct DB queries.
+          
+          Test Coverage: 3/3 tests passed (100%)
+          - TEST 1: Per-item zona precedence + null fallback ✓
+          - TEST 2: Header-level fallback + per-item override ✓
+          - TEST 3: No regression (basic functionality) ✓
+
 backend:
   - task: "BUGFIX: Receipt (Penerimaan) basis uses real shipped weight (not original SO weight)"
     implemented: true
@@ -14620,6 +14787,10 @@ agent_communication:
              - Allocated weight: 25.3 kg (only stock 1) ✓
              - Stock count: 1 ✓
              
+
+    -agent: "testing"
+    -message: "✅ TALLY INBOUND PER-ITEM ZONEID - ALL TESTS PASSED (3/3, 100%). Comprehensive backend testing completed for the NEW per-item zoneId feature in POST /api/inventory/inbound at line 3835 (zoneId: it.zoneId || body.zoneId || null). TEST 1 (Per-item precedence): Posted inbound with NO header zoneId, 3 items with mixed per-item zoneId (zoneA, zoneB, none) → verified via SQLite: stock1.zone_id=zoneA, stock2.zone_id=zoneB, stock3.zone_id=null. Per-item zoneId takes precedence, null fallback works. TEST 2 (Header fallback + override): Posted inbound with header zoneId=zoneA, 2 items (one without per-item zoneId, one with zoneId=zoneB) → verified: stock1.zone_id=zoneA (header fallback), stock2.zone_id=zoneB (per-item override). Backward compatibility maintained. TEST 3 (No regression): Posted basic inbound (no zoneId) → 201, kodeSimpan auto-generated, totals correct. Implementation verified at route.js line 3835. All zone_id values verified via direct SQLite queries (not just API response). Cleanup successful (6 stocks, 3 transactions deleted). No critical issues. Backend working perfectly. Main agent should summarize and finish."
+
              **CRITICAL VERIFICATION #5: Old stock freed**
              - Stock 1 (2608100003): still in allocations ✓
              - Stock 2 (2608100004): NOT in allocations ✓ (freed)
@@ -14783,3 +14954,6 @@ agent_communication:
 
     -agent: "main"
     -message: "✅ P0 FIX (SO Confirmation UI) COMPLETE & VERIFIED VIA SCREENSHOTS. Root cause of the earlier partial E2E failure was the native browser confirm()/window.confirm() used in transitionStatus() at /app/app/dashboard/sales-orders/[id]/page.js — Playwright auto-dismisses native dialogs (= Cancel), so status transitions never fired during automation. Also poor UX (Invoiced used 'Batal' as an affirmative choice). FIX: replaced native confirm() with a proper shadcn Dialog (state-driven: confirmTarget/invoiceBasis/transitioning hooks added BEFORE early returns to respect hook rules). Added data-testid hooks: so-status-btn-{Status}, so-status-confirm, invoice-basis-shipped, invoice-basis-received. Invoiced now shows two explicit radio options (Berat Kirim / Berat Diterima). VERIFIED end-to-end via screenshot automation with a real Draft SO: allocated 2 kode simpan → Confirmed → Packed → Shipped → Invoiced (basis: berat diterima) → INV/202608/0005 generated, Gross Profit card correct (Penjualan 2.012.000 − HPP 1.517.350 − Kirim 50.000 = GP 444.650, 22.1%). Test SO cleaned up afterward (stocks restored to active). No console errors. P0 resolved."
+
+    -agent: "main"
+    -message: "NEW CHANGES (Tally Inbound UX) — needs backend verification for per-item zoneId. (1) FRONTEND: Enter key in Berat field now triggers 'Catat' (record staged item). (2) FRONTEND: Moved Zona selector from Section 1 to Section 2 next to Kadaluarsa (2-col grid). Zona is persistent state (survives each Catat), captured per-item at record time, and only changes when manually changed. (3) BACKEND (route.js POST /inventory/inbound, ~line 3835): inventoryStock.zoneId now uses `it.zoneId || body.zoneId || null` (per-item zona with header-level fallback — backward compatible). PLEASE TEST: POST /api/inventory/inbound with a coldStorageId that has zones, items where some items carry a per-item zoneId and some don't → verify each created stock's zone_id matches its item's zoneId (or falls back to body.zoneId/null). Also verify existing behavior (only body.zoneId, no per-item) still applies zona to all stocks. Login admin@lpi.co.id/admin123. Clean up created stocks/transaction afterward."
