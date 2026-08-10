@@ -73,6 +73,13 @@ export default function TallyInboundPage() {
 
   // Kode Simpan preview queue
   const [kodeQueue, setKodeQueue] = useState([]);
+  // Manual override kode simpan (fitur: atur kode awal, sistem melanjutkan)
+  const [kodeBase, setKodeBase] = useState(null);      // string basis manual
+  const [kodeBaseAt, setKodeBaseAt] = useState(0);     // index staged saat basis di-set
+  const [editingKode, setEditingKode] = useState(false);
+  const [kodeInput, setKodeInput] = useState('');
+  // Tandai PO selesai ditally
+  const [markTallyDone, setMarkTallyDone] = useState(false);
   const loadKodes = async (n = 200) => {
     try {
       const res = await fetch(`/api/inventory/next-kode-simpan?count=${n}`, { credentials: 'include' });
@@ -87,7 +94,8 @@ export default function TallyInboundPage() {
 
   useEffect(() => { setRefId(''); }, [refType]);
 
-  const availablePOs = useMemo(() => purchaseOrders, [purchaseOrders]);
+  // PO yang sudah selesai ditally disembunyikan dari referensi
+  const availablePOs = useMemo(() => purchaseOrders.filter(po => !po.tallyCompletedAt), [purchaseOrders]);
   const availableWOs = useMemo(() => workOrders, [workOrders]);
 
   const { data: poDetail } = useSWR(refType === 'PO' && refId ? `/api/purchase-orders/${refId}` : null, fetcher);
@@ -119,8 +127,30 @@ export default function TallyInboundPage() {
   const currentStagedWeight = draft.productId ? Number(stagedWeightByProduct[draft.productId] || 0) : 0;
   const sisaSj = Math.round((currentSjWeight - currentStagedWeight) * 100) / 100; // kekurangan yang belum ter-tally
 
+  // Naikkan bagian numerik akhir dari sebuah kode (menjaga prefix & jumlah digit)
+  const incrementCode = (base, n) => {
+    const m = String(base).match(/^(.*?)(\d+)(\D*)$/);
+    if (!m) return n > 0 ? `${base}-${n}` : String(base);
+    const pre = m[1], digits = m[2], post = m[3];
+    const num = parseInt(digits, 10) + n;
+    return pre + String(num).padStart(digits.length, '0') + post;
+  };
+
   // Kode simpan yang akan dipakai untuk item berikutnya
-  const currentKode = kodeQueue[staged.length] || null;
+  const nextKode = (idx) => {
+    if (kodeBase) return incrementCode(kodeBase, idx - kodeBaseAt);
+    return kodeQueue[idx] || null;
+  };
+  const currentKode = nextKode(staged.length);
+
+  const applyManualKode = () => {
+    const v = String(kodeInput || '').trim();
+    if (!v) { toast.error('Kode simpan tidak boleh kosong'); return; }
+    setKodeBase(v);
+    setKodeBaseAt(staged.length);
+    setEditingKode(false);
+    toast.success(`Kode simpan awal diatur: ${v}`);
+  };
 
   const pakaiBeratSJ = () => {
     if (!currentSjWeight || currentSjWeight <= 0) return;
@@ -134,7 +164,7 @@ export default function TallyInboundPage() {
     if (!draft.productId) return toast.error('Pilih Produk');
     if (!draft.weight || Number(draft.weight) <= 0) return toast.error('Berat harus > 0');
     const product = products.find(p => p.id === draft.productId);
-    const assignedKode = kodeQueue[staged.length] || null;
+    const assignedKode = nextKode(staged.length);
     setStaged(prev => ([...prev, {
       ...draft,
       _id: Math.random().toString(36).slice(2),
@@ -207,6 +237,7 @@ export default function TallyInboundPage() {
       referenceType: refType,
       referenceId: refId || undefined,
       notes,
+      markTallyComplete: refType === 'PO' && !!markTallyDone,
       items: staged.map(it => ({
         productId: it.productId,
         weight: Number(it.weight),
@@ -263,6 +294,9 @@ export default function TallyInboundPage() {
     setStaged([]);
     setDraft(emptyDraft());
     setNotes('');
+    setKodeBase(null);
+    setKodeBaseAt(0);
+    setMarkTallyDone(false);
   };
 
   const logout = async () => { await authClient.signOut(); router.push('/login'); };
@@ -522,10 +556,33 @@ export default function TallyInboundPage() {
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground flex items-center justify-center gap-1">
                 <Tag className="w-3.5 h-3.5" /> Kode Simpan (tulis di karung)
               </div>
-              <div className="mt-1 font-mono font-bold text-2xl text-emerald-700 tracking-wide">
-                {currentKode || '—'}
-              </div>
-              <div className="text-[10px] text-muted-foreground mt-0.5">Otomatis berganti setiap kali klik "Catat"</div>
+              {editingKode ? (
+                <div className="mt-2 flex items-center gap-2 justify-center">
+                  <Input
+                    autoFocus
+                    value={kodeInput}
+                    onChange={(e) => setKodeInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') applyManualKode(); }}
+                    className="h-10 text-center font-mono font-bold text-lg max-w-[200px]"
+                    placeholder="mis. 2608100050"
+                  />
+                  <Button size="sm" className="h-10 bg-emerald-600 hover:bg-emerald-700" onClick={applyManualKode}>Set</Button>
+                  <Button size="sm" variant="ghost" className="h-10" onClick={() => setEditingKode(false)}>Batal</Button>
+                </div>
+              ) : (
+                <>
+                  <div className="mt-1 font-mono font-bold text-2xl text-emerald-700 tracking-wide">
+                    {currentKode || '—'}
+                  </div>
+                  <div className="flex items-center justify-center gap-2 mt-1">
+                    <span className="text-[10px] text-muted-foreground">Otomatis berganti setiap klik &quot;Catat&quot;</span>
+                    <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => { setKodeInput(currentKode || ''); setEditingKode(true); }}>
+                      Atur manual
+                    </Button>
+                  </div>
+                  {kodeBase && <div className="text-[10px] text-blue-600 mt-0.5">Kode manual aktif — melanjutkan dari {kodeBase}</div>}
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -628,6 +685,12 @@ export default function TallyInboundPage() {
 
           {/* Sticky footer */}
           <div className="sticky bottom-0 bg-white border-t -mx-4 px-4 py-3 mt-auto shadow-lg space-y-2">
+            {refType === 'PO' && (
+              <label className="flex items-center gap-2 text-xs bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 cursor-pointer">
+                <input type="checkbox" checked={markTallyDone} onChange={(e) => setMarkTallyDone(e.target.checked)} className="w-4 h-4 accent-emerald-600" />
+                <span>Tandai PO ini <b>selesai ditally</b> (akan hilang dari pilihan referensi)</span>
+              </label>
+            )}
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Total tercatat:</span>
               <span><b>{staged.length}</b> item · <b>{totalWeight.toFixed(1)}</b> kg</span>

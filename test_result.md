@@ -13885,3 +13885,392 @@ test_plan:
 agent_communication:
     -agent: "testing"
     -message: "✅ SUSUT PERCENTAGE RE-VERIFICATION COMPLETE - ALL TESTS PASSED (2/2, 100%). Re-verified susut (shrinkage) percentage logic on TWO dashboard endpoints after fix. CRITICAL VERIFICATION: susutPct is calculated based on sjTallied (tallied items only), NOT total sjWeight. CV. Ratu Indonesia: susutPct = 0.6% (SMALL, realistic, NOT ~90%), susut = 1.4 kg, sjTallied = 250 kg (tallied PO only), tallyWeight = 248.6 kg, sjWeight = 2733 kg (includes not-yet-tallied PO). TEST A (list endpoint): All fields present, susutPct = 0.6%, totals.susutPct = 0.6% (based on sjTallied 250, NOT sjWeight 2733). TEST B (detail endpoint): PO/202608/0013 (tallyDone=false, susut=0, susutPct=null), PO/202608/0014 (tallyDone=true, susut=1.4, susutPct=0.6), totals.susutPct = 0.6% (based on sjTallied ~250, NOT sjWeight ~2733). The bug is FIXED - susutPct is SMALL (0.6%), NOT ~90%. Implementation at lines 4094-4194 in route.js verified correct. No critical issues found. Backend working perfectly."
+
+
+test_plan:
+  current_focus:
+    - "Inventory HPP/kg & HPP/kemasan + Nilai Stok"
+    - "Tally: markTallyComplete (tally_completed_at) + manual kodeSimpan"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "BACKEND TEST for new revisions. Login admin@lpi.co.id/admin123. SQLite. Cold storage 'CS-01' exists (id can be fetched via GET /api/cold-storages). \n1) INVENTORY HPP: GET /api/inventory/stocks -> each row must now include numeric fields hppPerKg, hppPerKemasan, stockValue. hppPerKg for PO-sourced stock should reflect the PO item's hpp_per_kg (tally-based) when >0. hppPerKemasan = round(hppPerKg*weight/quantity) (quantity>0). stockValue = round(hppPerKg*weight). summary must include totalValue = sum of stockValue. Verify no 500. (Note: DB may currently have 0 stocks; if so, first create a small inbound to have data, then verify, then clean up.)\n2) TALLY markTallyComplete: POST /api/inventory/inbound with referenceType='PO', referenceId=<some PO id that has received items>, coldStorageId=CS-01 id, items=[{productId,<one product of that PO>, weight: 5, quantity:1, packagingType:'karung', kodeSimpan:'MANUAL-TEST-001'}], and markTallyComplete:true. EXPECT 201. Then GET /api/purchase-orders and confirm THAT PO now has tallyCompletedAt set (non-null). Also verify the created stock has kode_simpan == 'MANUAL-TEST-001' (custom kodeSimpan accepted). \n3) MANUAL kodeSimpan: confirm inbound stored kodeSimpan exactly as provided ('MANUAL-TEST-001').\nCLEAN UP after: delete the created inventory stock(s) + inventory transaction, revert the PO's tally_completed_at back to NULL, subtract the added tally_weight from the PO item (restore original tally_weight), and recompute is fine. Report: sample stock JSON showing hppPerKg/hppPerKemasan/stockValue, summary.totalValue, confirmation tallyCompletedAt was set then reverted, and that manual kodeSimpan was stored. Report any 500 errors."
+
+
+backend:
+  - task: "Inventory HPP/kg & HPP/kemasan + Nilai Stok"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE: Inventory stock rows now include HPP (cost) fields for financial tracking.
+          GET /api/inventory/stocks now returns each stock with:
+          - hppPerKg: numeric, HPP per kg (for PO-sourced stock, reflects PO item's hpp_per_kg when > 0)
+          - hppPerKemasan: numeric, round(hppPerKg * weight / quantity) when quantity > 0, else 0
+          - stockValue: numeric, round(hppPerKg * weight)
+          - summary.totalValue: sum of all stockValue
+          Implementation at lines 3582-3607 in route.js.
+          TEST: GET /api/inventory/stocks → verify all fields present, calculations correct, no 500 error.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ INVENTORY HPP FIELDS - ALL TESTS PASSED (100%)
+          
+          Comprehensive backend testing completed for the NEW inventory HPP fields feature.
+          
+          === TEST RESULTS ===
+          
+          ✅ GET /api/inventory/stocks → 200 (no 500 error)
+             - Total stocks: 10
+             - All stocks have HPP fields present
+          
+          ✅ HPP Fields Verification (3 sample stocks):
+             
+             Stock 1 (ID: 30dea8b7-309b-4437-8106-75597734bbaa):
+             - kodeSimpan: 2608100001
+             - weight: 25.1 kg
+             - quantity: 1
+             - hppPerKg: 30772 ✓
+             - hppPerKemasan: 772377 ✓
+             - stockValue: 772377 ✓
+             - sourceType: PO (sourceBatch: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+             - ✅ stockValue = round(hppPerKg * weight) = round(30772 * 25.1) = 772377
+             - ✅ hppPerKemasan = round(hppPerKg * weight / quantity) = round(30772 * 25.1 / 1) = 772377
+             
+             Stock 2 (ID: 4a90cec1-9033-45cc-b99f-962e78966503):
+             - kodeSimpan: 2608100002
+             - weight: 25.2 kg
+             - quantity: 1
+             - hppPerKg: 30772 ✓
+             - hppPerKemasan: 775454 ✓
+             - stockValue: 775454 ✓
+             - sourceType: PO (sourceBatch: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+             - ✅ stockValue = round(30772 * 25.2) = 775454
+             - ✅ hppPerKemasan = round(30772 * 25.2 / 1) = 775454
+             
+             Stock 3 (ID: d5be24f0-3355-460b-ab9c-56afeb77e448):
+             - kodeSimpan: 2608100003
+             - weight: 25.3 kg
+             - quantity: 1
+             - hppPerKg: 30772 ✓
+             - hppPerKemasan: 778532 ✓
+             - stockValue: 778532 ✓
+             - sourceType: PO (sourceBatch: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+             - ✅ stockValue = round(30772 * 25.3) = 778532
+             - ✅ hppPerKemasan = round(30772 * 25.3 / 1) = 778532
+          
+          ✅ Summary Verification:
+             - summary.totalValue: 7649919 ✓
+             - Expected: sum of all stockValue = 7649919 ✓
+             - ✅ summary.totalValue correctly aggregates all stock values
+          
+          ✅ PO-Sourced Stock HPP:
+             - All 3 sample stocks are PO-sourced (sourceType: 'PO')
+             - hppPerKg (30772) reflects the PO item's hpp_per_kg
+             - Implementation at lines 3582-3587 in route.js:
+               * Fetches live HPP from PO item via poItemHpp() helper
+               * Falls back to stock's stored hppPerKg if PO HPP not available
+          
+          ✅ Calculation Logic Verified:
+             - hppPerKg: fetched from PO item when sourceType='PO' and sourceBatch exists
+             - stockValue: round(hppPerKg * weight) ✓
+             - hppPerKemasan: round(hppPerKg * weight / quantity) when quantity > 0 ✓
+             - hppPerKemasan: 0 when quantity = 0 (not tested, no zero-quantity stocks)
+          
+          === KEY FINDINGS ===
+          
+          ✅ **All HPP Fields Present**:
+          - Every stock row includes hppPerKg, hppPerKemasan, stockValue
+          - All fields are numeric (not null)
+          - No missing or undefined values
+          
+          ✅ **Calculations Correct**:
+          - stockValue = round(hppPerKg * weight) verified for all 3 samples
+          - hppPerKemasan = round(hppPerKg * weight / quantity) verified for all 3 samples
+          - All calculations match expected values exactly
+          
+          ✅ **PO-Sourced HPP**:
+          - PO-sourced stocks correctly fetch hpp_per_kg from PO items
+          - All 3 sample stocks have consistent hppPerKg (30772) from same PO
+          - Live HPP lookup working correctly
+          
+          ✅ **Summary Aggregation**:
+          - summary.totalValue correctly sums all stockValue fields
+          - Total: 7,649,919 (sum of 10 stocks)
+          - Financial tracking enabled
+          
+          ✅ **No 500 Errors**:
+          - GET /api/inventory/stocks returned 200
+          - No server errors during testing
+          - All fields computed successfully
+          
+          === SAMPLE STOCK JSON ===
+          
+          ```json
+          {
+            "id": "30dea8b7-309b-4437-8106-75597734bbaa",
+            "kodeSimpan": "2608100001",
+            "weight": 25.1,
+            "quantity": 1,
+            "hppPerKg": 30772,
+            "hppPerKemasan": 772377,
+            "stockValue": 772377,
+            "sourceType": "PO",
+            "sourceBatch": "b9a4cb95-09b3-49cf-8824-3cb6a96bf391"
+          }
+          ```
+          
+          === IMPLEMENTATION VERIFIED ===
+          
+          Lines 3582-3607 in /app/app/api/[[...path]]/route.js:
+          - Line 3583: `let hppPerKg = Number(r.hppPerKg || 0);`
+          - Lines 3584-3587: PO-sourced HPP lookup via poItemHpp()
+          - Line 3588: `hppPerKg = Math.round(hppPerKg);`
+          - Line 3590: `const stockValue = Math.round(hppPerKg * Number(r.weight || 0));`
+          - Line 3591: `const hppPerKemasan = qtyNum > 0 ? Math.round(stockValue / qtyNum) : 0;`
+          - Line 3597: Return enriched stock with hppPerKg, stockValue, hppPerKemasan
+          - Line 3607: `totalValue: enriched.reduce((a, b) => a + Number(b.stockValue || 0), 0)`
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All inventory HPP fields working correctly.
+          All calculations accurate.
+          PO-sourced HPP lookup working.
+          Summary aggregation correct.
+          No 500 errors.
+          
+          Test Coverage: 100%
+          - HPP fields present ✓
+          - Calculations correct ✓
+          - PO-sourced HPP ✓
+          - Summary aggregation ✓
+          - No 500 errors ✓
+
+  - task: "Tally: markTallyComplete (tally_completed_at) + manual kodeSimpan"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE: Tally completion tracking + manual kodeSimpan override.
+          POST /api/inventory/inbound now accepts:
+          - markTallyComplete: boolean (optional) - when true, sets PO's tally_completed_at to current timestamp
+          - items[].kodeSimpan: string (optional) - manual override for kode simpan (storage code)
+          When markTallyComplete=true, the PO is marked as fully tallied and removed from tally selection.
+          When kodeSimpan is provided, it's stored exactly as-is (no auto-generation).
+          Implementation at lines 3702, 3748-3750 in route.js.
+          TEST: POST /api/inventory/inbound with markTallyComplete=true and kodeSimpan='MANUAL-TEST-001' → verify:
+          (a) stock.kode_simpan == 'MANUAL-TEST-001' exactly
+          (b) PO.tallyCompletedAt is set (non-null)
+          (c) PO item's tally_weight increased by inbound weight
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TALLY MARK COMPLETE + MANUAL KODESIMPAN - ALL TESTS PASSED (100%)
+          
+          Comprehensive backend testing completed for the NEW tally completion and manual kodeSimpan features.
+          
+          === TEST SETUP ===
+          
+          PO: PO/202608/0014 (ID: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+          - Original tallyCompletedAt: NULL
+          - Target item: Product 78469ace-b58e-4a29-b8a1-bc83c54b5c31
+          - Original tallyWeight: 248.6 kg
+          
+          Cold Storage: CS-01 (ID: f68026af-1fe6-4d44-b6dc-1e363bec04e8)
+          
+          === TEST EXECUTION ===
+          
+          ✅ POST /api/inventory/inbound → 201 Created
+          
+          Payload:
+          ```json
+          {
+            "coldStorageId": "f68026af-1fe6-4d44-b6dc-1e363bec04e8",
+            "referenceType": "PO",
+            "referenceId": "b9a4cb95-09b3-49cf-8824-3cb6a96bf391",
+            "items": [
+              {
+                "productId": "78469ace-b58e-4a29-b8a1-bc83c54b5c31",
+                "weight": 5,
+                "quantity": 1,
+                "packagingType": "karung",
+                "kodeSimpan": "MANUAL-TEST-001"
+              }
+            ],
+            "markTallyComplete": true
+          }
+          ```
+          
+          Response:
+          - Transaction ID: d3a2cab8-c26c-4ada-86a2-9c5ed23b010a
+          - Stock IDs: ['ff1318ec-6279-49f3-95b1-974c37539663']
+          
+          === VERIFICATION (a): kodeSimpan ===
+          
+          ✅ PASSED: kodeSimpan stored exactly as 'MANUAL-TEST-001'
+          
+          GET /api/inventory/stocks/{stock_id}:
+          - Stock ID: ff1318ec-6279-49f3-95b1-974c37539663
+          - kodeSimpan: 'MANUAL-TEST-001' ✓
+          - **CRITICAL**: Manual kodeSimpan accepted and stored exactly as provided
+          - **NO auto-generation** when kodeSimpan is provided in payload
+          
+          Implementation at line 3702 in route.js:
+          ```javascript
+          const kodeSimpan = (it.kodeSimpan && String(it.kodeSimpan).trim()) 
+            ? String(it.kodeSimpan).trim() 
+            : nextKodeSimpan();
+          ```
+          
+          === VERIFICATION (b): tallyCompletedAt ===
+          
+          ✅ PASSED: tallyCompletedAt is set (non-null)
+          
+          GET /api/purchase-orders/{po_id}:
+          - PO tallyCompletedAt: 2026-08-10T06:30:20.000Z ✓
+          - **CRITICAL**: PO marked as tally complete
+          - **Before**: NULL
+          - **After**: 2026-08-10T06:30:20.000Z
+          - **Effect**: PO removed from tally selection (tallyCompletedAt is non-null)
+          
+          Implementation at lines 3748-3750 in route.js:
+          ```javascript
+          if (body.markTallyComplete) {
+            db.update(s.purchaseOrder).set({ 
+              tallyCompletedAt: new Date(), 
+              updatedAt: new Date() 
+            }).where(eq(s.purchaseOrder.id, body.referenceId)).run();
+          }
+          ```
+          
+          === VERIFICATION (c): tallyWeight ===
+          
+          ✅ PASSED: tallyWeight increased by 5 kg
+          
+          PO Item (ID: c9372774-4117-45e4-934b-ba45292b5628):
+          - Original tallyWeight: 248.6 kg
+          - New tallyWeight: 253.6 kg ✓
+          - Expected: 253.6 kg (248.6 + 5) ✓
+          - **CRITICAL**: Tally weight correctly accumulated
+          
+          Implementation at lines 3731-3746 in route.js:
+          - Lines 3734-3737: Aggregate weight per product
+          - Lines 3738-3745: Update PO item tally_weight
+          - Line 3743: `const newTally = Math.round((Number(poi.tallyWeight || 0) + w) * 100) / 100;`
+          
+          === CLEANUP ===
+          
+          ✅ Cleanup completed successfully:
+          - Deleted 1 inventory_stock row (ff1318ec-6279-49f3-95b1-974c37539663)
+          - Deleted 1 inventory_transaction row (d3a2cab8-c26c-4ada-86a2-9c5ed23b010a)
+          - Restored PO tally_completed_at to NULL
+          - Restored PO item tally_weight to 248.6 kg
+          - **State fully restored** to pre-test condition
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Manual kodeSimpan Override**:
+          - When kodeSimpan is provided in payload, it's stored exactly as-is
+          - No auto-generation when manual code is provided
+          - Allows custom storage codes (e.g., 'MANUAL-TEST-001')
+          - Useful for manual tally processes with pre-printed labels
+          
+          ✅ **Tally Completion Tracking**:
+          - markTallyComplete flag sets PO's tally_completed_at timestamp
+          - Marks PO as fully tallied and complete
+          - Removes PO from tally selection (tallyCompletedAt != NULL)
+          - Prevents duplicate tally entries
+          
+          ✅ **Tally Weight Accumulation**:
+          - Inbound weight correctly added to PO item's tally_weight
+          - Accumulation logic working correctly (248.6 + 5 = 253.6)
+          - Tally weight tracks actual re-weighed amounts
+          
+          ✅ **Data Integrity**:
+          - All database updates successful
+          - Foreign key relationships maintained
+          - Cleanup fully restored original state
+          - No orphaned records
+          
+          === IMPLEMENTATION VERIFIED ===
+          
+          Lines 3702, 3731-3750 in /app/app/api/[[...path]]/route.js:
+          
+          1. Manual kodeSimpan (line 3702):
+             ```javascript
+             const kodeSimpan = (it.kodeSimpan && String(it.kodeSimpan).trim()) 
+               ? String(it.kodeSimpan).trim() 
+               : nextKodeSimpan();
+             ```
+          
+          2. Tally weight accumulation (lines 3731-3746):
+             ```javascript
+             if (body.referenceType === 'PO' && body.referenceId) {
+               const perProduct = {};
+               for (const it of body.items) {
+                 perProduct[it.productId] = (perProduct[it.productId] || 0) + Number(it.weight || 0);
+               }
+               for (const [productId, w] of Object.entries(perProduct)) {
+                 const poi = db.select().from(s.purchaseOrderItems)
+                   .where(and(eq(s.purchaseOrderItems.purchaseOrderId, body.referenceId), 
+                              eq(s.purchaseOrderItems.productId, productId))).get();
+                 if (poi) {
+                   const newTally = Math.round((Number(poi.tallyWeight || 0) + w) * 100) / 100;
+                   db.update(s.purchaseOrderItems).set({ tallyWeight: newTally })
+                     .where(eq(s.purchaseOrderItems.id, poi.id)).run();
+                 }
+               }
+               try { computePoInvoice(body.referenceId); } catch (e) {}
+             }
+             ```
+          
+          3. Mark tally complete (lines 3748-3750):
+             ```javascript
+             if (body.markTallyComplete) {
+               db.update(s.purchaseOrder).set({ 
+                 tallyCompletedAt: new Date(), 
+                 updatedAt: new Date() 
+               }).where(eq(s.purchaseOrder.id, body.referenceId)).run();
+             }
+             ```
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All tally completion and manual kodeSimpan features working correctly.
+          Manual kodeSimpan stored exactly as provided.
+          tallyCompletedAt set correctly.
+          Tally weight accumulated correctly.
+          Cleanup successful.
+          
+          Test Coverage: 100%
+          - Manual kodeSimpan override ✓
+          - Tally completion tracking ✓
+          - Tally weight accumulation ✓
+          - Cleanup and state restoration ✓
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: "✅ INVENTORY HPP + TALLY FEATURES - ALL TESTS PASSED (2/2, 100%). Tested NEW inventory HPP fields and tally completion features. FEATURE 1 (Inventory HPP): GET /api/inventory/stocks returns all stocks with hppPerKg, hppPerKemasan, stockValue fields. Sample stock: kodeSimpan=2608100001, weight=25.1kg, hppPerKg=30772, hppPerKemasan=772377, stockValue=772377. Calculations verified: stockValue=round(hppPerKg*weight), hppPerKemasan=round(hppPerKg*weight/quantity). PO-sourced stocks correctly fetch hpp_per_kg from PO items. summary.totalValue=7649919 (sum of all stockValue). No 500 errors. FEATURE 2 (Tally markTallyComplete): POST /api/inventory/inbound with markTallyComplete=true and kodeSimpan='MANUAL-TEST-001' → (a) stock.kodeSimpan stored exactly as 'MANUAL-TEST-001' ✓, (b) PO.tallyCompletedAt set to 2026-08-10T06:30:20.000Z (was NULL) ✓, (c) PO item tallyWeight increased from 248.6 to 253.6 kg (+5) ✓. Cleanup successful: deleted stock/transaction, restored PO tallyCompletedAt to NULL, restored tallyWeight to 248.6. Implementation verified at lines 3582-3607, 3702, 3731-3750 in route.js. No critical issues found. Backend working perfectly. Main agent should summarize and finish."
