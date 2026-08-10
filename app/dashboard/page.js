@@ -1,13 +1,18 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import { format } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory, TrendingDown } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory, TrendingDown, ChevronRight } from 'lucide-react';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
+
+const pctColorClass = (pct) => pct === null || pct === undefined ? 'text-muted-foreground' : pct >= 5 ? 'text-red-600' : pct >= 2 ? 'text-amber-600' : 'text-emerald-600';
 
 export default function DashboardHome() {
   const { data: sum } = useSWR('/api/dashboard/summary', fetcher, { refreshInterval: 30000 });
@@ -15,6 +20,9 @@ export default function DashboardHome() {
   const s = sum?.data;
   const shrRows = shr?.data || [];
   const shrTotals = shr?.totals;
+  const [selectedSupplier, setSelectedSupplier] = useState(null);
+  const { data: shrDetail } = useSWR(selectedSupplier ? `/api/dashboard/supplier-shrinkage/${selectedSupplier.id}` : null, fetcher);
+  const detail = shrDetail?.data;
 
   return (
     <div className="space-y-6">
@@ -84,11 +92,11 @@ export default function DashboardHome() {
                     <tbody>
                       {shrRows.map(r => {
                         const pct = r.susutPct;
-                        const pctColor = pct === null ? 'text-muted-foreground' : pct >= 5 ? 'text-red-600' : pct >= 2 ? 'text-amber-600' : 'text-emerald-600';
+                        const pctColor = pctColorClass(pct);
                         return (
-                          <tr key={r.supplierId} className="border-b last:border-0 hover:bg-slate-50">
+                          <tr key={r.supplierId} onClick={() => setSelectedSupplier({ id: r.supplierId, name: r.supplierName })} className="border-b last:border-0 hover:bg-emerald-50/60 cursor-pointer">
                             <td className="py-2">
-                              <div className="font-medium">{r.supplierName}</div>
+                              <div className="font-medium flex items-center gap-1 text-emerald-700">{r.supplierName} <ChevronRight className="w-3.5 h-3.5 opacity-60" /></div>
                               <div className="text-xs text-muted-foreground font-mono">{r.supplierCode}</div>
                             </td>
                             <td className="text-right">{r.poCount}</td>
@@ -113,7 +121,7 @@ export default function DashboardHome() {
                       </tfoot>
                     )}
                   </table>
-                  <div className="text-[11px] text-muted-foreground mt-2">Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
+                  <div className="text-[11px] text-muted-foreground mt-2">Klik baris supplier untuk rincian per PO &amp; produk · Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
                 </div>
               )}
             </CardContent>
@@ -131,6 +139,70 @@ export default function DashboardHome() {
           </Card>
         </>
       )}
+
+      {/* Dialog: Rincian Susut Supplier */}
+      <Dialog open={!!selectedSupplier} onOpenChange={(o) => { if (!o) setSelectedSupplier(null); }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><TrendingDown className="w-5 h-5 text-amber-600" /> Rincian Susut — {selectedSupplier?.name}</DialogTitle>
+            <DialogDescription>Selisih Berat Dikirim (Surat Jalan) vs Diterima (Tally) per PO &amp; produk</DialogDescription>
+          </DialogHeader>
+          {!detail ? (
+            <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Memuat…</div>
+          ) : detail.pos.length === 0 ? (
+            <div className="py-10 text-center text-muted-foreground text-sm">Belum ada data penerimaan.</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-4 gap-2 text-center bg-slate-50 rounded-lg p-3 text-sm">
+                <div><div className="text-xs text-muted-foreground">Dikirim (SJ)</div><div className="font-bold">{detail.totals.sjWeight.toLocaleString('id-ID')} kg</div></div>
+                <div><div className="text-xs text-muted-foreground">Diterima (Tally)</div><div className="font-bold">{detail.totals.tallyWeight.toLocaleString('id-ID')} kg</div></div>
+                <div><div className="text-xs text-muted-foreground">Susut</div><div className="font-bold">{detail.totals.susut.toLocaleString('id-ID')} kg</div></div>
+                <div><div className="text-xs text-muted-foreground">%</div><div className={`font-bold ${pctColorClass(detail.totals.susutPct)}`}>{detail.totals.susutPct}%</div></div>
+              </div>
+              {detail.pos.map(po => (
+                <div key={po.poId} className="border rounded-lg overflow-hidden">
+                  <div className="flex items-center justify-between px-3 py-2 bg-muted/40 text-sm">
+                    <div>
+                      <span className="font-semibold">{po.poNumber}</span>
+                      {po.orderDate && <span className="text-xs text-muted-foreground ml-2">{format(new Date(po.orderDate), 'dd MMM yyyy')}</span>}
+                      <Badge variant="secondary" className="ml-2 text-[10px]">{po.status}</Badge>
+                    </div>
+                    <div className="text-xs">
+                      Susut: <b className={pctColorClass(po.susutPct)}>{po.tallyDone ? `${po.susut.toLocaleString('id-ID')} kg (${po.susutPct}%)` : 'belum tally'}</b>
+                    </div>
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-muted-foreground border-b">
+                        <th className="text-left font-medium px-3 py-1.5">Produk</th>
+                        <th className="text-right font-medium px-2">Dikirim</th>
+                        <th className="text-right font-medium px-2">Diterima</th>
+                        <th className="text-right font-medium px-2">Susut</th>
+                        <th className="text-right font-medium px-3">%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {po.items.map(it => (
+                        <tr key={it.productId} className="border-b last:border-0">
+                          <td className="px-3 py-1.5">
+                            <div className="font-medium">{it.productName}</div>
+                            <div className="text-[10px] text-muted-foreground font-mono">{it.sku}</div>
+                          </td>
+                          <td className="text-right px-2">{it.sjWeight.toLocaleString('id-ID')} kg</td>
+                          <td className="text-right px-2">{it.tallyDone ? `${it.tallyWeight.toLocaleString('id-ID')} kg` : '—'}</td>
+                          <td className="text-right px-2 font-semibold">{it.tallyDone ? `${it.susut.toLocaleString('id-ID')} kg` : '-'}</td>
+                          <td className={`text-right px-3 font-bold ${pctColorClass(it.susutPct)}`}>{it.susutPct === null ? '-' : `${it.susutPct}%`}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }
