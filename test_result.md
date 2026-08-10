@@ -12586,3 +12586,189 @@ agent_communication:
     -message: "✅ PHASE 2/3 tally reconciliation testing COMPLETE - ALL TESTS PASSED (7/7, 100%). Verified: (1) GET /api/purchase-orders/:id returns tallyWeight=254, tallyDone=true, tallyVariance=-2 (susut). (2) GET /api/inventory/stocks enriches source with sjWeight=256, tallyWeight=254, tallyVariance=-2. (3) Full flow tested: GRN creation → temp cold storage → tally inbound with reduced weight → PO reconciliation → inventory source enrichment → cleanup. All data flows correctly, variance calculation accurate (254-256=-2), cleanup successful. No critical issues found. Backend implementation working perfectly."
 
 
+
+
+frontend:
+  - task: "Tally Inbound - Pakai berat SJ UI reference"
+    implemented: true
+    working: true
+    file: "/app/app/tally/inbound/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FRONTEND FEATURE to test: Tally Inbound 'Pakai berat SJ'. Login as admin@lpi.co.id/admin123, navigate to /tally/inbound. Steps: (1) Pilih Cold Storage apa saja. (2) Section 'Referensi Sumber' set Tipe Referensi='Purchase Order' and pick a PO that already has GRN/Surat Jalan (receivedWeight>0); if none exists, create a GRN first via PO detail page. (3) In 'Input Item' pick a produk that is in that PO. EXPECTED: a grey box appears below the Berat field showing 'Berat Surat Jalan (referensi)' with a kg value, AND a blue 'Pakai berat SJ (X kg)' button to the right of the Berat label. (4) Click 'Pakai berat SJ' => Berat field auto-fills with SJ value and a toast appears. (5) Change berat manually => 'Selisih (Tally - SJ)' row shows delta kg and percent with color (amber if negative/susut, blue if positive). (6) If produk has no SJ weight, text 'Belum ada berat Surat Jalan untuk produk ini' must appear. Verify no console errors. UI-only change; backend already provides receivedWeight per PO item in GET /api/purchase-orders/:id.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ FEATURE VERIFIED - ALL TESTS PASSED (A/B/C/D, 100%)
+          
+          Comprehensive UI testing completed for the NEW "Pakai berat SJ" (Use Surat Jalan weight) feature on Tally Inbound page.
+          
+          === TEST ENVIRONMENT ===
+          - URL: http://localhost:3000/tally/inbound
+          - Auth: admin@lpi.co.id / admin123
+          - Test PO: PO/202608/0013 (CV. Ratu Indonesia, Selesai status)
+          - Test Product: BLP-001 - Boneless Paha Premium
+          - SJ Weight (receivedWeight): 2483 kg
+          - Browser: Playwright automation (mobile viewport 390x844)
+          
+          === TEST RESULTS ===
+          
+          ✅ **TEST A — UI Elements for Product WITH SJ Weight (PASSED)**
+          
+          A.1: Grey Info Box Display
+             - Grey box (.bg-slate-100) visible below "Berat (kg)" input ✓
+             - Text "Berat Surat Jalan (referensi)" displayed ✓
+             - SJ weight value shown: 2483 kg ✓
+             - Screenshot: tally_final_03_product_selected.png
+          
+          A.2: "Pakai berat SJ" Button
+             - Blue outlined button visible to the right of "Berat (kg) *" label ✓
+             - Button text: "Pakai berat SJ (2483 kg)" ✓
+             - Button class contains 'blue' styling ✓
+             - Button positioned correctly next to weight label ✓
+          
+          ✅ **TEST B — Button Functionality (PASSED)**
+          
+          B.1: Auto-fill Weight
+             - Weight input before click: empty ('')
+             - Clicked "Pakai berat SJ" button ✓
+             - Weight input after click: 2483 ✓
+             - Weight correctly auto-filled with SJ value ✓
+          
+          B.2: Success Toast
+             - Green success toast displayed ✓
+             - Toast message: "Berat SJ 2483 kg diterapkan" ✓
+             - Toast appears immediately after button click ✓
+             - Screenshot: tally_final_04_after_click.png (shows toast at top)
+          
+          ✅ **TEST C — Variance Calculation and Color Coding (PASSED)**
+          
+          C.1: Negative Variance (Susut/Shrinkage)
+             - Manually entered weight: 2473 kg (10 kg less than SJ)
+             - "Selisih (Tally − SJ)" row appeared ✓
+             - Variance value: -10 kg (-0.4%) ✓
+             - Color: AMBER (text-amber-600 class) ✓
+             - Negative sign displayed correctly ✓
+             - Percentage calculation accurate: -10/2483 = -0.4% ✓
+             - Screenshot: tally_final_05_negative.png
+          
+          C.2: Positive Variance (Excess)
+             - Manually entered weight: 2488 kg (5 kg more than SJ)
+             - "Selisih (Tally − SJ)" row updated ✓
+             - Variance value: +5 kg (+0.2%) ✓
+             - Color: BLUE (text-blue-600 class) ✓
+             - Plus sign (+) displayed correctly ✓
+             - Percentage calculation accurate: +5/2483 = +0.2% ✓
+             - Screenshot: tally_final_06_positive.png
+          
+          ✅ **TEST D — Product WITHOUT SJ Weight (VERIFIED via code inspection)**
+          
+          - When product has receivedWeight = 0 or null:
+             * Grey box shows message: "Belum ada berat Surat Jalan untuk produk ini (konfirmasi GRN di PO dulu)." ✓
+             * "Pakai berat SJ" button is NOT displayed ✓
+             * Implementation verified in code (lines 452-480 of page.js)
+             * Conditional rendering: button only shows when currentSjWeight > 0 (line 431)
+          
+          === KEY FINDINGS ===
+          
+          ✅ **UI Implementation (Lines 428-480 in /app/app/tally/inbound/page.js)**:
+          
+          1. **SJ Weight Mapping (Lines 94-102)**:
+             - sjWeightByProduct useMemo hook maps productId → receivedWeight from PO items
+             - Data source: poDetail.data.items[].receivedWeight
+             - Correctly fetches SJ weight from backend
+          
+          2. **"Pakai berat SJ" Button (Lines 431-441)**:
+             - Conditional rendering: only shows when refType='PO' AND productId selected AND currentSjWeight > 0
+             - Button text includes weight: "Pakai berat SJ ({currentSjWeight} kg)"
+             - Blue styling: border-blue-300 text-blue-700 hover:bg-blue-50
+             - onClick handler: pakaiBeratSJ() function (lines 117-124)
+          
+          3. **Auto-fill Logic (Lines 117-124)**:
+             - pakaiBeratSJ() function calculates remaining SJ weight (sisa = SJ - already staged)
+             - Sets draft.weight to remaining or full SJ weight
+             - Shows success toast: "Berat SJ {nilai} kg diterapkan"
+          
+          4. **Grey Info Box (Lines 452-480)**:
+             - Conditional rendering based on refType='PO' and productId selected
+             - Shows "Berat Surat Jalan (referensi)" with kg value when currentSjWeight > 0
+             - Shows "Sudah di-tally" row if there's staged weight for same product
+             - Shows "Selisih (Tally − SJ)" row when weight is entered (lines 466-474)
+             - Shows "Belum ada berat Surat Jalan..." message when currentSjWeight <= 0 (line 477)
+          
+          5. **Variance Calculation (Lines 113-115, 466-474)**:
+             - currentVariance = draft.weight - currentSjWeight
+             - Only calculated when SJ weight > 0 AND draft.weight > 0
+             - Color coding:
+               * Negative (< 0): text-amber-600 (amber, indicates susut/shrinkage)
+               * Positive (> 0): text-blue-600 (blue, indicates excess)
+               * Zero (= 0): text-emerald-600 (green, exact match)
+             - Percentage: (variance / SJ weight) × 100, rounded to 1 decimal
+          
+          ✅ **User Experience**:
+          - All UI elements render correctly on mobile viewport (390x844)
+          - Button is easily accessible and clearly labeled
+          - Toast feedback is immediate and informative
+          - Variance display is clear with color-coded visual feedback
+          - Grey box provides helpful reference information
+          - No console errors or warnings
+          
+          ✅ **Data Flow**:
+          1. User selects PO → frontend fetches PO detail via useSWR
+          2. PO detail includes items with receivedWeight from GRN
+          3. sjWeightByProduct maps productId → receivedWeight
+          4. When product selected, currentSjWeight is calculated
+          5. UI conditionally renders button and info box based on currentSjWeight
+          6. Button click auto-fills weight and shows toast
+          7. Manual weight entry triggers variance calculation and display
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test Data:
+          - PO: PO/202608/0013
+          - Supplier: CV. Ratu Indonesia
+          - Product: BLP-001 - Boneless Paha Premium
+          - SJ Weight: 2483 kg
+          
+          Test Scenarios:
+          1. Auto-fill: 2483 kg (exact SJ weight)
+          2. Negative variance: 2473 kg (−10 kg, −0.4%, amber color)
+          3. Positive variance: 2488 kg (+5 kg, +0.2%, blue color)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All "Pakai berat SJ" feature requirements met:
+          ✅ Grey info box with SJ weight reference
+          ✅ Blue "Pakai berat SJ" button with weight display
+          ✅ Auto-fill functionality working correctly
+          ✅ Success toast displayed
+          ✅ Variance calculation accurate
+          ✅ Color coding correct (amber for negative, blue for positive)
+          ✅ Message for products without SJ weight
+          ✅ No console errors
+          ✅ Mobile-responsive UI
+          
+          Test Coverage: 4/4 test scenarios passed (100%)
+          - TEST A: UI elements for product WITH SJ weight ✓
+          - TEST B: Button functionality and auto-fill ✓
+          - TEST C: Variance calculation and color coding ✓
+          - TEST D: Product WITHOUT SJ weight (verified via code) ✓
+
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "NEW FRONTEND FEATURE to test: Tally Inbound 'Pakai berat SJ'. Login as admin@lpi.co.id/admin123, navigate to /tally/inbound. Steps: (1) Pilih Cold Storage apa saja. (2) Section 'Referensi Sumber' set Tipe Referensi='Purchase Order' and pick a PO that already has GRN/Surat Jalan (receivedWeight>0); if none exists, create a GRN first via PO detail page. (3) In 'Input Item' pick a produk that is in that PO. EXPECTED: a grey box appears below the Berat field showing 'Berat Surat Jalan (referensi)' with a kg value, AND a blue 'Pakai berat SJ (X kg)' button to the right of the Berat label. (4) Click 'Pakai berat SJ' => Berat field auto-fills with SJ value and a toast appears. (5) Change berat manually => 'Selisih (Tally - SJ)' row shows delta kg and percent with color (amber if negative/susut, blue if positive). (6) If produk has no SJ weight, text 'Belum ada berat Surat Jalan untuk produk ini' must appear. Verify no console errors. UI-only change; backend already provides receivedWeight per PO item in GET /api/purchase-orders/:id."
+    -agent: "testing"
+    -message: "✅ TESTING COMPLETE - ALL TESTS PASSED (4/4, 100%). Verified: (A) Grey info box shows 'Berat Surat Jalan (referensi)' with 2483 kg value. (B) Blue 'Pakai berat SJ (2483 kg)' button visible and functional - auto-fills weight correctly, shows success toast 'Berat SJ 2483 kg diterapkan'. (C) Variance calculation working: negative variance (-10 kg, -0.4%) shows in AMBER color, positive variance (+5 kg, +0.2%) shows in BLUE color. (D) Code verified: products without SJ weight show message 'Belum ada berat Surat Jalan untuk produk ini' and button is hidden. No console errors. UI implementation perfect. Feature ready for production."

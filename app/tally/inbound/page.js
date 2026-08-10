@@ -90,6 +90,39 @@ export default function TallyInboundPage() {
   }, [refType, poDetail, woDetail]);
   const availableProducts = refProductIds ? products.filter(p => refProductIds.includes(p.id)) : products;
 
+  // Map produk -> berat Surat Jalan (receivedWeight dari GRN) untuk referensi tally
+  const sjWeightByProduct = useMemo(() => {
+    const m = {};
+    if (refType === 'PO' && poDetail?.data?.items) {
+      for (const it of poDetail.data.items) {
+        m[it.productId] = Number(it.receivedWeight || 0);
+      }
+    }
+    return m;
+  }, [refType, poDetail]);
+
+  // Sudah berapa berat yang di-tally (staged) untuk produk terpilih
+  const stagedWeightByProduct = useMemo(() => {
+    const m = {};
+    for (const it of staged) m[it.productId] = (m[it.productId] || 0) + Number(it.weight || 0);
+    return m;
+  }, [staged]);
+
+  const currentSjWeight = draft.productId ? Number(sjWeightByProduct[draft.productId] || 0) : 0;
+  const currentStagedWeight = draft.productId ? Number(stagedWeightByProduct[draft.productId] || 0) : 0;
+  const currentVariance = (currentSjWeight > 0 && draft.weight !== '' && Number(draft.weight) > 0)
+    ? Math.round((Number(draft.weight) - currentSjWeight) * 100) / 100
+    : null;
+
+  const pakaiBeratSJ = () => {
+    if (!currentSjWeight || currentSjWeight <= 0) return;
+    // Sisa berat SJ yang belum di-tally (jika ada input sebelumnya untuk produk yang sama)
+    const sisa = Math.round((currentSjWeight - currentStagedWeight) * 100) / 100;
+    const nilai = sisa > 0 ? sisa : currentSjWeight;
+    setDraft({ ...draft, weight: String(nilai) });
+    toast.success(`Berat SJ ${nilai} kg diterapkan`);
+  };
+
   // Actions
   const catat = () => {
     if (!coldStorageId) return toast.error('Pilih Cold Storage dulu');
@@ -393,7 +426,20 @@ export default function TallyInboundPage() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs">Berat (kg) *</Label>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Berat (kg) *</Label>
+              {refType === 'PO' && draft.productId && currentSjWeight > 0 && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={pakaiBeratSJ}
+                  className="h-6 px-2 text-[11px] border-blue-300 text-blue-700 hover:bg-blue-50"
+                >
+                  <FileText className="w-3 h-3 mr-1" /> Pakai berat SJ ({currentSjWeight} kg)
+                </Button>
+              )}
+            </div>
             <Input
               type="number"
               inputMode="decimal"
@@ -403,6 +449,35 @@ export default function TallyInboundPage() {
               className="text-xl font-bold h-12"
               placeholder="0.0"
             />
+            {refType === 'PO' && draft.productId && (
+              <div className="text-[11px] rounded-md bg-slate-100 px-2 py-1.5 space-y-0.5">
+                {currentSjWeight > 0 ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Berat Surat Jalan (referensi)</span>
+                      <span className="font-semibold text-slate-700">{currentSjWeight} kg</span>
+                    </div>
+                    {currentStagedWeight > 0 && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Sudah di-tally (produk ini)</span>
+                        <span className="font-semibold text-slate-700">{currentStagedWeight.toFixed(1)} kg</span>
+                      </div>
+                    )}
+                    {currentVariance !== null && (
+                      <div className="flex items-center justify-between pt-0.5 border-t border-slate-200">
+                        <span className="text-muted-foreground">Selisih (Tally − SJ)</span>
+                        <span className={`font-bold ${currentVariance < 0 ? 'text-amber-600' : currentVariance > 0 ? 'text-blue-600' : 'text-emerald-600'}`}>
+                          {currentVariance > 0 ? '+' : ''}{currentVariance} kg
+                          {currentSjWeight > 0 && ` (${currentVariance > 0 ? '+' : ''}${Math.round((currentVariance / currentSjWeight) * 1000) / 10}%)`}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-muted-foreground">Belum ada berat Surat Jalan untuk produk ini (konfirmasi GRN di PO dulu).</div>
+                )}
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1.5">
