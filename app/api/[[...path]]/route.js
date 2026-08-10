@@ -1546,7 +1546,7 @@ async function handleRoute(request, { params }) {
       const invoiceShippedTotal = previewPoTotal(po, enrichedItems, 'shipped');
       const invoiceTallyTotal = previewPoTotal(po, enrichedItems, 'tally');
       // Dropship: preview basis GRN PO vs Penerimaan Customer (SO) + link ke SO
-      let invoiceGrnTotal = null, invoiceSoReceiptTotal = null, linkedSalesOrder = null;
+      let invoiceGrnTotal = null, invoiceSoReceiptTotal = null, linkedSalesOrder = null, dropshipShipVsRecv = null;
       if (po.isDropship) {
         const soRecvMap = getSoRecvMap(po.salesOrderId);
         invoiceGrnTotal = previewPoTotal(po, enrichedItems, 'grn');
@@ -1554,6 +1554,16 @@ async function handleRoute(request, { params }) {
         if (po.salesOrderId) {
           linkedSalesOrder = db.select({ id: s.salesOrder.id, soNumber: s.salesOrder.soNumber, pipelineStatus: s.salesOrder.pipelineStatus })
             .from(s.salesOrder).where(eq(s.salesOrder.id, po.salesOrderId)).get() || null;
+          // Susut Dropship: berat kirim (GRN/SJ) vs berat diterima customer (Penerimaan SO)
+          const shippedW = totalReceivedWeight; // GRN = Surat Jalan SO
+          const custRecvW = Object.values(soRecvMap).reduce((a, b) => a + Number(b || 0), 0);
+          const hasReceipt = db.select({ c: sql`count(*)` }).from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, po.salesOrderId)).get()?.c > 0;
+          dropshipShipVsRecv = {
+            shipped: Math.round(shippedW * 1000) / 1000,
+            received: Math.round((hasReceipt ? custRecvW : shippedW) * 1000) / 1000,
+            susut: Math.round((shippedW - (hasReceipt ? custRecvW : shippedW)) * 1000) / 1000,
+            hasReceipt: !!hasReceipt,
+          };
         }
       }
       // Berat tertagih per item (billedWeight) sesuai basis invoice terpilih -> dipakai PDF PO/Invoice
@@ -1568,7 +1578,7 @@ async function handleRoute(request, { params }) {
           it.billedBasis = eb;
         }
       }
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder } });
+      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder, dropshipShipVsRecv } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -2388,13 +2398,27 @@ async function handleRoute(request, { params }) {
       const grossProfit = Math.round(revenue - cogsTotal - sellerShipping);
       const grossMarginPct = revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : 0;
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
+      // Susut Dropship: selisih berat kirim (Surat Jalan) vs berat diterima customer (Penerimaan)
+      let dropshipShipVsRecv = null;
+      if (so.fulfillmentType === 'dropship') {
+        const shippedW = enrichedItems.reduce((a, it) => a + (Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || 0)), 0);
+        let receivedW = 0, hasReceipt = false;
+        for (const r of receipts) for (const li of (r.items || [])) { receivedW += Number(li.receivedWeight || 0); hasReceipt = true; }
+        const effReceived = hasReceipt ? receivedW : shippedW;
+        dropshipShipVsRecv = {
+          shipped: Math.round(shippedW * 1000) / 1000,
+          received: Math.round(effReceived * 1000) / 1000,
+          susut: Math.round((shippedW - effReceived) * 1000) / 1000,
+          hasReceipt,
+        };
+      }
       // Link ke PO Dropship terkait (klik langsung pindah)
       let linkedPurchaseOrder = null;
       if (so.fulfillmentType === 'dropship' && so.autoPoId) {
         linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
       }
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder } });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk

@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2, TrendingDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
@@ -99,7 +99,7 @@ export default function PODetailPage() {
             }
           }}
         >
-          <FileDown className="w-4 h-4 mr-1" /> PDF PO
+          <FileDown className="w-4 h-4 mr-1" /> {po.isDropship ? 'PDF Invoice' : 'PDF PO'}
         </Button>
       </div>
 
@@ -122,6 +122,19 @@ export default function PODetailPage() {
         <SummaryCard label="Total Retur" value={`Rp ${Number(po.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${po.returns?.length || 0} retur`} color="amber" />
         <SummaryCard label="Outstanding" value={`Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')}`} sub={po.paymentTerm || '-'} color={po.outstanding > 0 ? 'red' : 'slate'} />
       </div>
+
+      {po.isDropship && po.dropshipShipVsRecv && (
+        <Card className="border-purple-200 bg-purple-50/40">
+          <CardContent className="py-3">
+            <div className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
+              <div className="flex items-center gap-2 font-semibold text-purple-800"><TrendingDown className="w-4 h-4" />Susut Dropship (Kirim → Terima)</div>
+              <div><span className="text-muted-foreground">Berat Kirim (GRN/SJ): </span><b>{Number(po.dropshipShipVsRecv.shipped).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b></div>
+              <div><span className="text-muted-foreground">Berat Diterima Customer: </span><b>{Number(po.dropshipShipVsRecv.received).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b>{!po.dropshipShipVsRecv.hasReceipt && <span className="text-[11px] text-muted-foreground"> (belum ada penerimaan)</span>}</div>
+              <div><span className="text-muted-foreground">Susut: </span><b className={po.dropshipShipVsRecv.susut > 0.0001 ? 'text-red-600' : 'text-emerald-700'}>{Number(po.dropshipShipVsRecv.susut).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b></div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="items">
         <TabsList className="grid w-full grid-cols-2 md:grid-cols-6">

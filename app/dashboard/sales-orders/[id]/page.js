@@ -171,6 +171,19 @@ export default function SODetailPage() {
         <SumCard label="Outstanding" value={`Rp ${Number(so.outstanding || 0).toLocaleString('id-ID')}`} sub={so.paymentTerm || '-'} color={so.outstanding > 0 ? 'red' : 'slate'} />
       </div>
 
+      {so.fulfillmentType === 'dropship' && so.dropshipShipVsRecv && (
+        <Card className="border-purple-200 bg-purple-50/40">
+          <CardContent className="py-3">
+            <div className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
+              <div className="flex items-center gap-2 font-semibold text-purple-800"><TrendingDown className="w-4 h-4" />Susut Dropship (Kirim → Terima)</div>
+              <div><span className="text-muted-foreground">Berat Kirim (SJ): </span><b>{Number(so.dropshipShipVsRecv.shipped).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b></div>
+              <div><span className="text-muted-foreground">Berat Diterima Customer: </span><b>{Number(so.dropshipShipVsRecv.received).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b>{!so.dropshipShipVsRecv.hasReceipt && <span className="text-[11px] text-muted-foreground"> (belum ada penerimaan)</span>}</div>
+              <div><span className="text-muted-foreground">Susut: </span><b className={so.dropshipShipVsRecv.susut > 0.0001 ? 'text-red-600' : 'text-emerald-700'}>{Number(so.dropshipShipVsRecv.susut).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b></div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs defaultValue="items">
         <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
           <TabsTrigger value="info"><Receipt className="w-4 h-4 mr-1" />Info</TabsTrigger>
