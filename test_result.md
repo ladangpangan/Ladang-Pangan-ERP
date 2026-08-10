@@ -13126,3 +13126,233 @@ test_plan:
 agent_communication:
     -agent: "testing"
     -message: "✅ NEW DASHBOARD ENDPOINT TESTING COMPLETE - ALL TESTS PASSED (3/3, 100%). Tested GET /api/dashboard/supplier-shrinkage endpoint. Verified: (1) Returns 200 with correct JSON structure { data: [...], totals: {...} }. (2) CV. Ratu Indonesia (PO/202608/0013) appears with sjWeight=2483, tallyWeight=0, tallyDone=false, susut=0, susutPct=null (matches expected behavior - no tally done yet). (3) Access control working: 401 without auth, 403 for operator role. (4) All data row fields present and correct types: supplierId, supplierName, supplierCode, poCount (number), sjWeight (number), tallyWeight (number), tallyDone (bool), susut (number), susutPct (null when tally not done). (5) Totals object correct with sjWeight, tallyWeight, susut, susutPct. Business logic verified: susut and susutPct only calculated when tallyDone=true. Implementation at lines 4088-4128 in route.js working correctly. No critical issues found. Backend implementation working perfectly."
+
+
+test_plan:
+  current_focus:
+    - "BUGFIX: GRN grn_number UNIQUE constraint (gap-safe MAX+1)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "BUGFIX VERIFY. Reported bug: creating a GRN (POST /api/purchase-orders/:id/grn) returned 500 'UNIQUE constraint failed: grn.grn_number'. Root cause: nextGrnNumber used COUNT(*)+1 which collides after a GRN was deleted (gap). Fixed to gap-safe MAX(suffix)+1. Existing GRN numbers currently: GRN/202608/0001,0002,0003,0005 (0004 was deleted -> gap). So the NEXT number must be GRN/202608/0006 (NOT 0005). TEST: login admin@lpi.co.id/admin123. Pick an existing PO that currently has NO GRN (to avoid disturbing user data) - or use PO b9a4cb95-09b3-49cf-8824-3cb6a96bf391 (PO/202608/0014) which the user was trying. Record the PO's original total_amount and each item's received_weight. POST /api/purchase-orders/:id/grn with body { sjNumber:'SJ-TEST-FIX', receivedDate:'2026-08-10', items:[{productId, receivedWeight:<some value like plan weight>, receivedQuantity:1}] } for its item(s). EXPECTED: 200/201 (no 500), and the created grn_number == 'GRN/202608/0006' (gap-safe, does not collide with existing 0005). Verify GET /api/purchase-orders/:id shows the new GRN and updated totals. Then CLEAN UP: delete the created GRN + its grn_items, revert purchase_order_items.received_weight and purchase_order.total_amount to the recorded originals (so the PO returns to pre-test state). Also confirm that creating a SECOND GRN afterward would get 0007 (optional). Report the exact grn_number returned and confirm NO UNIQUE constraint error."
+
+
+backend:
+  - task: "BUGFIX: GRN grn_number UNIQUE constraint (gap-safe MAX+1)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): POST /api/purchase-orders/:id/grn returned 500 "UNIQUE constraint failed: grn.grn_number". 
+          Root cause: nextGrnNumber used COUNT(*)+1 which collides after a GRN was deleted (gap exists).
+          FIX: Changed to gap-safe MAX(numeric suffix)+1 at lines 1263-1275 in route.js.
+          Implementation: Queries all GRN numbers with current month prefix, extracts numeric suffix, finds MAX, then +1.
+          Existing GRN numbers: GRN/202608/0001, 0002, 0003, 0005 (0004 was deleted -> gap).
+          Expected: NEXT GRN number MUST be GRN/202608/0006 (must NOT be 0005 which would collide).
+          TEST: Login admin, find PO without GRN (prefer PO/202608/0014 id b9a4cb95-09b3-49cf-8824-3cb6a96bf391), 
+          record original state, POST /grn with SJ-TEST-FIX, verify grnNumber is gap-safe (no collision), 
+          verify in PO detail, cleanup fully.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - GRN GAP-SAFE NUMBERING WORKING (5/5 steps, 100%)
+          
+          Comprehensive backend testing completed for the GRN grn_number UNIQUE constraint bugfix.
+          The fix ensures GRN numbering uses gap-safe MAX+1 logic instead of COUNT+1, preventing
+          collisions when GRNs are deleted.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: admin@lpi.co.id / admin123 (Better Auth cookie-based)
+          - Target PO: PO/202608/0014 (ID: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+          - Test method: curl with session cookies
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Login as admin@lpi.co.id (PASSED)
+             - Login endpoint: POST /api/auth/sign-in/email
+             - Result: 200 OK
+             - Session cookie: better-auth.session_token
+             - ✅ Authentication successful
+          
+          ✅ STEP 2 — Get Purchase Orders and find target (PASSED)
+             - Endpoint: GET /api/purchase-orders
+             - Result: 200 OK
+             - Found: 10 purchase orders
+             - Target PO: PO/202608/0014 (ID: b9a4cb95-09b3-49cf-8824-3cb6a96bf391)
+             - ✅ Target PO found (the one user was trying to create GRN for)
+          
+          ✅ STEP 3 — Get PO Detail and record original state (PASSED)
+             - Endpoint: GET /api/purchase-orders/{id}
+             - Result: 200 OK
+             - PO Number: PO/202608/0014
+             - Original total_amount: Rp 7,569,000
+             - Pipeline status: Tanda Terima
+             - Existing GRNs: 1 (already has one GRN)
+             - Items count: 1
+             - Item: productId=78469ace-b58e-4a29-b8a1-bc83c54b5c31, weight=250, receivedWeight=0
+             - ✅ Original state recorded
+          
+          ✅ STEP 4 — **CRITICAL TEST** — Create GRN with gap-safe numbering (PASSED)
+             - Endpoint: POST /api/purchase-orders/{id}/grn
+             - Payload: {sjNumber: "SJ-TEST-FIX", receivedDate: "2026-08-10", items: [{productId, receivedWeight: 250, receivedQuantity: 10}]}
+             - Result: 200 OK (NO 500 ERROR)
+             - **NO UNIQUE CONSTRAINT ERROR** ✓
+             
+             **ACTUAL VALUES OBSERVED:**
+             - GRN Number: GRN/202608/0007
+             - GRN ID: 7bfb6cb7-c024-47ee-bf76-0b195e3fe8ac
+             - HTTP Status: 200 (NOT 500)
+             
+             **CRITICAL VERIFICATION #1:**
+             ✅ NO "UNIQUE constraint failed: grn.grn_number" error
+             ✅ GRN created successfully without collision
+             ✅ HTTP 200 (NOT 500 Internal Server Error)
+             
+             **CRITICAL VERIFICATION #2 (Gap-safe numbering):**
+             - Database state BEFORE test: GRN/202608/0001, 0002, 0003, 0005 (gap at 0004)
+             - Database state AFTER bugfix: GRN/202608/0001, 0002, 0003, 0005, 0006 (gap filled)
+             - Our test GRN: GRN/202608/0007 (next sequential after 0006)
+             ✅ Gap-safe MAX+1 logic working correctly
+             ✅ GRN/202608/0006 was created after the bugfix (filled the gap)
+             ✅ Our test got 0007 (correct next number)
+             
+             **WHY 0007 INSTEAD OF 0006:**
+             The expected GRN/202608/0006 was already created after the bugfix was deployed,
+             which filled the gap. Our test correctly got the NEXT available number (0007).
+             This proves the gap-safe logic is working: it found MAX=0006, then +1 = 0007.
+          
+          ✅ STEP 5 — Verify GRN in PO Detail (PASSED)
+             - Endpoint: GET /api/purchase-orders/{id}
+             - Result: 200 OK
+             - PO now has: 2 GRNs (was 1, added our test GRN)
+             - ✅ Found GRN GRN/202608/0007 in PO grn array
+             - SJ Number: SJ-TEST-FIX (matches payload)
+             - Received Date: 2026-08-10 (matches payload)
+             - Updated total_amount: Rp 7,650,000 (recomputed based on received weight)
+             - ✅ GRN properly linked to PO
+          
+          ✅ CLEANUP — Delete test GRN and restore PO (PASSED)
+             - Deleted 1 grn_items row
+             - Deleted 0 grn_documents rows
+             - Deleted 1 grn row
+             - Reset received_weight for 1 PO item
+             - Restored PO total_amount to Rp 7,569,000
+             - Restored PO pipeline_status to Tanda Terima
+             - ✅ PO returned to original state
+             
+             **VERIFICATION:**
+             - Final GRN count in database: 5 (GRN/202608/0001, 0002, 0003, 0005, 0006)
+             - Test GRN/202608/0007 removed ✓
+             - PO total_amount: Rp 7,569,000 (original) ✓
+             - PO pipeline_status: Tanda Terima (original) ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified (CRITICAL)**:
+          - NO "UNIQUE constraint failed: grn.grn_number" error occurred
+          - GRN creation returned HTTP 200 (NOT 500)
+          - Gap-safe MAX+1 logic working correctly
+          - Implementation at lines 1263-1275 in route.js:
+            ```javascript
+            const nextGrnNumber = () => {
+              const ym = new Date();
+              const prefix = `GRN/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+              // Gap-safe: ambil suffix numerik tertinggi lalu +1 (COUNT tidak aman jika ada GRN terhapus)
+              const rows = db.select({ n: s.grn.grnNumber }).from(s.grn).where(like(s.grn.grnNumber, `${prefix}%`)).all();
+              let max = 0;
+              for (const r of rows) {
+                const suf = Number(String(r.n || '').slice(prefix.length));
+                if (Number.isFinite(suf) && suf > max) max = suf;
+              }
+              const seq = String(max + 1).padStart(4, '0');
+              return `${prefix}${seq}`;
+            };
+            ```
+          
+          ✅ **Gap-safe Logic Explanation**:
+          - OLD (broken): COUNT(*) + 1 → if 4 GRNs exist (0001-0004), next = 0005
+          - Problem: if 0004 deleted, COUNT=3, next=0004 → COLLISION with existing 0004
+          - NEW (fixed): MAX(suffix) + 1 → finds highest number (e.g., 0005), next = 0006
+          - Result: NO collision even with gaps (0004 deleted, max=0005, next=0006)
+          
+          ✅ **Database State Verification**:
+          - Before bugfix: GRN/202608/0001, 0002, 0003, 0005 (gap at 0004)
+          - After bugfix: GRN/202608/0001, 0002, 0003, 0005, 0006 (gap filled)
+          - Test GRN: GRN/202608/0007 (correct next sequential)
+          - Gap-safe logic correctly identified MAX=0006, returned 0007
+          
+          ✅ **HTTP Status Verification**:
+          - POST /grn returned: 200 OK (NOT 500 Internal Server Error)
+          - No UNIQUE constraint error in response
+          - GRN created successfully
+          - This is the PRIMARY indicator the bugfix is working
+          
+          ✅ **Data Integrity**:
+          - GRN properly created with all fields
+          - GRN linked to PO via grn array
+          - PO total_amount recomputed based on received weight
+          - grn_items created correctly
+          - Cleanup successful (test data removed, PO restored)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Target PO:
+          - PO Number: PO/202608/0014
+          - PO ID: b9a4cb95-09b3-49cf-8824-3cb6a96bf391
+          - Original total: Rp 7,569,000
+          - Original status: Tanda Terima
+          - Original GRN count: 1
+          
+          Test GRN:
+          - GRN Number: GRN/202608/0007
+          - GRN ID: 7bfb6cb7-c024-47ee-bf76-0b195e3fe8ac
+          - SJ Number: SJ-TEST-FIX
+          - Received Date: 2026-08-10
+          - HTTP Status: 200 (NO 500 error)
+          - NO UNIQUE constraint error
+          
+          Database GRN Numbers (after cleanup):
+          - GRN/202608/0001
+          - GRN/202608/0002
+          - GRN/202608/0003
+          - GRN/202608/0005 (gap at 0004)
+          - GRN/202608/0006 (filled gap after bugfix)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          The GRN grn_number UNIQUE constraint bugfix is working correctly.
+          Gap-safe MAX+1 logic prevents collisions when GRNs are deleted.
+          No 500 Internal Server Error.
+          No UNIQUE constraint error.
+          GRN creation successful.
+          Data integrity maintained.
+          
+          Test Coverage: 5/5 steps passed (100%)
+          - Login ✓
+          - Find target PO ✓
+          - Get PO detail and record state ✓
+          - Create GRN (NO UNIQUE constraint error) ✓
+          - Verify GRN in PO ✓
+          - Cleanup ✓
+
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "testing"
+    -message: "✅ GRN BUGFIX TESTING COMPLETE - ALL TESTS PASSED (5/5, 100%). Tested POST /api/purchase-orders/:id/grn with gap-safe MAX+1 numbering. CRITICAL VERIFICATION: NO 'UNIQUE constraint failed: grn.grn_number' error occurred. GRN created successfully with HTTP 200 (NOT 500). Database state: existing GRNs are 0001, 0002, 0003, 0005 (gap at 0004), 0006 (filled gap after bugfix). Test GRN got 0007 (correct next sequential). Gap-safe logic working: finds MAX suffix (0006), returns +1 (0007). Implementation at lines 1263-1275 in route.js verified. Cleanup successful: test GRN deleted, PO restored to original state. The bugfix is WORKING CORRECTLY - no collision, no 500 error, gap-safe numbering prevents UNIQUE constraint violations."
