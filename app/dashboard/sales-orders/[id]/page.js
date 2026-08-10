@@ -156,7 +156,7 @@ export default function SODetailPage() {
           <TabsTrigger value="returns"><RotateCcw className="w-4 h-4 mr-1" />Retur</TabsTrigger>
         </TabsList>
         <TabsContent value="info"><InfoTab so={so} /></TabsContent>
-        <TabsContent value="items"><ItemsTab so={so} /></TabsContent>
+        <TabsContent value="items"><ItemsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
         <TabsContent value="receipts"><ReceiptsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
         <TabsContent value="payments"><PaymentsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
@@ -207,39 +207,50 @@ function InfoTab({ so }) {
   );
 }
 
-function ItemsTab({ so }) {
+function ItemsTab({ so, onSaved, canEdit }) {
+  const canAllocate = canEdit && so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship';
+  const [allocFor, setAllocFor] = useState(null); // item being allocated
   return (
-    <Card><CardHeader><CardTitle className="text-base">Items SO</CardTitle></CardHeader>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="text-base">Items SO</CardTitle>
+          {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Berat &amp; subtotal otomatis mengikuti kode simpan terpilih.</CardDescription>}
+        </div>
+        {so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship' && (
+          <Badge variant={so.allAllocated ? 'default' : 'secondary'} className={so.allAllocated ? 'bg-emerald-600' : ''}>
+            {so.allAllocated ? 'Semua teralokasi' : 'Perlu alokasi kode simpan'}
+          </Badge>
+        )}
+      </CardHeader>
       <CardContent className="p-0">
         <Table>
-          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">Diskon</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">HPP/kg</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
           <TableBody>
             {so.items?.map(it => (
               <TableRow key={it.id}>
                 <TableCell>
                   <div className="font-medium">{it.product?.name}</div>
                   <div className="text-xs text-muted-foreground font-mono">{it.product?.sku}</div>
-                  {it.stock && (
+                  {(it.allocations || []).length > 0 && (
                     <div className="text-xs mt-1 flex items-center gap-1.5 flex-wrap">
-                      <Badge variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">{it.stock.kodeSimpan}</Badge>
-                      {it.stock.coldStorage?.code && <span className="text-muted-foreground">📍 {it.stock.coldStorage.code}{it.stock.zone?.code ? `/${it.stock.zone.code}` : ''}</span>}
-                      {it.stock.status !== 'active' && <Badge variant="outline" className="text-[10px]">{it.stock.status}</Badge>}
+                      {it.allocations.map(al => (
+                        <Badge key={al.id} variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">
+                          {al.kodeSimpan} · {Number(al.weight).toFixed(1)}kg
+                        </Badge>
+                      ))}
                     </div>
+                  )}
+                  {canAllocate && (
+                    <Button size="sm" variant="outline" onClick={() => setAllocFor(it)} className="h-7 mt-1.5 text-xs">
+                      <Package className="w-3 h-3 mr-1" />{(it.allocations || []).length > 0 ? 'Ubah Kode Simpan' : 'Pilih Kode Simpan'}
+                    </Button>
                   )}
                 </TableCell>
                 <TableCell className="text-right">{it.quantity} {pkgShort(it.product?.packagingType)}</TableCell>
-                <TableCell className="text-right">
-                  {Number(it.shippedWeight) > 0 && Number(it.shippedWeight) !== Number(it.weight) ? (
-                    <div>
-                      <div className="font-semibold text-emerald-700">{it.shippedWeight} kg <span className="text-[10px] font-normal text-muted-foreground">kirim</span></div>
-                      <div className="text-[11px] text-muted-foreground line-through">{it.weight} kg SO</div>
-                    </div>
-                  ) : (
-                    <>{it.weight} kg</>
-                  )}
-                </TableCell>
+                <TableCell className="text-right">{Number(it.weight).toFixed(1)} kg</TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
-                <TableCell className="text-right text-red-600">-Rp {Number(it.discount || 0).toLocaleString('id-ID')}</TableCell>
+                <TableCell className="text-right text-xs text-muted-foreground">{it.hppAvgPerKg > 0 ? `Rp ${Number(it.hppAvgPerKg).toLocaleString('id-ID')}` : '-'}</TableCell>
                 <TableCell className="text-right font-semibold">Rp {Number(it.subtotal).toLocaleString('id-ID')}</TableCell>
               </TableRow>
             ))}
@@ -250,7 +261,92 @@ function ItemsTab({ so }) {
           </TableBody>
         </Table>
       </CardContent>
+      {allocFor && (
+        <AllocateDialog so={so} item={allocFor} onClose={() => setAllocFor(null)} onSaved={() => { setAllocFor(null); onSaved(); }} />
+      )}
     </Card>
+  );
+}
+
+function AllocateDialog({ so, item, onClose, onSaved }) {
+  const [stocks, setStocks] = useState(null);
+  const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/sales-orders/${so.id}/available-stocks?productId=${item.productId}`, { credentials: 'include' });
+        const j = await res.json();
+        // gabung stok yang sudah teralokasi ke item ini (agar tetap tampil & tercentang)
+        const avail = res.ok ? (j.data || []) : [];
+        const allocated = (item.allocations || []).filter(a => !avail.find(s => s.id === a.stockId))
+          .map(a => ({ id: a.stockId, kodeSimpan: a.kodeSimpan, weight: a.weight, quantity: a.quantity, hppPerKg: a.hppPerKg, stockValue: Math.round(a.hppPerKg * a.weight), csCode: null, _current: true }));
+        setStocks([...allocated, ...avail]);
+      } catch { setStocks([]); }
+    })();
+  }, [so.id, item.productId]);
+  const toggle = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const list = stocks || [];
+  const chosen = list.filter(s => selected.has(s.id));
+  const totalW = chosen.reduce((a, b) => a + Number(b.weight || 0), 0);
+  const totalQ = chosen.reduce((a, b) => a + Number(b.quantity || 0), 0);
+  const totalCogs = chosen.reduce((a, b) => a + Number(b.hppPerKg || 0) * Number(b.weight || 0), 0);
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/items/${item.id}/allocate`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stockIds: Array.from(selected) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success(`Alokasi tersimpan: ${chosen.length} kode simpan · ${totalW.toFixed(1)} kg`);
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Package className="w-5 h-5" /> Pilih Kode Simpan — {item.product?.name}</DialogTitle>
+          <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Berat &amp; subtotal SO otomatis direvisi.</DialogDescription>
+        </DialogHeader>
+        {stocks === null ? (
+          <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Memuat stok…</div>
+        ) : list.length === 0 ? (
+          <div className="py-10 text-center text-muted-foreground text-sm">Tidak ada kode simpan aktif untuk produk ini.</div>
+        ) : (
+          <div className="space-y-2">
+            {list.map(st => {
+              const on = selected.has(st.id);
+              return (
+                <label key={st.id} className={`flex items-center gap-3 border rounded-lg p-2.5 cursor-pointer ${on ? 'border-emerald-500 bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(st.id)} className="w-4 h-4 accent-emerald-600" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono font-semibold text-sm">{st.kodeSimpan}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {Number(st.weight).toFixed(1)} kg · {pkgLabel(st.packagingType)} × {Number(st.quantity)}
+                      {st.csCode && ` · ${st.csCode}`}
+                      {st.expiredDate && ` · Exp ${format(new Date(st.expiredDate), 'dd MMM yy')}`}
+                    </div>
+                  </div>
+                  <div className="text-right text-[11px]">
+                    <div className="text-muted-foreground">HPP/kg</div>
+                    <div className="font-semibold">Rp {Number(st.hppPerKg || 0).toLocaleString('id-ID')}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <div className="border-t pt-2 text-sm flex items-center justify-between">
+          <span className="text-muted-foreground">Terpilih: <b>{chosen.length}</b> · <b>{totalW.toFixed(1)}</b> kg · HPP <b>Rp {Math.round(totalCogs).toLocaleString('id-ID')}</b></span>
+          <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Alokasi
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -286,7 +382,9 @@ function SjTab({ so, onSaved, canOperate }) {
     finally { setSaving(false); }
   };
   return (
-    <Card>
+    <div className="space-y-3">
+      <ShippingCostCard so={so} onSaved={onSaved} canEdit={canOperate} />
+      <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div><CardTitle className="text-base">Surat Jalan (Delivery Order)</CardTitle><CardDescription>Dokumen pengiriman barang ke customer</CardDescription></div>
         {canOperate && ['Packed', 'Shipped', 'Invoiced'].includes(so.pipelineStatus) && (
@@ -375,6 +473,57 @@ function SjTab({ so, onSaved, canOperate }) {
           </div>}
       </CardContent>
     </Card>
+    </div>
+  );
+}
+
+function ShippingCostCard({ so, onSaved, canEdit }) {
+  const [cost, setCost] = useState(String(so.shippingCost || 0));
+  const [bearer, setBearer] = useState(so.shippingBearer || 'seller');
+  const [saving, setSaving] = useState(false);
+  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shippingCost: Number(cost || 0), shippingBearer: bearer }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Biaya kirim disimpan');
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><Truck className="w-4 h-4" />Biaya Pengiriman</CardTitle>
+        <CardDescription>Biaya kirim yang kita keluarkan. Bila ditanggung <b>Penjual</b>, ikut mengurangi gross profit.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">Biaya Kirim (Rp)</Label>
+            <Input type="number" inputMode="numeric" value={cost} onChange={e => setCost(e.target.value)} disabled={!canEdit} className="mt-1" placeholder="0" />
+          </div>
+          <div>
+            <Label className="text-xs">Ditanggung</Label>
+            <Select value={bearer} onValueChange={setBearer} disabled={!canEdit}>
+              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="seller">Penjual (kita) — kurangi gross profit</SelectItem>
+                <SelectItem value="buyer">Pembeli — tidak mengurangi gross profit</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Efek ke GP: {bearer === 'seller' ? <b className="text-red-600">-{rp(cost)}</b> : <b className="text-emerald-700">Rp 0</b>}</span>
+          {canEdit && <Button size="sm" onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Biaya Kirim</Button>}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -395,7 +544,9 @@ function PaymentsTab({ so, onSaved, canEdit }) {
     finally { setSaving(false); }
   };
   return (
-    <Card>
+    <div className="space-y-3">
+      <GrossProfitCard so={so} />
+      <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div><CardTitle className="text-base">Pembayaran Customer</CardTitle><CardDescription>Transfer / Tunai / QRIS</CardDescription></div>
         {canEdit && (
@@ -442,6 +593,35 @@ function PaymentsTab({ so, onSaved, canEdit }) {
               ))}
             </TableBody>
           </Table>}
+      </CardContent>
+    </Card>
+    </div>
+  );
+}
+
+function GrossProfitCard({ so }) {
+  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const revenue = Number(so.revenue ?? so.totalAmount ?? 0);
+  const cogs = Number(so.cogsTotal || 0);
+  const shipping = Number(so.sellerShipping || 0);
+  const gp = Number(so.grossProfit ?? (revenue - cogs - shipping));
+  const margin = Number(so.grossMarginPct ?? (revenue > 0 ? Math.round((gp / revenue) * 1000) / 10 : 0));
+  const bearer = so.shippingBearer === 'buyer' ? 'Pembeli' : 'Penjual';
+  return (
+    <Card className="border-emerald-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-emerald-600" />Gross Profit {so.invoiceNumber ? `· ${so.invoiceNumber}` : '(estimasi)'}</CardTitle>
+        <CardDescription>Laba kotor = Penjualan − HPP (kode simpan terpilih) − Biaya kirim (bila ditanggung penjual)</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <div><div className="text-xs text-muted-foreground">Penjualan</div><div className="font-semibold">{rp(revenue)}</div></div>
+          <div><div className="text-xs text-muted-foreground">HPP (COGS)</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
+          <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className="font-semibold text-red-600">{shipping > 0 ? '-' + rp(shipping) : rp(0)}</div></div>
+          <div><div className="text-xs text-muted-foreground">Gross Profit</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{rp(gp)}</div></div>
+          <div><div className="text-xs text-muted-foreground">Margin</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{margin}%</div></div>
+        </div>
+        {cogs === 0 && <div className="text-[11px] text-amber-600 mt-2">HPP belum tersedia — pastikan kode simpan sudah dialokasikan pada tab Items.</div>}
       </CardContent>
     </Card>
   );

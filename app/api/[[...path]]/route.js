@@ -2210,6 +2210,17 @@ async function handleRoute(request, { params }) {
         }
         return { ...it, product, stock };
       });
+      // Alokasi kode simpan per item (Fase B) + COGS per item
+      let cogsTotal = 0;
+      for (const it of enrichedItems) {
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+        it.allocations = allocs;
+        it.allocatedWeight = Math.round(allocs.reduce((a, b) => a + Number(b.weight || 0), 0) * 100) / 100;
+        it.allocatedQty = allocs.reduce((a, b) => a + Number(b.quantity || 0), 0);
+        it.cogs = Math.round(allocs.reduce((a, b) => a + Number(b.hppPerKg || 0) * Number(b.weight || 0), 0));
+        it.hppAvgPerKg = it.allocatedWeight > 0 ? Math.round(it.cogs / it.allocatedWeight) : 0;
+        cogsTotal += it.cogs;
+      }
       const customer = db.select().from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
       const sjRows = db.select().from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, id)).orderBy(desc(s.suratJalan.deliveryDate)).all();
       const payments = db.select().from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).orderBy(desc(s.salesPayments.paymentDate)).all();
@@ -2227,7 +2238,93 @@ async function handleRoute(request, { params }) {
       const totalShrinkageValue = receipts.reduce((a, b) => a + Number(b.totalShrinkageValue || 0), 0);
       const totalShrinkageWeight = receipts.reduce((a, b) => a + Number(b.totalShrinkageWeight || 0), 0);
       const outstanding = Number(so.totalAmount) - Number(so.paidAmount || 0) - totalReturns;
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight } });
+      const shippingCost = Number(so.shippingCost || 0);
+      const sellerShipping = (so.shippingBearer === 'buyer') ? 0 : shippingCost;
+      const revenue = Number(so.totalAmount || 0);
+      const grossProfit = Math.round(revenue - cogsTotal - sellerShipping);
+      const grossMarginPct = revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : 0;
+      const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated } });
+    }
+
+    // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'available-stocks' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const productId = url.searchParams.get('productId');
+      if (!productId) return err('productId required');
+      const rows = db.select().from(s.inventoryStock)
+        .where(and(eq(s.inventoryStock.productId, productId), eq(s.inventoryStock.status, 'active'), isNull(s.inventoryStock.archivedAt))).all();
+      const stockHpp = (stk) => {
+        let h = Number(stk.hppPerKg || 0);
+        if (stk.sourceType === 'PO' && stk.sourceBatch) {
+          const it = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+            .where(and(eq(s.purchaseOrderItems.purchaseOrderId, stk.sourceBatch), eq(s.purchaseOrderItems.productId, stk.productId))).get();
+          if (Number(it?.hpp || 0) > 0) h = Number(it.hpp);
+        }
+        return Math.round(h);
+      };
+      const out = rows.map(r => {
+        const cs = r.coldStorageId ? db.select({ code: s.coldStorages.code }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get() : null;
+        const hppPerKg = stockHpp(r);
+        return {
+          id: r.id, kodeSimpan: r.kodeSimpan, weight: Number(r.weight || 0), quantity: Number(r.quantity || 0),
+          packagingType: r.packagingType, expiredDate: r.expiredDate, csCode: cs?.code || null,
+          hppPerKg, stockValue: Math.round(hppPerKg * Number(r.weight || 0)),
+        };
+      }).sort((a, b) => (a.expiredDate ? new Date(a.expiredDate).getTime() : 9e15) - (b.expiredDate ? new Date(b.expiredDate).getTime() : 9e15));
+      return json({ data: out });
+    }
+
+    // POST /sales-orders/:id/items/:itemId/allocate - set kode simpan (multi) utk item, kunci stok, revisi SO
+    if (route.startsWith('/sales-orders/') && path.length === 5 && path[2] === 'items' && path[4] === 'allocate' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const soId = path[1], itemId = path[3];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      if (['Invoiced', 'Cancelled'].includes(so.pipelineStatus)) return err('SO tidak dapat dialokasi pada status ini');
+      const item = db.select().from(s.salesOrderItems).where(and(eq(s.salesOrderItems.id, itemId), eq(s.salesOrderItems.salesOrderId, soId))).get();
+      if (!item) return err('Item tidak ditemukan', 404);
+      const body = await request.json();
+      const stockIds = Array.isArray(body.stockIds) ? body.stockIds : [];
+      // Bebaskan alokasi lama item ini (status stok -> active), hapus baris lama
+      const prev = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).all();
+      for (const pv of prev) {
+        db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, pv.stockId)).run();
+      }
+      db.delete(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).run();
+      const stockHpp = (stk) => {
+        let h = Number(stk.hppPerKg || 0);
+        if (stk.sourceType === 'PO' && stk.sourceBatch) {
+          const it = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+            .where(and(eq(s.purchaseOrderItems.purchaseOrderId, stk.sourceBatch), eq(s.purchaseOrderItems.productId, stk.productId))).get();
+          if (Number(it?.hpp || 0) > 0) h = Number(it.hpp);
+        }
+        return Math.round(h);
+      };
+      let totW = 0, totQ = 0;
+      for (const sid of stockIds) {
+        const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, sid)).get();
+        if (!stk) return err(`Stok ${sid} tidak ditemukan`, 404);
+        if (stk.productId !== item.productId) return err(`Kode simpan ${stk.kodeSimpan} bukan produk item ini`);
+        if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan / tidak aktif`);
+        const w = Number(stk.weight || 0), q = Number(stk.quantity || 0);
+        db.insert(s.soItemStocks).values({
+          id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
+          kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
+        }).run();
+        db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
+        totW += w; totQ += q;
+      }
+      // Revisi item SO mengikuti total kode simpan terpilih
+      totW = Math.round(totW * 100) / 100;
+      const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
+      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal }).where(eq(s.salesOrderItems.id, itemId)).run();
+      recalcSoTotals(soId);
+      const updatedItem = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.id, itemId)).get();
+      return json({ data: { item: updatedItem, allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
     }
 
     // PATCH /sales-orders/:id
@@ -2240,10 +2337,11 @@ async function handleRoute(request, { params }) {
       if (['Invoiced', 'Cancelled'].includes(existing.pipelineStatus)) return err('SO tidak dapat diubah pada status ini');
       const body = await request.json();
       const update = {};
-      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate'];
+      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;
+          else if (f === 'shippingCost') update[f] = Number(body[f] || 0);
           else update[f] = body[f];
         }
       }
@@ -2326,24 +2424,27 @@ async function handleRoute(request, { params }) {
       const allowed = SO_FLOW[so.pipelineStatus] || [];
       if (!allowed.includes(target)) return err(`Transisi ${so.pipelineStatus} -> ${target} tidak diizinkan`);
       const upd = { pipelineStatus: target, updatedAt: new Date() };
-      // On Confirmed: auto stock deduction (create inventory_transaction OUT record for audit)
+      // On Confirmed: konsumsi kode simpan yang dialokasikan (Fase B)
       if (target === 'Confirmed') {
         const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
-        // Deduct stock rows linked via stockCodeId
+        const isDropship = so.fulfillmentType === 'dropship';
         let totalW = 0, totalQ = 0;
         for (const it of items) {
           totalW += Number(it.weight || 0);
           totalQ += Number(it.quantity || 0);
-          if (!it.stockCodeId) continue;
-          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockCodeId)).get();
-          if (!stk) continue;
-          const remainingWeight = Math.max(0, Number(stk.weight || 0) - Number(it.weight || 0));
-          const remainingQty = Math.max(0, Number(stk.quantity || 0) - Number(it.quantity || 0));
-          const newStatus = remainingWeight <= 0.001 ? 'used' : stk.status;
-          db.update(s.inventoryStock)
-            .set({ weight: remainingWeight, quantity: remainingQty, status: newStatus, updatedAt: new Date() })
-            .where(eq(s.inventoryStock.id, stk.id))
-            .run();
+          if (isDropship) continue;
+          const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+          if (allocs.length === 0) {
+            const prod = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
+            return err(`Item "${prod?.name || it.productId}" belum dipilih kode simpannya. Alokasikan kode simpan dulu.`);
+          }
+          for (const al of allocs) {
+            // Kode simpan dikonsumsi penuh (whole storage unit)
+            db.update(s.inventoryStock)
+              .set({ status: 'used', updatedAt: new Date() })
+              .where(eq(s.inventoryStock.id, al.stockId))
+              .run();
+          }
         }
         // Log ONE aggregate transaction for this SO
         db.insert(s.inventoryTransaction).values({
@@ -2406,6 +2507,14 @@ async function handleRoute(request, { params }) {
       db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
       // Auto-create approval concern for SO Cancellation
       if (target === 'Cancelled') {
+        // Bebaskan semua kode simpan yang masih dialokasikan (belum dikonsumsi) kembali ke aktif
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.salesOrderId, id)).all();
+        for (const al of allocs) {
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
+          if (stk && stk.status === 'allocated') {
+            db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, al.stockId)).run();
+          }
+        }
         createApproval({
           concernType: 'so_cancel',
           entityType: 'SO',
