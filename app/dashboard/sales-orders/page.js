@@ -37,7 +37,7 @@ export const SO_STATUS_COLOR = {
 const PAY_COLOR = { unpaid: 'bg-slate-100 text-slate-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700' };
 const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 
-const emptyItem = () => ({ stockId: '', productId: '', productName: '', packagingType: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, discount: 0, expiredDate: null });
+const emptyItem = () => ({ stockId: '', productId: '', productName: '', packagingType: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, avgHppPerKg: 0, discount: 0, expiredDate: null });
 const emptyForm = {
   customerId: '',
   fulfillmentType: 'stock', supplierId: '',
@@ -234,13 +234,8 @@ function CreateSODialog({ onSaved }) {
       if (form.items.length === 0 || form.items.some(it => !it.productId)) return toast.error('Isi minimal 1 item dengan produk');
       if (form.items.some(it => Number(it.weight) <= 0)) return toast.error('Berat harus > 0');
     } else {
-      if (form.items.length === 0 || form.items.some(it => !it.stockId)) return toast.error('Isi minimal 1 item dengan kode simpan');
-      for (const it of form.items) {
-        if (Number(it.weight) > Number(it.availableWeight) + 0.0001) {
-          return toast.error(`Berat ${it.weight} kg melebihi stok tersedia ${it.availableWeight} kg pada ${it.kodeSimpan}`);
-        }
-        if (Number(it.weight) <= 0) return toast.error(`Berat harus > 0 pada ${it.kodeSimpan}`);
-      }
+      if (form.items.length === 0 || form.items.some(it => !it.productId)) return toast.error('Isi minimal 1 item dengan produk');
+      if (form.items.some(it => Number(it.weight) <= 0)) return toast.error('Berat harus > 0');
     }
     setSaving(true);
     try {
@@ -248,7 +243,7 @@ function CreateSODialog({ onSaved }) {
         ...form,
         commissionValue: Number(form.commissionValue || 0),
         items: form.items.map(it => ({
-          stockId: isDropship ? undefined : it.stockId,
+          stockId: undefined,
           productId: it.productId,
           quantity: Number(it.quantity || 0),
           weight: Number(it.weight || 0),
@@ -272,7 +267,7 @@ function CreateSODialog({ onSaved }) {
     <DialogContent className="max-w-5xl max-h-[92vh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle>Buat Sales Order</DialogTitle>
-        <DialogDescription>Pilih <b>Kode Simpan</b> dari inventory. Stok otomatis dipotong saat status → <b>Confirmed</b>.</DialogDescription>
+        <DialogDescription>Pilih <b>produk</b>, kemasan, qty, berat, harga. Pemilihan <b>Kode Simpan</b> dilakukan setelah SO dibuat (di halaman detail).</DialogDescription>
       </DialogHeader>
       <div className="grid sm:grid-cols-2 gap-4">
         <F label="Pembeli (Customer / Agen) *" className="sm:col-span-2">
@@ -385,33 +380,27 @@ function CreateSODialog({ onSaved }) {
                 <div className="flex items-start gap-2">
                   {/* Stock Picker Button */}
                   <div className="flex-1 min-w-0">
-                    <Label className="text-xs text-muted-foreground">Kode Simpan / Produk</Label>
+                    <Label className="text-xs text-muted-foreground">Produk</Label>
                     {isDropship ? (
-                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), availableWeight: 999999 }); }}>
+                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
                         <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                         <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                       </Select>
-                    ) : it.stockId ? (
-                      <div className="mt-1 border rounded-md p-2 bg-emerald-50 flex items-start gap-2">
-                        <Package className="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-semibold truncate">{it.productName}</div>
-                          <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-                            <Badge variant="outline" className="font-mono text-[10px]">{it.kodeSimpan}</Badge>
-                            {it.packagingType && <Badge variant="outline" className="text-[10px]">{pkgLabel(it.packagingType)}</Badge>}
-                            {it.csLabel && <span>{it.csLabel}</span>}
-                            <span>Tersedia: <b className="text-emerald-700">{Number(it.availableWeight).toFixed(1)} kg</b></span>
-                            {it.expiredDate && <span>Exp: {format(new Date(it.expiredDate), 'dd MMM yyyy')}</span>}
-                          </div>
-                        </div>
-                        <Button size="sm" variant="ghost" onClick={() => clearStock(i)} className="h-7 text-xs">Ganti</Button>
-                      </div>
                     ) : (
-                      <StockPicker
-                        stocks={stocks.filter(st => !usedStockIds.has(st.id))}
-                        products={products}
-                        onPick={(stk) => pickStock(i, stk)}
-                      />
+                      <>
+                        <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
+                          <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
+                          <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                        {it.productId && (
+                          <div className="text-[11px] text-muted-foreground mt-1">
+                            Ref. HPP rata-rata: <b className="text-slate-700">Rp {Number(it.avgHppPerKg || 0).toLocaleString('id-ID')}/kg</b>
+                            {Number(it.avgHppPerKg) > 0 && Number(it.unitPrice) > 0 && Number(it.weight) > 0 && (
+                              <> · Est. margin: <b className={cn((Number(it.unitPrice) - Number(it.avgHppPerKg)) >= 0 ? 'text-emerald-700' : 'text-red-600')}>Rp {((Number(it.unitPrice) - Number(it.avgHppPerKg)) * Number(it.weight || 0)).toLocaleString('id-ID')}</b></>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                   <Button size="icon" variant="ghost" onClick={() => removeItem(i)} title="Hapus item">
@@ -419,7 +408,7 @@ function CreateSODialog({ onSaved }) {
                   </Button>
                 </div>
 
-                {(it.stockId || (isDropship && it.productId)) && (
+                {it.productId && (
                   <div className={cn('grid grid-cols-2 gap-2 pl-6', isDropship ? 'md:grid-cols-5' : 'md:grid-cols-4')}>
                     <div>
                       <Label className="text-xs">Berat Dijual (kg) *</Label>
