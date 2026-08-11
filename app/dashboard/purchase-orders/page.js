@@ -20,6 +20,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore, FileSpreadsheet } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { MonthYearFilter, useMonthFilter } from '@/components/month-year-filter';
 import { exportToExcel } from '@/lib/xlsx-export';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -75,11 +76,13 @@ export default function POListPage() {
   if (q) params.set('q', q);
   if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/purchase-orders?${params}`, fetcher);
-  const rows = sort.sortRows(data?.data || [], {
+  const mf = useMonthFilter(data?.data || [], 'orderDate');
+  const rows = sort.sortRows(mf.filtered, {
     poNumber: r => r.poNumber, poType: r => r.poType, supplier: r => r.supplier?.name,
     orderDate: r => r.orderDate, totalAmount: r => r.totalAmount,
     paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
   });
+  const monthTotal = mf.filtered.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
 
   const doArchive = async (r) => {
     if (!confirm(view === 'archived' ? 'Pulihkan PO ini dari arsip?' : 'Arsipkan PO ini? Data akan disembunyikan dari daftar aktif.')) return;
@@ -133,7 +136,12 @@ export default function POListPage() {
                 {PO_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
               </SelectContent>
             </Select>
+            <MonthYearFilter month={mf.month} setMonth={mf.setMonth} year={mf.year} setYear={mf.setYear} years={mf.years} />
             <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
+            <span className="text-muted-foreground">Periode <span className="font-medium text-foreground">{mf.label}</span></span>
+            <span><span className="font-semibold">{mf.filtered.length}</span> PO • Total <span className="font-semibold">Rp {monthTotal.toLocaleString('id-ID')}</span></span>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -151,7 +159,7 @@ export default function POListPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Belum ada PO</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Tidak ada PO pada periode {mf.label}</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono font-semibold text-xs">{r.poNumber}</TableCell>

@@ -19,6 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes, Archive, ArchiveRestore } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { MonthYearFilter, useMonthFilter } from '@/components/month-year-filter';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -66,11 +67,13 @@ export default function SOListPage() {
   if (q) params.set('q', q);
   if (view === 'archived') params.set('archived', '1');
   const { data, mutate, isLoading } = useSWR(`/api/sales-orders?${params}`, fetcher);
-  const rows = sort.sortRows(data?.data || [], {
+  const mf = useMonthFilter(data?.data || [], 'orderDate');
+  const rows = sort.sortRows(mf.filtered, {
     soNumber: r => r.soNumber, customer: r => r.customer?.name, orderDate: r => r.orderDate,
     invoiceNumber: r => r.invoiceNumber, totalAmount: r => r.totalAmount,
     paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
   });
+  const monthTotal = mf.filtered.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
 
   const doArchive = async (r) => {
     if (!confirm(view === 'archived' ? 'Pulihkan SO ini dari arsip?' : 'Arsipkan SO ini? Data akan disembunyikan dari daftar aktif.')) return;
@@ -111,7 +114,12 @@ export default function SOListPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Cari SO / Invoice number..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
+            <MonthYearFilter month={mf.month} setMonth={mf.setMonth} year={mf.year} setYear={mf.setYear} years={mf.years} />
             <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
+            <span className="text-muted-foreground">Periode <span className="font-medium text-foreground">{mf.label}</span></span>
+            <span><span className="font-semibold">{mf.filtered.length}</span> SO • Total <span className="font-semibold">Rp {monthTotal.toLocaleString('id-ID')}</span></span>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -128,7 +136,7 @@ export default function SOListPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Belum ada SO</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Tidak ada SO pada periode {mf.label}</TableCell></TableRow>}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono font-semibold text-xs">{r.soNumber}</TableCell>

@@ -18639,3 +18639,106 @@ agent_communication:
     -agent: "testing"
     -message: "✅ BACKEND TESTING COMPLETE - Odoo historical SO/PO import feature is WORKING. All 6 test groups executed, 6/6 passed (100%). Core functionality verified: (1) SO listing gating: GET /api/sales-orders default returns 120 (archived hidden), ?archived=1 → 89, ?archived=all → 209, all rows enriched with customer {code, displayName}, (2) PO listing gating: GET /api/purchase-orders default returns 25, ?archived=1 → 26, ?archived=all → 51, all rows enriched with supplier, (3) SO detail endpoints: GET /api/sales-orders/:id for visible migrated SO (S00178) returns header + customer + 1 item, archived SO (S00026) returns header + customer + 4 items, Cancelled SO (S00116) returns 200 (no crash), (4) PO detail endpoints: GET /api/purchase-orders/:id for visible migrated PO (P00029) returns header + supplier + 1 item, archived PO (P00015) returns header + supplier + 0 items, Dibatalkan PO (P00024) returns 200 (no crash), (5) CRITICAL ACCOUNTING SAFETY VERIFIED: journal_entries count BEFORE sync = 1 (only OPENING), POST /api/accounting/sync completed successfully, journal_entries count AFTER sync = 1 (still only OPENING), NO journal_entries with migrated source_type (SO_INV, PO_INV, CASHBACK, SPAY, PPAY, SRET, PRET) = 0, NO journal references migrated order numbers (S00%/P00%) = 0, trial balance balanced (Dr=384,244,000, Cr=384,244,000), (6) Regression verified: SO and PO list endpoints return 200 with no crashes. Database verification: SO total=209 (120 visible, 89 archived), SO items=375, PO total=51 (25 visible, 26 archived), PO items=100, journal_entries=1 (OPENING only). Feature is production-ready."
 
+
+#====================================================================================================
+# NEW TASK — Ringkasan Riwayat Odoo (Dashboard: historical SO/PO trends + one-click archive filter)
+#====================================================================================================
+
+backend:
+  - task: "Report endpoint: GET /api/reports/odoo-history (aggregate migrated SO/PO, scope=visible|all)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW endpoint GET /api/reports/odoo-history?scope=visible|all. Aggregates ONLY migrated=1 (Odoo-imported) Sales & Purchase Orders.
+          - scope=visible (default): only active (archived_at IS NULL) → Jun-Aug 2026.
+          - scope=all: include archived months.
+          Returns: { scope, months:[{month:'YYYY-MM', soCount, soTotal, poCount, poTotal}], summary:{so:{count,total,paid,outstanding}, po:{...}}, soByStatus, poByStatus, soByPayment, poByPayment, topCustomers[8], topSuppliers[8] }.
+          Auth: requireAuth + role admin/supervisor/direktur (else 403; unauth 401).
+          Verified via direct SQL harness AND via the rendered dashboard page:
+          - scope=visible: SO count=120 (Jun 43 / Jul 58 / Agu 19), total=252,633,827, paid=44,032,172; PO count=25 (Jun 2 / Jul 19 / Agu 4), total=161,004,890, paid=5,765,350.
+          - scope=all: SO count=209 (Mar-Aug), PO count=51 (Jan-Aug).
+          - topCustomers/topSuppliers resolve contact display_name via JOIN.
+          WHAT TO TEST (auth admin@lpi.co.id/admin123):
+          1) GET /api/reports/odoo-history (default) → scope='visible', summary.so.count=120, summary.po.count=25, months has exactly 2026-06/07/08 for both. soByStatus & poByStatus non-empty. topCustomers/topSuppliers arrays with {name,count,total}.
+          2) GET /api/reports/odoo-history?scope=all → summary.so.count=209, summary.po.count=51, months span 2026-03..2026-08 (SO) and 2026-01..2026-08 (PO).
+          3) AuthZ: no session → 401. (Optional) operator role → 403.
+          4) Numeric integrity: for scope=visible, sum of months[].soTotal ≈ summary.so.total; same for PO. outstanding = total - paid (>=0).
+
+frontend:
+  - task: "Dashboard page: Ringkasan Riwayat Odoo (/dashboard/odoo-history) with one-click archive toggle + recharts trend"
+    implemented: true
+    working: "NA"
+    file: "/app/app/dashboard/odoo-history/page.js, /app/app/dashboard/dashboard-shell.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New page under Laporan → 'Riwayat Odoo'. One-click Tabs toggle 'Jun–Agu 2026' (visible) vs 'Semua Riwayat' (all). Summary cards (SO/PO count+value+outstanding), recharts grouped BarChart (Penjualan vs Pembelian per month), payment-status breakdown bars, pipeline-status distribution, Top Pelanggan & Top Supplier tables. Self-verified via screenshot at localhost:3000 — renders correctly, toggle + chart tooltip working, values match backend. NOTE: a pre-existing hydration warning exists in the ROOT layout (dynamic theme CSS vars on <html>) and is unrelated to this page.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Report endpoint: GET /api/reports/odoo-history (aggregate migrated SO/PO, scope=visible|all)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "New feature 'Ringkasan Riwayat Odoo'. Please BACKEND-TEST the new task 'Report endpoint: GET /api/reports/odoo-history'. Checks: (1) default (scope=visible) → summary.so.count=120, summary.po.count=25, months only 2026-06/07/08; (2) ?scope=all → summary.so.count=209, summary.po.count=51, months span Mar-Aug (SO) & Jan-Aug (PO); (3) 401 when unauthenticated; (4) sum(months.soTotal)≈summary.so.total and same for PO, outstanding=total-paid>=0. Auth admin@lpi.co.id/admin123. SQLite/Drizzle, endpoint aggregates only migrated=1 rows. Read-only."
+
+
+#====================================================================================================
+# CHANGE — Rollback "Ringkasan Riwayat Odoo" + NEW per-month filter on SO & PO list pages
+#====================================================================================================
+
+frontend:
+  - task: "Rollback Ringkasan Riwayat Odoo (page + nav + endpoint removed)"
+    implemented: true
+    working: true
+    file: "/app/app/dashboard/odoo-history/page.js (DELETED), /app/app/dashboard/dashboard-shell.js, /app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Per user request, rolled back the previously added 'Ringkasan Riwayat Odoo' feature: deleted /app/app/dashboard/odoo-history/page.js, removed the 'Riwayat Odoo' sidebar link + History icon import from dashboard-shell.js, and removed the GET /api/reports/odoo-history endpoint from route.js. Verified pages compile (no errors), nav link no longer present (screenshot). The Odoo-imported SO/PO DATA remains intact (still migrated=1, still gated by archive rules).
+
+  - task: "Per-month filter (Bulan & Tahun) on Sales Order & Purchase Order list pages"
+    implemented: true
+    working: true
+    file: "/app/components/month-year-filter.js (new), /app/app/dashboard/sales-orders/page.js, /app/app/dashboard/purchase-orders/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          NEW: Added a reusable Bulan/Tahun filter (components/month-year-filter.js: useMonthFilter hook + MonthYearFilter selects) to the existing Sales Order and Purchase Order list pages. Client-side filtering by order date (order_date). Default = CURRENT month (bulan berjalan). Only ACTIVE orders are shown (respects existing Aktif/Arsip tab; per user choice archived orders are NOT auto-included). A period summary bar shows '<n> SO/PO • Total Rp <sum>' for the selected month to ease manual cross-check.
+          Self-verified via screenshots at localhost:3000 (container date = 2026-08-11, so default = Agustus 2026):
+          - Sales Orders default → 'Periode Agustus 2026', '19 SO • Total Rp 54.623.100' (matches active Aug SO data). Table lists only August SO.
+          - Purchase Orders default → 'Periode Agustus 2026', '4 PO • Total Rp 33.013.250' (matches active Aug PO data). Table lists only August PO.
+          NOTE: pure client-side change (no backend/API changes beyond the endpoint rollback above). Pre-existing root-layout hydration warning is unrelated.
+
+agent_communication:
+    -agent: "main"
+    -message: "User asked to (1) rollback the 'Ringkasan Riwayat Odoo' dashboard, and (2) add a per-month filter to the existing Sales Order & Purchase Order list pages (default current month, active orders only, by order date) for easier manual cross-check. Both done and self-verified via screenshots. This is a frontend/client-side change (plus removing the earlier report endpoint). NO backend testing needed. Awaiting user decision on whether to run automated frontend testing."
+
