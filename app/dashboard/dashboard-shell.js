@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
   FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers,
-  Landmark, BookOpen, Calculator, Wallet, Scale
+  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -49,6 +49,7 @@ const NAV = [
       { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/production-reports', label: 'Laporan Produksi', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/sales-profit', label: 'Laba Penjualan', icon: TrendingUp, roles: ['admin','supervisor','direktur'] },
     ],
   },
   {
@@ -58,6 +59,8 @@ const NAV = [
       { href: '/dashboard/accounting/coa', label: 'Chart of Account', icon: BookOpen, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/accounting/journals', label: 'Jurnal Umum', icon: Calculator, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/accounting/ledger', label: 'Buku Besar', icon: Wallet, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/accounting/fixed-assets', label: 'Aset Tetap', icon: Building, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/accounting/closing', label: 'Tutup Buku', icon: Lock, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/accounting/reports', label: 'Laporan Keuangan', icon: Scale, roles: ['admin','supervisor','direktur'] },
     ],
   },

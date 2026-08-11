@@ -18,10 +18,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown, FileText, Upload, Download, Archive, ArchiveRestore } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Users, Loader2, Eye, ShoppingCart, ClipboardList, TrendingUp, Info, Lock, Contact2, Wallet, Percent, CheckCircle2, MapPin, ChevronsUpDown, FileText, Upload, Download, Archive, ArchiveRestore, FileSpreadsheet } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { exportToExcel } from '@/lib/xlsx-export';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -126,6 +127,12 @@ export default function ContactsPage() {
   const openCreate = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (row) => { setEditing(row); setForm({ ...emptyForm, ...row, categories: getCats(row) }); setOpen(true); };
 
+  const exportContacts = () => exportToExcel('kontak', [{ name: 'Kontak', headers: [
+    { key: 'code', label: 'Kode' }, { key: 'displayName', label: 'Nama' }, { key: 'companyName', label: 'Perusahaan' },
+    { key: 'category', label: 'Kategori' }, { key: 'phone', label: 'Telepon' }, { key: 'email', label: 'Email' },
+    { key: 'city', label: 'Kota' }, { key: 'province', label: 'Provinsi' }, { key: 'status', label: 'Status' },
+  ], rows: rows.map((r) => ({ code: r.code, displayName: r.displayName, companyName: r.companyName, category: getCats(r).join(', '), phone: r.phone, email: r.email, city: r.city, province: r.province, status: r.status })) }]);
+
   const save = async () => {
     if (!Array.isArray(form.categories) || form.categories.length === 0) { toast.error('Pilih minimal 1 kategori kontak'); return; }
     if (!form.displayName) { toast.error('Nama Tampilan wajib diisi'); return; }
@@ -164,10 +171,13 @@ export default function ContactsPage() {
           </p>
         </div>
         {canCreate && (
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Contact</Button></DialogTrigger>
-            <ContactDialog form={form} setForm={setForm} onSave={save} saving={saving} editing={editing} />
-          </Dialog>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={exportContacts} disabled={!rows.length}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Contact</Button></DialogTrigger>
+              <ContactDialog form={form} setForm={setForm} onSave={save} saving={saving} editing={editing} />
+            </Dialog>
+          </div>
         )}
       </div>
 
