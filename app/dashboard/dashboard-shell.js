@@ -20,7 +20,8 @@ import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 import { id as idLocale } from 'date-fns/locale';
 import FloatingAIAssistant from '@/components/floating-ai-assistant';
-import { setPdfCompany } from '@/lib/pdf/invoice';
+import { setPdfCompany, setPdfSettings } from '@/lib/pdf/invoice';
+import { applyAccent } from '@/lib/themes';
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
@@ -96,11 +97,20 @@ export default function DashboardShell({ user, children }) {
   const [open, setOpen] = useState(false);
   const role = user?.role || 'operator';
 
-  // Muat profil perusahaan untuk header PDF (nama, alamat, kontak, logo)
+  // Muat profil perusahaan + pengaturan PDF untuk header/komponen semua dokumen
   useEffect(() => {
     fetch('/api/settings/company', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(j => { if (j?.data?.value) setPdfCompany(j.data.value); })
+      .catch(() => {});
+    fetch('/api/settings/pdf', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (j?.data?.value) setPdfSettings(j.data.value); })
+      .catch(() => {});
+    // Terapkan tema warna (brand) yang tersimpan di server bila ada
+    fetch('/api/settings/appearance', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { const k = j?.data?.value?.accent; if (k) { try { localStorage.setItem('erp-accent', k); } catch (e) {} applyAccent(k); } })
       .catch(() => {});
   }, []);
 
@@ -136,16 +146,16 @@ export default function DashboardShell({ user, children }) {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50/70">
       {/* Sidebar */}
       <aside className={cn(
-        'fixed inset-y-0 left-0 z-50 w-72 bg-white border-r flex flex-col transition-transform lg:translate-x-0',
+        'fixed inset-y-0 left-0 z-50 w-72 bg-sidebar border-r flex flex-col transition-transform lg:translate-x-0',
         open ? 'translate-x-0' : '-translate-x-full'
       )}>
         <div className="flex items-center justify-between p-4 border-b">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-lg flex items-center justify-center text-white">
-              <Wheat className="w-6 h-6" />
+            <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-primary-foreground shadow-sm">
+              <Wheat className="w-5 h-5" />
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">Ladang Pangan</div>
@@ -154,10 +164,10 @@ export default function DashboardShell({ user, children }) {
           </div>
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(false)}><X className="w-5 h-5" /></Button>
         </div>
-        <div className="flex-1 overflow-y-auto p-3">{renderNav()}</div>
+        <div className="flex-1 overflow-y-auto p-3 thin-scrollbar">{renderNav()}</div>
         <div className="border-t p-3 space-y-3">
           <div className="flex items-center gap-3 px-2">
-            <Avatar className="w-9 h-9"><AvatarFallback className="bg-emerald-100 text-emerald-700 text-sm">{initials}</AvatarFallback></Avatar>
+            <Avatar className="w-9 h-9"><AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">{initials}</AvatarFallback></Avatar>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm truncate">{user?.name}</div>
               <div className="text-xs text-muted-foreground truncate">{user?.email}</div>
@@ -175,15 +185,15 @@ export default function DashboardShell({ user, children }) {
 
       {/* Main */}
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-30 bg-white border-b h-14 flex items-center px-4 gap-3">
+        <header className="sticky top-0 z-30 bg-background/80 backdrop-blur border-b h-16 flex items-center px-4 md:px-8 gap-3">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(true)}><Menu className="w-5 h-5" /></Button>
           <div className="flex-1">
-            <div className="text-sm text-muted-foreground">PT Ladang Pangan Indonesia</div>
+            <div className="text-sm font-medium text-foreground">PT Ladang Pangan Indonesia</div>
           </div>
           <NotificationBell />
           <Badge variant="secondary" className="hidden sm:inline-flex">Beta v0.1</Badge>
         </header>
-        <main className="p-6">{children}</main>
+        <main className="p-4 md:p-8">{children}</main>
       </div>
 
       {/* Floating AI Assistant — for management roles, hidden on the full AI page */}
@@ -275,7 +285,7 @@ function NotificationBell() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-2">
                   <div className={cn('text-sm truncate', !n.isRead && 'font-semibold')}>{n.title}</div>
-                  {!n.isRead && <span className="mt-1.5 w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />}
+                  {!n.isRead && <span className="mt-1.5 w-2 h-2 rounded-full bg-primary flex-shrink-0" />}
                 </div>
                 {n.message && <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</div>}
                 <div className="text-[10px] text-muted-foreground mt-1">
@@ -291,7 +301,7 @@ function NotificationBell() {
             </button>
           ))}
         </div>
-        <div className="p-2 border-t bg-slate-50">
+        <div className="p-2 border-t bg-muted/40">
           <Link href="/dashboard/notifications" onClick={() => setOpenMenu(false)}>
             <Button variant="ghost" className="w-full h-8 text-xs">Lihat semua notifikasi</Button>
           </Link>
@@ -314,7 +324,7 @@ function NavLink({ item, active }) {
   return (
     <Link href={item.href} className={cn(
       'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-      active ? 'bg-emerald-50 text-emerald-700 font-semibold' : 'text-slate-700 hover:bg-slate-100'
+      active ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground/70 hover:bg-muted'
     )}>
       <Icon className="w-4 h-4" /><span>{item.label}</span>
       {active && <ChevronRight className="w-4 h-4 ml-auto" />}

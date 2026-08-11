@@ -1,7 +1,7 @@
 ============================================================
 LPI ERP BACKEND API TEST SUITE
 ============================================================
-Base URL: https://data-management-hub-13.preview.emergentagent.com/api
+Base URL: https://cashbook-quick-entry.preview.emergentagent.com/api
 ============================================================
 
 === TEST 1: HEALTH CHECK ===

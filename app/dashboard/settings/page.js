@@ -13,9 +13,13 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
-import { setPdfCompany } from '@/lib/pdf/invoice';
+import { setPdfCompany, setPdfSettings, generateInvoicePDF } from '@/lib/pdf/invoice';
+import { PDF_DEFAULTS } from '@/lib/pdf/theme';
+import { THEMES, THEME_KEYS, DEFAULT_ACCENT_KEY, applyAccent } from '@/lib/themes';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { User, Building2, ShieldCheck, Bell, Loader2, Save, Upload, Trash2, Plus, KeyRound } from 'lucide-react';
+import { User, Building2, ShieldCheck, Bell, Loader2, Save, Upload, Trash2, Plus, KeyRound, FileText, Palette, Eye, Paintbrush } from 'lucide-react';
 
 const fetcher = (u) => fetch(u, { credentials: 'include' }).then(r => r.json());
 const F = ({ label, children, hint }) => (
@@ -53,11 +57,15 @@ export default function SettingsPage() {
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="account"><User className="w-4 h-4 mr-1" />Profil Akun</TabsTrigger>
           <TabsTrigger value="company"><Building2 className="w-4 h-4 mr-1" />Profil Perusahaan</TabsTrigger>
+          <TabsTrigger value="pdf"><FileText className="w-4 h-4 mr-1" />PDF & Dokumen</TabsTrigger>
+          <TabsTrigger value="appearance"><Paintbrush className="w-4 h-4 mr-1" />Tampilan</TabsTrigger>
           <TabsTrigger value="approval"><ShieldCheck className="w-4 h-4 mr-1" />Approval</TabsTrigger>
           <TabsTrigger value="notifications"><Bell className="w-4 h-4 mr-1" />Notifikasi</TabsTrigger>
         </TabsList>
         <TabsContent value="account"><AccountTab user={user} /></TabsContent>
         <TabsContent value="company"><CompanyTab /></TabsContent>
+        <TabsContent value="pdf"><PdfTab /></TabsContent>
+        <TabsContent value="appearance"><AppearanceTab /></TabsContent>
         <TabsContent value="approval"><ApprovalTab /></TabsContent>
         <TabsContent value="notifications"><NotificationsTab /></TabsContent>
       </Tabs>
@@ -178,6 +186,189 @@ function CompanyTab() {
         <F label="Alamat"><Textarea value={f.address} onChange={e => setF({ ...f, address: e.target.value })} placeholder="Jl. ..., Kota, Provinsi, Kode Pos" rows={2} /></F>
         <F label="Kontak (Telp / Email / NPWP)"><Input value={f.contact} onChange={e => setF({ ...f, contact: e.target.value })} placeholder="Telp: ...  ·  Email: ...  ·  NPWP: ..." /></F>
         <F label="Info Bank (opsional)" hint="Muncul di area pembayaran invoice bila tersedia."><Input value={f.bank} onChange={e => setF({ ...f, bank: e.target.value })} placeholder="BCA 1234567890 a.n. ..." /></F>
+        <div className="flex justify-end"><Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}Simpan</Button></div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ---------------- PDF & Dokumen ---------------- */
+const PDF_TOGGLES = [
+  ['showLogo', 'Tampilkan Logo', 'Logo perusahaan di pojok kiri-atas dokumen'],
+  ['showWatermark', 'Watermark "INTERNAL"', 'Pada salinan internal / faktur nilai asli'],
+  ['showSignature', 'Blok Tanda Tangan', 'Area tanda tangan di bagian bawah dokumen'],
+  ['showPayment', 'Info Pembayaran', 'Blok rekening & konfirmasi pembayaran (Invoice)'],
+  ['showPrintedAt', 'Timestamp "Dicetak"', 'Tampilkan waktu cetak di footer'],
+];
+const COLOR_PRESETS = ['#107A57', '#1D4ED8', '#7C3AED', '#DC2626', '#EA580C', '#0F766E', '#0E7490', '#334155'];
+const SAMPLE_SO = {
+  soNumber: 'SO-2026-0001', invoiceNumber: 'INV-2026-0001',
+  orderDate: new Date(), invoiceDate: new Date(), dueDate: new Date(Date.now() + 7 * 864e5), paymentTerm: 'NET 7',
+  paidAmount: 5000000, totalAmount: 12400000,
+  customer: { displayName: 'CV Sumber Rejeki', address: 'Jl. Merdeka No. 45, Cimahi', city: 'Bandung', province: 'Jawa Barat', phone: '022-1234567', taxId: '01.222.333.4-000.000' },
+  items: [
+    { product: { name: 'Daging Sapi Beku', sku: 'DGS-01', packagingType: 'karton' }, quantity: 10, weight: 200, unitPrice: 55000, discount: 100000 },
+    { product: { name: 'Ayam Broiler Beku', sku: 'AYM-02', packagingType: 'karton' }, quantity: 5, weight: 50, unitPrice: 35000, discount: 0 },
+  ],
+};
+
+function PdfTab() {
+  const { data, mutate } = useSWR('/api/settings/pdf', fetcher);
+  const [f, setF] = useState({ ...PDF_DEFAULTS });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (data?.data?.value) setF(v => ({ ...PDF_DEFAULTS, ...v, ...data.data.value })); }, [data]);
+  const set = (k, val) => setF(v => ({ ...v, [k]: val }));
+
+  const preview = () => {
+    try {
+      setPdfSettings(f); // pakai pengaturan form terkini
+      const url = generateInvoicePDF(SAMPLE_SO).output('bloburl');
+      window.open(url, '_blank');
+    } catch (e) { toast.error('Gagal membuat pratinjau: ' + e.message); }
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/settings/pdf', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ value: f }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      setPdfSettings(f); // langsung terpakai di PDF berikutnya
+      toast.success('Pengaturan PDF disimpan (berlaku untuk semua dokumen)');
+      mutate();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Tampilan PDF</CardTitle>
+              <CardDescription>Berlaku global untuk semua dokumen (Invoice, SO, Surat Jalan, PO, Tally, Laporan Keuangan).</CardDescription>
+            </div>
+            <Button size="sm" variant="outline" onClick={preview}><Eye className="w-4 h-4 mr-2" />Lihat Contoh</Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Warna & Template */}
+          <div className="grid sm:grid-cols-2 gap-4">
+            <F label="Warna Aksen (Brand Color)" hint="Dipakai pada header, judul, dan tabel.">
+              <div className="flex items-center gap-2">
+                <input type="color" value={f.accent} onChange={e => set('accent', e.target.value)} className="h-9 w-12 rounded-md border cursor-pointer p-0.5 bg-background" />
+                <Input value={f.accent} onChange={e => set('accent', e.target.value)} className="w-28 font-mono" />
+                <div className="flex gap-1 flex-wrap">
+                  {COLOR_PRESETS.map(c => (
+                    <button key={c} type="button" onClick={() => set('accent', c)} className="h-6 w-6 rounded-md border" style={{ background: c }} aria-label={c} />
+                  ))}
+                </div>
+              </div>
+            </F>
+            <F label="Gaya Template">
+              <Select value={f.template} onValueChange={v => set('template', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="modern">Modern (pita warna + judul berwarna)</SelectItem>
+                  <SelectItem value="classic">Klasik (pita tipis)</SelectItem>
+                  <SelectItem value="minimal">Minimalis (tanpa warna)</SelectItem>
+                </SelectContent>
+              </Select>
+            </F>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <F label={`Ukuran Logo (${f.logoSize} mm)`} hint="Rentang 10–34 mm.">
+              <Input type="range" min={10} max={34} value={f.logoSize} onChange={e => set('logoSize', Number(e.target.value))} className="cursor-pointer" />
+            </F>
+          </div>
+          <Separator />
+          {/* Komponen on/off */}
+          <div>
+            <Label className="text-xs flex items-center gap-1.5"><Palette className="w-3.5 h-3.5" />Komponen yang Ditampilkan</Label>
+            <div className="grid sm:grid-cols-2 gap-2 mt-2">
+              {PDF_TOGGLES.map(([key, label, desc]) => (
+                <div key={key} className="flex items-start justify-between gap-3 border rounded-lg p-3">
+                  <div><div className="text-sm font-medium">{label}</div><div className="text-[11px] text-muted-foreground">{desc}</div></div>
+                  <Switch checked={f[key] !== false} onCheckedChange={v => set(key, v)} />
+                </div>
+              ))}
+            </div>
+          </div>
+          <Separator />
+          {/* Teks */}
+          <F label="Info Pembayaran (Invoice)" hint="Satu baris per baris teks. Muncul di area pembayaran invoice.">
+            <Textarea rows={2} value={f.paymentInfo} onChange={e => set('paymentInfo', e.target.value)} placeholder="Transfer ke: Bank ... a/n ... No. Rek: ..." />
+          </F>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <F label="Label Tanda Tangan"><Input value={f.signerLabel} onChange={e => set('signerLabel', e.target.value)} placeholder="Hormat kami," /></F>
+            <F label="Nama Penandatangan"><Input value={f.signerName} onChange={e => set('signerName', e.target.value)} placeholder="PT Ladang Pangan Indonesia" /></F>
+          </div>
+          <F label="Catatan Kaki (Footer)"><Input value={f.footerNote} onChange={e => set('footerNote', e.target.value)} placeholder="Dokumen ini digenerate otomatis oleh sistem ERP ..." /></F>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={preview}><Eye className="w-4 h-4 mr-2" />Lihat Contoh</Button>
+            <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}Simpan</Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Tampilan (Tema Warna) ---------------- */
+function AppearanceTab() {
+  const { data, mutate } = useSWR('/api/settings/appearance', fetcher);
+  const [accent, setAccent] = useState(DEFAULT_ACCENT_KEY);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { try { const k = localStorage.getItem('erp-accent'); if (k && THEMES[k]) setAccent(k); } catch (e) {} }, []);
+  useEffect(() => { const v = data?.data?.value?.accent; if (v && THEMES[v]) setAccent(v); }, [data]);
+
+  const choose = (key) => {
+    setAccent(key);
+    applyAccent(key);
+    try { localStorage.setItem('erp-accent', key); } catch (e) {}
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/settings/appearance', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ value: { accent } }) });
+      if (!res.ok) throw new Error((await res.json()).error || 'Gagal');
+      try { localStorage.setItem('erp-accent', accent); } catch (e) {}
+      applyAccent(accent);
+      toast.success('Tema warna disimpan');
+      mutate();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Tema Warna</CardTitle><CardDescription>Pilih warna utama (brand) aplikasi. Berlaku instan ke tombol, highlight, navigasi, dan fokus.</CardDescription></CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {THEME_KEYS.map((key) => {
+            const t = THEMES[key];
+            const active = accent === key;
+            return (
+              <button key={key} type="button" onClick={() => choose(key)}
+                className={cn('flex items-center gap-3 rounded-xl border p-3 text-left transition', active ? 'border-primary ring-2 ring-primary/30 bg-primary/5' : 'hover:bg-muted/50')}>
+                <span className="h-8 w-8 rounded-full ring-1 ring-black/10" style={{ background: t.dot }} />
+                <div>
+                  <div className="text-sm font-medium">{t.name}</div>
+                  {active && <div className="text-[11px] text-primary font-medium">Aktif</div>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="rounded-xl border p-4 space-y-3 bg-muted/20">
+          <div className="text-xs text-muted-foreground">Pratinjau komponen</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm">Tombol Utama</Button>
+            <Button size="sm" variant="secondary">Sekunder</Button>
+            <Button size="sm" variant="outline">Outline</Button>
+            <Badge>Badge</Badge>
+            <Switch defaultChecked />
+          </div>
+        </div>
         <div className="flex justify-end"><Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}Simpan</Button></div>
       </CardContent>
     </Card>

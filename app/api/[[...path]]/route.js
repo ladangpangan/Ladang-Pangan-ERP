@@ -4553,7 +4553,7 @@ async function handleRoute(request, { params }) {
     }
 
     // ================= APP SETTINGS (key-value JSON) =================
-    const ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications'];
+    const ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications', 'pdf', 'appearance'];
     // GET /settings/:key
     if (route.startsWith('/settings/') && path.length === 2 && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;

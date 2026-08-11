@@ -6,7 +6,7 @@ Retry failed Purchase Order tests
 import requests
 import time
 
-BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
+BASE_URL = "https://cashbook-quick-entry.preview.emergentagent.com/api"
 
 def login_admin():
     session = requests.Session()

@@ -109,6 +109,21 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 frontend:
+  - task: "PDF Redesign + Configurable PDF Components (Setting > PDF & Dokumen)"
+    implemented: true
+    working: "NA"
+    file: "/app/lib/pdf/theme.js, /app/lib/pdf/invoice.js, /app/lib/pdf/financial.js, /app/app/dashboard/settings/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Redesigned ALL PDFs (Invoice, SO, Surat Jalan, PO, Tally, Neraca, Laba Rugi, Arus Kas) with a shared modern theme (lib/pdf/theme.js): accent-colour ribbon header, styled meta box, striped tables w/ accent header, highlighted TOTAL box, fixed footer with page numbers.
+          Added Setting > "PDF & Dokumen" tab to configure components globally: accent colour (+presets), template (modern/classic/minimal), logo size, toggles (logo/watermark/signature/payment/printed-at), payment info text, signer label+name, footer note. Live "Lihat Contoh" preview.
+          Verified in Node harness: all 9 PDF generators produce valid PDFs (no runtime errors); analyze_file_tool confirmed clean invoice layout with no overlaps. Frontend UI not yet browser-tested (awaiting user).
+
   - task: "BUGFIX: PDF Invoice/SO/Surat Jalan generation (jsPDF v4 named import)"
     implemented: true
     working: true
@@ -409,6 +424,215 @@ frontend:
           - TEST 3: No regression (basic functionality) ✓
 
 backend:
+  - task: "Settings key-value: whitelist 'pdf' for PDF component config"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added 'pdf' to ALLOWED_SETTINGS so GET/PUT /api/settings/pdf works via the existing generic key-value handler (app_settings table). Stores PDF display config JSON (accent, template, logoSize, toggles, texts).
+          TEST: as admin, PUT /api/settings/pdf with {value:{accent:'#1D4ED8', template:'modern', showLogo:true, footerNote:'x'}} => 200 and returns saved value; GET /api/settings/pdf => returns same value; unauthenticated => 401. Regression: company/approval/notifications keys still work.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ PDF SETTINGS ENDPOINT - ALL TESTS PASSED (6/6, 100%)
+          
+          Comprehensive backend testing completed for the newly added 'pdf' key in ALLOWED_SETTINGS whitelist.
+          The generic /api/settings/:key handler now supports PDF component configuration storage.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: SQLite app_settings table
+          - Implementation: Line 4556 in /app/app/api/[[...path]]/route.js
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — PUT /api/settings/pdf as admin (PASSED):
+             Request:
+             - Method: PUT
+             - Endpoint: /api/settings/pdf
+             - Auth: admin session
+             - Body: {"value": {full PDF config JSON with 12 fields}}
+             
+             Response: 200 OK
+             - data.key: "pdf" ✓
+             - data.value: {accent:"#1D4ED8", template:"modern", showLogo:true, logoSize:22, showWatermark:true, showSignature:true, showPayment:true, showPrintedAt:true, paymentInfo:"Transfer BCA 123", signerLabel:"Hormat kami,", signerName:"PT LPI", footerNote:"Footer test"} ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Round-trip successful: response data.value exactly matches request body value
+             ✅ All 12 config fields preserved (accent, template, showLogo, logoSize, showWatermark, showSignature, showPayment, showPrintedAt, paymentInfo, signerLabel, signerName, footerNote)
+             ✅ Boolean values preserved (showLogo:true, showWatermark:true, etc.)
+             ✅ Number values preserved (logoSize:22)
+             ✅ String values preserved (accent:"#1D4ED8", template:"modern", etc.)
+          
+          ✅ TEST 2 — GET /api/settings/pdf as admin (PASSED):
+             Request:
+             - Method: GET
+             - Endpoint: /api/settings/pdf
+             - Auth: admin session
+             
+             Response: 200 OK
+             - data.key: "pdf" ✓
+             - data.value: {full PDF config matching TEST 1} ✓
+             - data.updatedAt: "2026-08-11T08:09:39.000Z" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Retrieved value exactly matches saved value from TEST 1
+             ✅ All 12 config fields intact
+             ✅ updatedAt timestamp present
+             ✅ Data persisted correctly to app_settings table
+          
+          ✅ TEST 3 — Unauthenticated GET /api/settings/pdf (PASSED):
+             Request:
+             - Method: GET
+             - Endpoint: /api/settings/pdf
+             - Auth: NONE (new session without login)
+             
+             Response: 401 Unauthorized ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Correctly rejected unauthenticated request
+             ✅ requireAuth() middleware working
+             ✅ No data leak to unauthenticated users
+          
+          ✅ TEST 4 — Unauthenticated PUT /api/settings/pdf (PASSED):
+             Request:
+             - Method: PUT
+             - Endpoint: /api/settings/pdf
+             - Auth: NONE (new session without login)
+             - Body: {"value": {"test": "data"}}
+             
+             Response: 401 Unauthorized ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Correctly rejected unauthenticated write attempt
+             ✅ requireAuth() middleware working for PUT
+             ✅ Settings cannot be modified without authentication
+          
+          ✅ TEST 5 — REGRESSION: Existing settings keys (PASSED):
+             Tested all existing ALLOWED_SETTINGS keys:
+             
+             5.1) GET /api/settings/company → 200 OK
+                - data.key: "company" ✓
+                - data.value: {object} ✓
+                - No regression ✓
+             
+             5.2) GET /api/settings/approval → 200 OK
+                - data.key: "approval" ✓
+                - data.value: {object} ✓
+                - No regression ✓
+             
+             5.3) GET /api/settings/notifications → 200 OK
+                - data.key: "notifications" ✓
+                - data.value: {object} ✓
+                - No regression ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All existing settings keys still work
+             ✅ No breaking changes to existing functionality
+             ✅ ALLOWED_SETTINGS array correctly includes all keys: ['company', 'concern', 'approval', 'notifications', 'pdf']
+          
+          ✅ TEST 6 — GET /api/settings/unknownkey (PASSED):
+             Request:
+             - Method: GET
+             - Endpoint: /api/settings/unknownkey
+             - Auth: admin session
+             
+             Response: 404 Not Found ✓
+             - error: "Setting tidak dikenal" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Unknown keys correctly rejected with 404
+             ✅ ALLOWED_SETTINGS whitelist enforced
+             ✅ Cannot access arbitrary keys
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (line 4556 in route.js)**:
+          - Implementation: ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications', 'pdf']
+          - 'pdf' key successfully added to whitelist
+          - Generic handler at lines 4558-4579 working correctly
+          - GET /settings/:key (lines 4558-4566): requires auth, checks whitelist, returns JSON value
+          - PUT /settings/:key (lines 4568-4579): requires auth, checks whitelist, upserts JSON value
+          
+          ✅ **Data Persistence**:
+          - Values stored in app_settings table (SQLite)
+          - JSON serialization/deserialization working correctly
+          - All data types preserved (string, number, boolean, object)
+          - updatedAt timestamp tracked
+          
+          ✅ **Authentication & Authorization**:
+          - requireAuth() middleware enforced on both GET and PUT
+          - Unauthenticated requests correctly rejected with 401
+          - Admin role can read and write settings
+          - No role-specific restrictions (any authenticated user can access)
+          
+          ✅ **Whitelist Enforcement**:
+          - ALLOWED_SETTINGS array correctly filters keys
+          - Known keys (company, approval, notifications, pdf) → 200
+          - Unknown keys → 404 "Setting tidak dikenal"
+          - No arbitrary key access possible
+          
+          ✅ **Round-trip Integrity**:
+          - PUT value → GET value: exact match
+          - Complex nested JSON preserved
+          - 12 config fields all intact
+          - No data loss or corruption
+          
+          ✅ **Backward Compatibility**:
+          - Existing settings keys (company, approval, notifications) unaffected
+          - No breaking changes to generic handler
+          - New 'pdf' key coexists with existing keys
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          PDF Config Saved:
+          - accent: "#1D4ED8" (blue color)
+          - template: "modern"
+          - showLogo: true
+          - logoSize: 22
+          - showWatermark: true
+          - showSignature: true
+          - showPayment: true
+          - showPrintedAt: true
+          - paymentInfo: "Transfer BCA 123"
+          - signerLabel: "Hormat kami,"
+          - signerName: "PT LPI"
+          - footerNote: "Footer test"
+          
+          Existing Settings Keys:
+          - company: working ✓
+          - approval: working ✓
+          - notifications: working ✓
+          
+          Unknown Key Test:
+          - unknownkey → 404 ✓
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All PDF settings endpoint features working correctly.
+          'pdf' key successfully whitelisted in ALLOWED_SETTINGS.
+          Generic key-value handler working as designed.
+          Authentication enforced correctly.
+          Whitelist enforcement working.
+          No regression in existing settings keys.
+          Data persistence and round-trip integrity verified.
+          
+          Test Coverage: 6/6 tests passed (100%)
+          - TEST 1: PUT /api/settings/pdf as admin (round-trip) ✓
+          - TEST 2: GET /api/settings/pdf as admin ✓
+          - TEST 3: Unauthenticated GET → 401 ✓
+          - TEST 4: Unauthenticated PUT → 401 ✓
+          - TEST 5: Regression (company, approval, notifications) ✓
+          - TEST 6: Unknown key → 404 ✓
+
   - task: "BUGFIX: Receipt (Penerimaan) basis uses real shipped weight (not original SO weight)"
     implemented: true
     working: true
@@ -13367,7 +13591,7 @@ backend:
              - Pipeline status: Tanda Terima
              - Existing GRNs: 1 (already has one GRN)
              - Items count: 1
-             - Item: productId=78469ace-b58e-4a29-b8a1-bc83c54b5c31, weight=250, receivedWeight=0
+             - Item: productId=cashbook-quick-entry, weight=250, receivedWeight=0
              - ✅ Original state recorded
           
           ✅ STEP 4 — **CRITICAL TEST** — Create GRN with gap-safe numbering (PASSED)
@@ -14736,7 +14960,7 @@ agent_communication:
              - **Product-level items allowed (no stockId required at creation)**
           
           ✅ TEST 2 — GET /api/sales-orders/:soId/available-stocks?productId=X — PASSED
-             - GET /api/sales-orders/fc3515cb-5ff2-4216-9b73-e939980a19a8/available-stocks?productId=78469ace-b58e-4a29-b8a1-bc83c54b5c31
+             - GET /api/sales-orders/fc3515cb-5ff2-4216-9b73-e939980a19a8/available-stocks?productId=cashbook-quick-entry
              - Result: 200 OK
              - Available stocks: 8 (all status 'active', not allocated)
              - Fields returned: id, kodeSimpan, weight, hppPerKg, stockValue ✓
@@ -18077,3 +18301,9 @@ agent_communication:
     
     -agent: "testing"
     -message: "✅ BACKEND TESTING COMPLETE - Sales Order Faktur di-up + Cashback (FINAL) feature is WORKING. All 10 test steps executed, 10/10 passed (100%). Core functionality verified: (1) SO price = REAL selling price (3,500,000), markup entered per item (40,000), cashback calculated correctly (500,000), (2) Customer pays FULL di-up (4,000,000) → paymentStatus='paid', outstanding=0, (3) ACCOUNTING INTEGRATION VERIFIED: SO_INV grossed up to 4,000,000 (Piutang Dr 4,000,000, Penjualan Cr 4,000,000, NO 6-1400 line), SEPARATE CASHBACK journal (Beban Komisi 6-1400 Dr 500,000, Bank 1-1120 Cr 500,000), Sales payment journal (Bank Dr 4,000,000, Piutang Cr 4,000,000), Net Bank = +3,500,000 (real), Trial balance balanced (Dr=Cr=0), (4) Validation working (markup<real → 400, markup==real → 400), (5) Disable markup removes gross-up & CASHBACK journal & resets markup_unit_price, (6) Default account working (cashback credits 1-1120 when cashbackAccount not specified), (7) RBAC working (operator/direktur → 403). MINOR ISSUE: Sales-profit endpoint did not return the SO (may be filtered), but this does NOT affect core feature. Test data cleaned up, ledger re-synced, trial balance balanced. Feature is production-ready."
+
+    -agent: "main"
+    -message: "New feature: PDF redesign + configurable PDF components (all documents). Backend change is tiny — added 'pdf' to ALLOWED_SETTINGS whitelist for the generic /api/settings/:key handler (app_settings table). Please backend-test the new task 'Settings key-value: whitelist pdf for PDF component config': verify GET/PUT /api/settings/pdf round-trip as admin and 401 when unauthenticated. Also confirm existing settings keys (company/approval/notifications) still work (regression). Auth: admin@lpi.co.id/admin123. SQLite/Drizzle."
+    
+    -agent: "testing"
+    -message: "✅ BACKEND TESTING COMPLETE - PDF Settings Endpoint is WORKING. All 6 tests executed, 6/6 passed (100%). Core functionality verified: (1) PUT /api/settings/pdf as admin with full PDF config JSON (12 fields: accent, template, showLogo, logoSize, showWatermark, showSignature, showPayment, showPrintedAt, paymentInfo, signerLabel, signerName, footerNote) → 200 OK, round-trip successful (response data.value exactly matches request), (2) GET /api/settings/pdf as admin → 200 OK, returns saved value with updatedAt timestamp, (3) Unauthenticated GET /api/settings/pdf → 401 Unauthorized (correctly rejected), (4) Unauthenticated PUT /api/settings/pdf → 401 Unauthorized (correctly rejected), (5) REGRESSION VERIFIED: All existing settings keys working (GET /api/settings/company → 200, GET /api/settings/approval → 200, GET /api/settings/notifications → 200, all return data.key and data.value), (6) GET /api/settings/unknownkey → 404 'Setting tidak dikenal' (whitelist enforced). Implementation at line 4556 in route.js: ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications', 'pdf']. Data persisted to app_settings table (SQLite). Authentication enforced via requireAuth() middleware. No regression in existing settings keys. Feature is production-ready."

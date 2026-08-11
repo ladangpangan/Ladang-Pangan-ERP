@@ -9,7 +9,7 @@ import requests
 import json
 import sys
 
-BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
+BASE_URL = "https://cashbook-quick-entry.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 

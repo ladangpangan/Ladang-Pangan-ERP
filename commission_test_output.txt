@@ -2,7 +2,7 @@
 ================================================================================
 BACKEND API TESTING: Agen & Dropshipper + Commission + End-Customers
 ================================================================================
-Base URL: https://data-management-hub-13.preview.emergentagent.com/api
+Base URL: https://cashbook-quick-entry.preview.emergentagent.com/api
 Test started at: 2026-08-07 08:37:55
 
 ================================================================================
