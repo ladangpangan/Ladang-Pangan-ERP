@@ -18307,3 +18307,335 @@ agent_communication:
     
     -agent: "testing"
     -message: "✅ BACKEND TESTING COMPLETE - PDF Settings Endpoint is WORKING. All 6 tests executed, 6/6 passed (100%). Core functionality verified: (1) PUT /api/settings/pdf as admin with full PDF config JSON (12 fields: accent, template, showLogo, logoSize, showWatermark, showSignature, showPayment, showPrintedAt, paymentInfo, signerLabel, signerName, footerNote) → 200 OK, round-trip successful (response data.value exactly matches request), (2) GET /api/settings/pdf as admin → 200 OK, returns saved value with updatedAt timestamp, (3) Unauthenticated GET /api/settings/pdf → 401 Unauthorized (correctly rejected), (4) Unauthenticated PUT /api/settings/pdf → 401 Unauthorized (correctly rejected), (5) REGRESSION VERIFIED: All existing settings keys working (GET /api/settings/company → 200, GET /api/settings/approval → 200, GET /api/settings/notifications → 200, all return data.key and data.value), (6) GET /api/settings/unknownkey → 404 'Setting tidak dikenal' (whitelist enforced). Implementation at line 4556 in route.js: ALLOWED_SETTINGS = ['company', 'concern', 'approval', 'notifications', 'pdf']. Data persisted to app_settings table (SQLite). Authentication enforced via requireAuth() middleware. No regression in existing settings keys. Feature is production-ready."
+
+
+#====================================================================================================
+# NEW TASK — Odoo Historical Sales Order & Purchase Order Import (PHASE 3 migration)
+#====================================================================================================
+
+backend:
+  - task: "Odoo historical SO/PO import (migrated flag + June-Aug 2026 visibility, archive rest)"
+    implemented: true
+    working: true
+    file: "/root/odoo_mig/migrate_orders.mjs (data-only import into /app/data/erp.db); consumers: /app/app/api/[[...path]]/route.js (GET /sales-orders, /purchase-orders, detail), /app/lib/accounting/engine.js (migrated guard)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          DATA MIGRATION (no code change): Imported historical Sales Orders & Purchase Orders from the Odoo 18 dump (/root/odoo_mig/dump.sql) into SQLite via /root/odoo_mig/migrate_orders.mjs.
+          Results (verified via direct DB counts):
+          - sales_order: 209 rows, ALL migrated=1. Visible (date_order month in 2026-06/07/08) = 120; Archived (archived_at set) = 89. sales_order_items = 375.
+          - purchase_order: 51 rows, ALL migrated=1. Visible = 25; Archived = 26. purchase_order_items = 100.
+          Mapping rules:
+          - Customer/Supplier matched by display name (100% matched, 0 skipped).
+          - Products matched by SKU(default_code) then name; fee/section lines (ONGKIR, BIAYA KIRIM, Materai, Admin Bank, Operasional, sections) skipped (SO 31 lines, PO 16 lines). SO delivery-fee lines folded into shipping_cost; PO fee lines folded into additional_cost. Header total_amount kept = Odoo amount_total.
+          - SO payment derived from Odoo amount_unpaid (paid/partial/unpaid). PO payment derived from invoice_status (invoiced→paid, else unpaid).
+          - Pipeline status mapped: SO cancel→Cancelled, draft→Draft, sale+invoiced→Invoiced, else Confirmed. PO cancel→Dibatalkan, draft→Draft, else Selesai.
+          CRITICAL requirement verified: migrated=1 means the accounting engine MUST NOT create journals for these orders. Ran a full acct.syncLedger() rebuild in a Node harness → journal_entries stayed at 1 (only OPENING balance, D=C=384,244,000). ZERO SO_INV/PO_INV/CASHBACK/SPAY/PPAY entries leaked. engine.js sections 2/2b/4 guard COALESCE(migrated,0)=0; no payment/return child rows were imported so sections 3/5/6 produce nothing.
+          DB backup created before import at /app/data/erp.db.bak_before_orders_*.
+          WHAT TO TEST (backend, auth admin@lpi.co.id/admin123):
+          1) GET /api/sales-orders (default) → returns 120 SO (archived hidden), each enriched with customer {code,name}. GET /api/sales-orders?archived=1 → 89. ?archived=all → 209.
+          2) GET /api/purchase-orders (default) → 25 PO; ?archived=1 → 26; ?archived=all → 51. Each enriched with supplier.
+          3) GET /api/sales-orders/:id (pick a visible migrated SO e.g. so_number like 'S00%') → returns header + items array (items resolve to real products), customer resolves. Same for GET /api/purchase-orders/:id.
+          4) ACCOUNTING SAFETY: GET accounting reports / POST /api/accounting/sync as admin → journal_entries count must remain 1 (only OPENING). Trial balance balanced. No journal referencing any migrated SO/PO number (S00xxx / P00xxx).
+          5) Confirm no 500s / no crashes on the SO & PO list and detail pages caused by migrated rows (null invoice fields, empty item sets on cancelled orders, etc.).
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ODOO HISTORICAL SO/PO IMPORT VERIFIED - ALL TESTS PASSED (6/6 test groups, 100%)
+          
+          Comprehensive backend testing completed for the Odoo historical data migration.
+          This was a DATA-ONLY migration (no application code changes). All existing endpoints
+          correctly serve and gate the imported records, and the accounting engine correctly
+          guards against creating journals for migrated orders.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: SQLite at /app/data/erp.db (Drizzle ORM)
+          - Migration: 209 Sales Orders + 51 Purchase Orders imported from Odoo 18
+          - All imported orders have migrated=1 flag
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST GROUP 1 — SO LISTING GATING (3/3 tests passed):
+             
+             Test 1.1: GET /api/sales-orders (default, archived hidden)
+               - Status: 200 OK ✓
+               - Count: 120 (expected 120) ✓
+               - All rows enriched with customer {code, displayName} ✓
+               - Verified: archived_at IS NULL orders only
+             
+             Test 1.2: GET /api/sales-orders?archived=1
+               - Status: 200 OK ✓
+               - Count: 89 (expected 89) ✓
+               - Verified: archived_at IS NOT NULL orders only
+             
+             Test 1.3: GET /api/sales-orders?archived=all
+               - Status: 200 OK ✓
+               - Count: 209 (expected 209) ✓
+               - Verified: ALL migrated orders returned
+          
+          ✅ TEST GROUP 2 — PO LISTING GATING (3/3 tests passed):
+             
+             Test 2.1: GET /api/purchase-orders (default, archived hidden)
+               - Status: 200 OK ✓
+               - Count: 25 (expected 25) ✓
+               - All rows enriched with supplier ✓
+               - Verified: archived_at IS NULL orders only
+             
+             Test 2.2: GET /api/purchase-orders?archived=1
+               - Status: 200 OK ✓
+               - Count: 26 (expected 26) ✓
+               - Verified: archived_at IS NOT NULL orders only
+             
+             Test 2.3: GET /api/purchase-orders?archived=all
+               - Status: 200 OK ✓
+               - Count: 51 (expected 51) ✓
+               - Verified: ALL migrated orders returned
+          
+          ✅ TEST GROUP 3 — SO DETAIL ENDPOINTS (3/3 tests passed):
+             
+             Test 3.1: GET /api/sales-orders/:id (visible migrated SO)
+               - SO Number: S00178 (ID: 6f6b4041-9b03-4dc1-b5b3-9a7f1a10cc3e)
+               - Status: 200 OK ✓
+               - Header fields: id, soNumber present ✓
+               - Customer enrichment: {code: CUST-0086, displayName: SPPG KEDIRI (MOJOROTO)} ✓
+               - Items: 1 item, productId resolved to real product (Parting 1,0) ✓
+               - No null productIds ✓
+             
+             Test 3.2: GET /api/sales-orders/:id (archived migrated SO)
+               - SO Number: S00026 (ID: 4c538929-b85f-417c-a885-e3718c0a4ea4)
+               - Status: 200 OK ✓
+               - Header + customer + 4 items OK ✓
+             
+             Test 3.3: GET /api/sales-orders/:id (Cancelled SO, no crash)
+               - SO Number: S00116 (ID: ebcc6161-f7ad-4bd0-a59d-068bf73eac14)
+               - Pipeline Status: Cancelled
+               - Status: 200 OK ✓
+               - No crash, no 500 error ✓
+          
+          ✅ TEST GROUP 4 — PO DETAIL ENDPOINTS (3/3 tests passed):
+             
+             Test 4.1: GET /api/purchase-orders/:id (visible migrated PO)
+               - PO Number: P00029 (ID: 6f979769-1f50-4e83-b88f-cdc277ba1d52)
+               - Status: 200 OK ✓
+               - Header fields: id, poNumber present ✓
+               - Supplier enrichment: present ✓
+               - Items: 1 item, productId resolved ✓
+             
+             Test 4.2: GET /api/purchase-orders/:id (archived migrated PO)
+               - PO Number: P00015 (ID: 01f231d3-eb08-4b79-82a2-f25bafbd4e50)
+               - Status: 200 OK ✓
+               - Header + supplier + 0 items OK ✓
+               - No crash with empty items array ✓
+             
+             Test 4.3: GET /api/purchase-orders/:id (Dibatalkan PO, no crash)
+               - PO Number: P00024 (ID: fc8c08e7-06e0-466d-8201-f01043340574)
+               - Pipeline Status: Dibatalkan
+               - Status: 200 OK ✓
+               - No crash, no 500 error ✓
+          
+          ✅ TEST GROUP 5 — CRITICAL ACCOUNTING SAFETY (6/6 tests passed):
+             
+             **THIS IS THE MOST CRITICAL TEST GROUP**
+             The whole point of migrated=1 is to prevent the accounting engine from
+             creating duplicate journals for historical orders.
+             
+             Test 5.1: journal_entries count BEFORE sync
+               - Count: 1 (only OPENING balance) ✓
+               - Expected: 1 ✓
+             
+             Test 5.2: POST /api/accounting/sync (idempotent rebuild)
+               - Status: 200 OK ✓
+               - Sync completed successfully ✓
+             
+             Test 5.3: journal_entries count AFTER sync
+               - Count: 1 (still only OPENING) ✓
+               - Expected: 1 ✓
+               - **CRITICAL VERIFICATION**: No new journals created for migrated orders ✓
+             
+             Test 5.4: NO journal_entries with migrated source_type
+               - Query: SELECT COUNT(*) FROM journal_entries WHERE source_type IN ('SO_INV', 'PO_INV', 'CASHBACK', 'SPAY', 'PPAY', 'SRET', 'PRET')
+               - Count: 0 ✓
+               - Expected: 0 ✓
+               - **CRITICAL VERIFICATION**: No SO/PO journals leaked ✓
+             
+             Test 5.5: NO journal references migrated order numbers
+               - Query: SELECT COUNT(*) FROM journal_entries WHERE source_number LIKE 'S00%' OR source_number LIKE 'P00%'
+               - Count: 0 ✓
+               - Expected: 0 ✓
+               - **CRITICAL VERIFICATION**: No journals reference S00xxx/P00xxx ✓
+             
+             Test 5.6: Trial balance is balanced
+               - GET /api/accounting/trial-balance
+               - Status: 200 OK ✓
+               - totalDebit: 384,244,000 ✓
+               - totalCredit: 384,244,000 ✓
+               - Balanced: Dr == Cr ✓
+          
+          ✅ TEST GROUP 6 — REGRESSION / NO CRASHES (2/2 tests passed):
+             
+             Test 6.1: GET /api/sales-orders (no crash)
+               - Status: 200 OK ✓
+               - No 500 errors ✓
+               - No serialization errors from null invoice fields ✓
+             
+             Test 6.2: GET /api/purchase-orders (no crash)
+               - Status: 200 OK ✓
+               - No 500 errors ✓
+               - No crashes from empty items arrays ✓
+          
+          === DATABASE VERIFICATION (via direct SQLite queries) ===
+          
+          Sales Orders:
+          - Total (migrated=1): 209 ✓
+          - Visible (archived_at NULL): 120 ✓
+          - Archived (archived_at NOT NULL): 89 ✓
+          - Items: 375 ✓
+          
+          Purchase Orders:
+          - Total (migrated=1): 51 ✓
+          - Visible (archived_at NULL): 25 ✓
+          - Archived (archived_at NOT NULL): 26 ✓
+          - Items: 100 ✓
+          
+          Journal Entries:
+          - Total: 1 (only OPENING) ✓
+          - OPENING count: 1 ✓
+          - Total Debit: 384,244,000 ✓
+          - Total Credit: 384,244,000 ✓
+          - Balanced: True ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Listing Endpoints Gating**:
+          - Default (archived hidden) correctly filters by archived_at IS NULL
+          - ?archived=1 correctly filters by archived_at IS NOT NULL
+          - ?archived=all correctly returns all migrated orders
+          - All counts match expected values exactly
+          
+          ✅ **Customer/Supplier Enrichment**:
+          - All SO rows enriched with customer {code, displayName}
+          - All PO rows enriched with supplier object
+          - No missing or null customer/supplier references
+          
+          ✅ **Detail Endpoints**:
+          - Visible and archived orders both return 200 OK
+          - Header fields (id, soNumber/poNumber) present
+          - Customer/supplier objects resolved correctly
+          - Items arrays present (even if empty for cancelled orders)
+          - Items resolve to real products (no null productIds)
+          - No crashes on Cancelled SO or Dibatalkan PO
+          
+          ✅ **CRITICAL — Accounting Safety (THE WHOLE POINT)**:
+          - journal_entries count stayed at 1 (only OPENING) before AND after sync
+          - POST /api/accounting/sync is idempotent and safe
+          - NO journal_entries with source_type in (SO_INV, PO_INV, CASHBACK, SPAY, PPAY, SRET, PRET)
+          - NO journal_entries referencing migrated order numbers (S00%/P00%)
+          - Trial balance balanced (Dr=Cr=384,244,000)
+          - **The accounting engine correctly guards against migrated orders**
+          - Implementation: /app/lib/accounting/engine.js sections 2/2b/4 guard with COALESCE(migrated,0)=0
+          
+          ✅ **Regression / No Crashes**:
+          - SO and PO list endpoints return 200 with migrated rows present
+          - No serialization errors from null invoice_number/invoice_date
+          - No crashes from empty items arrays on cancelled orders
+          - No 500 errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Sample Visible SO:
+          - SO Number: S00178
+          - ID: 6f6b4041-9b03-4dc1-b5b3-9a7f1a10cc3e
+          - Pipeline Status: Confirmed
+          - Customer: CUST-0086 (SPPG KEDIRI MOJOROTO)
+          - Items: 1 (Parting 1,0)
+          - Total Amount: Rp 5,550,120
+          
+          Sample Archived SO:
+          - SO Number: S00026
+          - ID: 4c538929-b85f-417c-a885-e3718c0a4ea4
+          - Pipeline Status: Invoiced
+          - Items: 4
+          
+          Sample Cancelled SO:
+          - SO Number: S00116
+          - ID: ebcc6161-f7ad-4bd0-a59d-068bf73eac14
+          - Pipeline Status: Cancelled
+          - No crash ✓
+          
+          Sample Visible PO:
+          - PO Number: P00029
+          - ID: 6f979769-1f50-4e83-b88f-cdc277ba1d52
+          - Pipeline Status: Selesai
+          - Items: 1
+          
+          Sample Archived PO:
+          - PO Number: P00015
+          - ID: 01f231d3-eb08-4b79-82a2-f25bafbd4e50
+          - Pipeline Status: Selesai
+          - Items: 0 (no crash) ✓
+          
+          Sample Dibatalkan PO:
+          - PO Number: P00024
+          - ID: fc8c08e7-06e0-466d-8201-f01043340574
+          - Pipeline Status: Dibatalkan
+          - No crash ✓
+          
+          Journal Entries:
+          - Only 1 entry: OPENING balance
+          - Journal Number: OPENING
+          - Description: Saldo Awal (Neraca Pembukaan)
+          - Source Type: OPENING
+          - Total Debit: 384,244,000
+          - Total Credit: 384,244,000
+          - Status: posted
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All Odoo historical SO/PO import features working correctly.
+          Listing endpoints correctly gate by archived_at.
+          Detail endpoints return complete data with customer/supplier enrichment.
+          Items resolve to real products.
+          No crashes on cancelled orders or empty items arrays.
+          **CRITICAL: Accounting engine correctly guards against migrated orders.**
+          journal_entries count stayed at 1 (only OPENING) after sync.
+          Trial balance balanced.
+          No journals leaked for migrated orders.
+          
+          Test Coverage: 6/6 test groups passed (100%)
+          - TEST GROUP 1: SO Listing Gating (3/3 tests) ✓
+          - TEST GROUP 2: PO Listing Gating (3/3 tests) ✓
+          - TEST GROUP 3: SO Detail Endpoints (3/3 tests) ✓
+          - TEST GROUP 4: PO Detail Endpoints (3/3 tests) ✓
+          - TEST GROUP 5: CRITICAL Accounting Safety (6/6 tests) ✓
+          - TEST GROUP 6: Regression / No Crashes (2/2 tests) ✓
+          
+          **Feature is production-ready. Data migration successful.**
+
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Odoo historical SO/PO import (migrated flag + June-Aug 2026 visibility, archive rest)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "PHASE 3 data migration done: imported 209 historical Sales Orders (120 visible / 89 archived) and 51 Purchase Orders (25 visible / 26 archived) from Odoo into SQLite, ALL with migrated=1. Please BACKEND-TEST the task 'Odoo historical SO/PO import'. Priorities: (1) GET /api/sales-orders default returns 120 (archived hidden), ?archived=1 → 89, ?archived=all → 209; GET /api/purchase-orders default 25, ?archived=1 → 26, ?archived=all → 51. (2) Detail endpoints GET /api/sales-orders/:id and /api/purchase-orders/:id for a migrated order (numbers like S00.. / P00..) return header + resolved items + customer/supplier. (3) CRITICAL accounting safety: POST /api/accounting/sync (admin) then verify journal_entries stays exactly 1 (OPENING only), trial balance balanced, and NO journal references any S00xxx/P00xxx. Auth admin@lpi.co.id/admin123. SQLite/Drizzle, no MongoDB. Do NOT delete/modify the migrated data; read-only verification only (sync is idempotent and safe)."
+    
+    -agent: "testing"
+    -message: "✅ BACKEND TESTING COMPLETE - Odoo historical SO/PO import feature is WORKING. All 6 test groups executed, 6/6 passed (100%). Core functionality verified: (1) SO listing gating: GET /api/sales-orders default returns 120 (archived hidden), ?archived=1 → 89, ?archived=all → 209, all rows enriched with customer {code, displayName}, (2) PO listing gating: GET /api/purchase-orders default returns 25, ?archived=1 → 26, ?archived=all → 51, all rows enriched with supplier, (3) SO detail endpoints: GET /api/sales-orders/:id for visible migrated SO (S00178) returns header + customer + 1 item, archived SO (S00026) returns header + customer + 4 items, Cancelled SO (S00116) returns 200 (no crash), (4) PO detail endpoints: GET /api/purchase-orders/:id for visible migrated PO (P00029) returns header + supplier + 1 item, archived PO (P00015) returns header + supplier + 0 items, Dibatalkan PO (P00024) returns 200 (no crash), (5) CRITICAL ACCOUNTING SAFETY VERIFIED: journal_entries count BEFORE sync = 1 (only OPENING), POST /api/accounting/sync completed successfully, journal_entries count AFTER sync = 1 (still only OPENING), NO journal_entries with migrated source_type (SO_INV, PO_INV, CASHBACK, SPAY, PPAY, SRET, PRET) = 0, NO journal references migrated order numbers (S00%/P00%) = 0, trial balance balanced (Dr=384,244,000, Cr=384,244,000), (6) Regression verified: SO and PO list endpoints return 200 with no crashes. Database verification: SO total=209 (120 visible, 89 archived), SO items=375, PO total=51 (25 visible, 26 archived), PO items=100, journal_entries=1 (OPENING only). Feature is production-ready."
+
