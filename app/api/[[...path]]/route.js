@@ -153,7 +153,6 @@ async function handleRoute(request, { params }) {
       }
     }
 
-
     // ================= ACCOUNTING MODULE (SAK EP) =================
     if (path[0] === 'accounting') {
       const { session, error } = await requireAuth(); if (error) return error;
