@@ -2,7 +2,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
+BASE_URL = "https://cashbook-quick-entry.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login

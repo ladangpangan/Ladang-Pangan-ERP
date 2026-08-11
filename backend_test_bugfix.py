@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 
 # Configuration
-BASE_URL = "https://data-management-hub-13.preview.emergentagent.com/api"
+BASE_URL = "https://cashbook-quick-entry.preview.emergentagent.com/api"
 LOGIN_EMAIL = "admin@lpi.co.id"
 LOGIN_PASSWORD = "admin123"
 
