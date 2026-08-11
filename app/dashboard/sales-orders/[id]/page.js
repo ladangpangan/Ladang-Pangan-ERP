@@ -143,7 +143,26 @@ export default function SODetailPage() {
                 }
               }}
             >
-              <FileDown className="w-4 h-4 mr-1" /> PDF Invoice
+              <FileDown className="w-4 h-4 mr-1" /> PDF Faktur (Customer)
+            </Button>
+          )}
+          {so.markupEnabled && Number(so.realAmount) > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-rose-300 text-rose-700 hover:bg-rose-50"
+              onClick={() => {
+                try {
+                  const doc = generateInvoicePDF(so, { variant: 'asli' });
+                  doc.save(`Faktur-Asli-${so.invoiceNumber || so.soNumber}.pdf`);
+                  toast.success('PDF Faktur Asli/Internal berhasil diunduh');
+                } catch (e) {
+                  console.error('PDF Asli error:', e);
+                  toast.error('Gagal membuat PDF Faktur Asli: ' + (e.message || 'unknown'));
+                }
+              }}
+            >
+              <FileDown className="w-4 h-4 mr-1" /> PDF Faktur Asli
             </Button>
           )}
         </div>
@@ -185,6 +204,8 @@ export default function SODetailPage() {
           </CardContent>
         </Card>
       )}
+
+      <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
 
       <Tabs defaultValue="items">
         <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
@@ -262,6 +283,112 @@ function SumCard({ label, value, sub, color = 'slate' }) {
       <div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">{sub}</div>
     </CardContent></Card>
+  );
+}
+
+const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+
+function MarkupCard({ so, canEdit, onSaved }) {
+  const total = Number(so.totalAmount || 0);
+  const initReal = Number(so.realAmount) > 0 ? Number(so.realAmount) : total;
+  const [enabled, setEnabled] = useState(!!so.markupEnabled);
+  const [realAmount, setRealAmount] = useState(initReal);
+  const [cashback, setCashback] = useState(
+    Number(so.cashbackAmount) > 0 ? Number(so.cashbackAmount) : Math.max(0, total - initReal)
+  );
+  const [recipient, setRecipient] = useState(so.cashbackRecipient || '');
+  const [manualCb, setManualCb] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Non-editor: tampilkan ringkas hanya bila aktif
+  if (!canEdit) {
+    if (!so.markupEnabled) return null;
+    return (
+      <Card className="border-rose-200 bg-rose-50/40">
+        <CardContent className="py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
+          <div className="flex items-center gap-2 font-semibold text-rose-800"><Calculator className="w-4 h-4" />Faktur di-up (Cashback)</div>
+          <div><span className="text-muted-foreground">Nilai Faktur (di-up): </span><b>{rp(so.totalAmount)}</b></div>
+          <div><span className="text-muted-foreground">Nilai Asli/Net: </span><b>{rp(so.realAmount)}</b></div>
+          <div><span className="text-muted-foreground">Cashback: </span><b className="text-rose-700">{rp(so.cashbackAmount)}</b></div>
+          {so.cashbackRecipient && <div><span className="text-muted-foreground">PIC: </span><b>{so.cashbackRecipient}</b></div>}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const onReal = (v) => {
+    setRealAmount(v);
+    if (!manualCb) setCashback(Math.max(0, Math.round((total - Number(v || 0)) * 100) / 100));
+  };
+
+  const save = async () => {
+    if (enabled) {
+      if (!(Number(realAmount) > 0)) return toast.error('Isi Nilai Asli/Net (lebih dari 0)');
+      if (Number(realAmount) > total + 0.5) return toast.error('Nilai asli tidak boleh melebihi nilai faktur customer');
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/markup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ markupEnabled: enabled, realAmount: Number(realAmount), cashbackAmount: Number(cashback), cashbackRecipient: recipient }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success(enabled ? 'Faktur di-up & cashback disimpan' : 'Faktur di-up dinonaktifkan');
+      onSaved && onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  const net = Math.max(0, total - Number(cashback || 0));
+  return (
+    <Card className="border-rose-200">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-rose-600" />Faktur di-up &amp; Cashback <span className="text-xs font-normal text-muted-foreground">(opsional)</span></CardTitle>
+            <CardDescription className="text-xs">Untuk customer yang minta faktur di-up. Selisih dicatat otomatis sebagai Beban Komisi/Cashback; tagihan bersih = nilai asli.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground">Aktifkan</Label>
+            <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </div>
+        </div>
+      </CardHeader>
+      {enabled && (
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <Label className="text-xs">Nilai Faktur Customer (di-up)</Label>
+              <div className="h-9 flex items-center px-3 rounded-md border bg-muted/50 text-sm font-semibold mt-1">{rp(total)}</div>
+              <div className="text-[11px] text-muted-foreground mt-1">= Total SO (yang tampil di faktur customer)</div>
+            </div>
+            <div>
+              <Label className="text-xs">Nilai Asli / Net (dibayar customer)</Label>
+              <CurrencyInput value={realAmount} onChange={onReal} className="mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Cashback (selisih)</Label>
+              <CurrencyInput value={cashback} onChange={(v) => { setManualCb(true); setCashback(v); }} className="mt-1" />
+              <div className="text-[11px] text-muted-foreground mt-1">{manualCb ? 'Diisi manual' : 'Otomatis = faktur − asli'}</div>
+            </div>
+            <div>
+              <Label className="text-xs">Penerima Cashback / PIC (opsional)</Label>
+              <Input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="mis. Bpk. Budi (Purchasing)" className="mt-1" />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm bg-rose-50/60 border border-rose-100 rounded-md px-3 py-2">
+            <div><span className="text-muted-foreground">Pendapatan riil (net): </span><b className="text-emerald-700">{rp(net)}</b></div>
+            <div><span className="text-muted-foreground">Beban Cashback/Komisi: </span><b className="text-rose-700">{rp(cashback)}</b></div>
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Receipt className="w-4 h-4 mr-1" />}Simpan</Button>
+          </div>
+        </CardContent>
+      )}
+      {!enabled && (so.markupEnabled) && (
+        <CardContent className="pt-0"><div className="flex justify-end"><Button size="sm" variant="destructive" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}Nonaktifkan &amp; Simpan</Button></div></CardContent>
+      )}
+    </Card>
   );
 }
 
@@ -690,21 +817,24 @@ function PaymentsTab({ so, onSaved, canEdit }) {
 function GrossProfitCard({ so }) {
   const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
   const revenue = Number(so.revenue ?? so.totalAmount ?? 0);
+  const cashback = (so.markupEnabled && Number(so.cashbackAmount) > 0) ? Number(so.cashbackAmount) : 0;
   const cogs = Number(so.cogsTotal || 0);
   const shipping = Number(so.sellerShipping || 0);
-  const gp = Number(so.grossProfit ?? (revenue - cogs - shipping));
-  const margin = Number(so.grossMarginPct ?? (revenue > 0 ? Math.round((gp / revenue) * 1000) / 10 : 0));
+  const gp = Number(so.grossProfit ?? (revenue - cashback - cogs - shipping));
+  const netRev = revenue - cashback;
+  const margin = Number(so.grossMarginPct ?? (netRev > 0 ? Math.round((gp / netRev) * 1000) / 10 : 0));
   const bearer = so.shippingBearer === 'buyer' ? 'Pembeli' : 'Penjual';
   const isDrop = so.fulfillmentType === 'dropship';
   return (
     <Card className="border-emerald-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-emerald-600" />Gross Profit {so.invoiceNumber ? `· ${so.invoiceNumber}` : '(estimasi)'}</CardTitle>
-        <CardDescription>Laba kotor = Penjualan − HPP ({isDrop ? 'HPP PO Dropship' : 'kode simpan terpilih'}) − Biaya kirim (bila ditanggung penjual)</CardDescription>
+        <CardDescription>Laba kotor = Penjualan{cashback > 0 ? ' − Cashback' : ''} − HPP ({isDrop ? 'HPP PO Dropship' : 'kode simpan terpilih'}) − Biaya kirim (bila ditanggung penjual)</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-          <div><div className="text-xs text-muted-foreground">Penjualan</div><div className="font-semibold">{rp(revenue)}</div></div>
+        <div className={`grid grid-cols-2 gap-3 text-sm ${cashback > 0 ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
+          <div><div className="text-xs text-muted-foreground">Penjualan{cashback > 0 ? ' (di-up)' : ''}</div><div className="font-semibold">{rp(revenue)}</div></div>
+          {cashback > 0 && <div><div className="text-xs text-muted-foreground">Cashback</div><div className="font-semibold text-red-600">-{rp(cashback)}</div></div>}
           <div><div className="text-xs text-muted-foreground">HPP (COGS){isDrop && so.linkedPurchaseOrder ? ` · ${so.linkedPurchaseOrder.poNumber}` : ''}</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
           <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className="font-semibold text-red-600">{shipping > 0 ? '-' + rp(shipping) : rp(0)}</div></div>
           <div><div className="text-xs text-muted-foreground">Gross Profit</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{rp(gp)}</div></div>
