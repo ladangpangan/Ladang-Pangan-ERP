@@ -4,6 +4,6 @@ export default {
   out: './drizzle',
   dialect: 'sqlite',
   dbCredentials: {
-    url: '/app/data/erp.db',
+    url: process.env.DB_PATH || '/app/data/erp.db',
   },
 };
