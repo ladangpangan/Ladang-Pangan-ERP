@@ -8,8 +8,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
-import { Loader2, Wallet } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Loader2, Wallet, FileSpreadsheet } from 'lucide-react';
 import { fmtRp, fmtDate, acctFetcher, SOURCE_LABEL, SOURCE_COLOR, defaultRange } from '@/lib/accounting/ui';
+import { exportToExcel } from '@/lib/xlsx-export';
 
 export default function LedgerPage() {
   const { data: accData } = useSWR('/api/accounting/accounts?archived=0', acctFetcher);
@@ -39,6 +41,7 @@ export default function LedgerPage() {
           </div>
           <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-40" /></div>
           <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-40" /></div>
+          <Button variant="outline" size="sm" disabled={!led} onClick={() => exportToExcel(`buku-besar-${led?.account?.code || ''}`, [{ name: 'Buku Besar', headers: [{ key: 'date', label: 'Tanggal' }, { key: 'ref', label: 'No/Sumber' }, { key: 'desc', label: 'Keterangan' }, { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Kredit' }, { key: 'balance', label: 'Saldo' }], rows: [{ date: '', ref: '', desc: 'Saldo Awal', debit: '', credit: '', balance: led?.opening }, ...(led?.rows || []).map((r) => ({ date: fmtDate(r.date), ref: r.sourceNumber || r.journalNumber, desc: r.description, debit: r.debit, credit: r.credit, balance: r.balance })), { date: '', ref: '', desc: 'Saldo Akhir', debit: '', credit: '', balance: led?.closing }] }])}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
         </CardContent>
       </Card>
 

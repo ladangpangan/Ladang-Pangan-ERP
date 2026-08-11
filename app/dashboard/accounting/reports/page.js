@@ -9,8 +9,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Scale, Printer } from 'lucide-react';
+import { Loader2, Scale, Printer, FileSpreadsheet } from 'lucide-react';
 import { fmtRp, acctFetcher, defaultRange, todayStr, TYPE_LABEL } from '@/lib/accounting/ui';
+import { exportToExcel } from '@/lib/xlsx-export';
 
 const PrintBtn = () => (
   <Button variant="outline" size="sm" onClick={() => window.print()}><Printer className="w-4 h-4 mr-2" />Cetak</Button>
@@ -50,6 +51,7 @@ function TrialBalance() {
         <CardTitle className="text-base">Neraca Saldo</CardTitle>
         <div className="flex items-end gap-2">
           <div><Label className="text-xs">Per Tanggal</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" /></div>
+          <Button variant="outline" size="sm" disabled={!d} onClick={() => exportToExcel(`neraca-saldo-${to}`, [{ name: 'Neraca Saldo', headers: [{ key: 'code', label: 'Kode' }, { key: 'name', label: 'Nama Akun' }, { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Kredit' }], rows: [...(d?.rows || []), { code: '', name: 'TOTAL', debit: d?.totalDebit, credit: d?.totalCredit }] }])}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
           <PrintBtn />
         </div>
       </CardHeader>

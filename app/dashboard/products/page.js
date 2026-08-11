@@ -13,8 +13,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Pencil, Trash2, Package, Loader2, Archive, ArchiveRestore } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Package, Loader2, Archive, ArchiveRestore, FileSpreadsheet } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { exportToExcel } from '@/lib/xlsx-export';
 import { toast } from 'sonner';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
@@ -74,6 +75,12 @@ export default function ProductsPage() {
   const openCreate = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (row) => { setEditing(row); setForm({ ...emptyForm, ...row }); setOpen(true); };
 
+  const exportProducts = () => exportToExcel('produk', [{ name: 'Produk', headers: [
+    { key: 'sku', label: 'SKU' }, { key: 'name', label: 'Nama' }, { key: 'category', label: 'Kategori' },
+    { key: 'weightUnit', label: 'Satuan Berat' }, { key: 'packagingType', label: 'Kemasan' },
+    { key: 'basePrice', label: 'Harga Dasar' }, { key: 'minStock', label: 'Min Stock' }, { key: 'status', label: 'Status' },
+  ], rows: rows.map((r) => ({ sku: r.sku, name: r.name, category: r.category, weightUnit: r.weightUnit || r.unit, packagingType: r.packagingType, basePrice: r.basePrice, minStock: r.minStock, status: r.status })) }]);
+
   const save = async () => {
     setSaving(true);
     try {
@@ -101,8 +108,10 @@ export default function ProductsPage() {
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Package className="w-8 h-8 text-amber-600" /> Products</h1>
           <p className="text-muted-foreground mt-1">Master produk: Live Bird, Karkas, Boneless, Parting, Retail</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Produk</Button></DialogTrigger>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={exportProducts} disabled={!rows.length}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Produk</Button></DialogTrigger>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editing ? 'Edit Produk' : 'Tambah Produk'}</DialogTitle>
@@ -146,6 +155,7 @@ export default function ProductsPage() {
             <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <Card>

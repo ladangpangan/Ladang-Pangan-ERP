@@ -18,8 +18,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore } from 'lucide-react';
+import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore, FileSpreadsheet } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { exportToExcel } from '@/lib/xlsx-export';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel, pkgShort } from '@/lib/constants';
@@ -86,6 +87,12 @@ export default function POListPage() {
     if (ok) mutate();
   };
 
+  const exportPO = () => exportToExcel('purchase-order', [{ name: 'Purchase Order', headers: [
+    { key: 'poNumber', label: 'No PO' }, { key: 'poType', label: 'Tipe' }, { key: 'supplier', label: 'Supplier' },
+    { key: 'orderDate', label: 'Tgl Order' }, { key: 'method', label: 'Metode' }, { key: 'totalAmount', label: 'Total' },
+    { key: 'paymentStatus', label: 'Bayar' }, { key: 'pipelineStatus', label: 'Status' },
+  ], rows: rows.map((r) => ({ poNumber: r.poNumber, poType: r.poType, supplier: r.supplier?.name || '', orderDate: r.orderDate ? format(new Date(r.orderDate), 'dd/MM/yyyy') : '', method: r.method, totalAmount: r.totalAmount, paymentStatus: r.paymentStatus, pipelineStatus: r.pipelineStatus })) }]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -95,12 +102,15 @@ export default function POListPage() {
           </h1>
           <p className="text-muted-foreground mt-1">Pembelian: Live Bird, Packaging, Bahan Baku, Produk Jadi, Operasional</p>
         </div>
-        {canCreate && (
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button><Plus className="w-4 h-4 mr-2" />PO Baru</Button></DialogTrigger>
-            <CreatePODialog onSaved={() => { setOpen(false); mutate(); }} />
-          </Dialog>
-        )}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={exportPO} disabled={!rows.length}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
+          {canCreate && (
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild><Button><Plus className="w-4 h-4 mr-2" />PO Baru</Button></DialogTrigger>
+              <CreatePODialog onSaved={() => { setOpen(false); mutate(); }} />
+            </Dialog>
+          )}
+        </div>
       </div>
 
       <Card>

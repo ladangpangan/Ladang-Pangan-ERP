@@ -319,6 +319,96 @@ async function handleRoute(request, { params }) {
       if (sub === 'balance-sheet' && method === 'GET') { autoSync(); const { asOf } = parseRange(new URL(request.url)); return json({ data: acct.balanceSheet(raw, { asOf }) }); }
       if (sub === 'cash-flow' && method === 'GET') { autoSync(); const { from, to } = parseRange(new URL(request.url)); return json({ data: acct.cashFlow(raw, { from, to }) }); }
 
+      // ---- Fixed Assets (Aset Tetap) ----
+      if (sub === 'fixed-assets') {
+        if (path.length === 2 && method === 'GET') {
+          autoSync();
+          const url = new URL(request.url);
+          const a = url.searchParams.get('archived');
+          let where = 'archived_at IS NULL';
+          if (a === '1' || a === 'true') where = 'archived_at IS NOT NULL';
+          const rows = raw.prepare(`SELECT * FROM fixed_assets WHERE ${where} ORDER BY acquisition_date DESC`).all();
+          const data = rows.map((r) => ({ ...r, _status: acct.fixedAssetStatus(raw, r) }));
+          return json({ data });
+        }
+        if (path.length === 2 && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          if (!b.name) return err('Nama aset wajib diisi', 400);
+          const acqDate = acct.toSec(b.acquisitionDate) || Math.floor(Date.now() / 1000);
+          const id = uuidv4();
+          raw.prepare(`INSERT INTO fixed_assets (id, code, name, category, acquisition_date, acquisition_cost, salvage_value, useful_life_months, method, asset_account_code, accum_account_code, expense_account_code, post_depreciation, status, notes, created_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?, ?)`).run(
+            id, b.code || null, b.name, b.category || null, acqDate, Number(b.acquisitionCost || 0), Number(b.salvageValue || 0),
+            parseInt(b.usefulLifeMonths || 12, 10), b.method || 'straight_line', b.assetAccountCode || null, b.accumAccountCode || null,
+            b.expenseAccountCode || null, b.postDepreciation === false ? 0 : 1, b.notes || null, uid);
+          return json({ data: raw.prepare('SELECT * FROM fixed_assets WHERE id=?').get(id) });
+        }
+        const id = path[2];
+        if (id && path.length === 3 && method === 'PATCH') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const cur = raw.prepare('SELECT * FROM fixed_assets WHERE id=?').get(id);
+          if (!cur) return err('Aset tidak ditemukan', 404);
+          const b = await request.json().catch(() => ({}));
+          raw.prepare(`UPDATE fixed_assets SET code=?, name=?, category=?, acquisition_date=?, acquisition_cost=?, salvage_value=?, useful_life_months=?, asset_account_code=?, accum_account_code=?, expense_account_code=?, post_depreciation=?, notes=?, updated_at=unixepoch() WHERE id=?`)
+            .run(
+              b.code ?? cur.code, b.name ?? cur.name, b.category ?? cur.category,
+              b.acquisitionDate ? acct.toSec(b.acquisitionDate) : cur.acquisition_date,
+              b.acquisitionCost == null ? cur.acquisition_cost : Number(b.acquisitionCost),
+              b.salvageValue == null ? cur.salvage_value : Number(b.salvageValue),
+              b.usefulLifeMonths == null ? cur.useful_life_months : parseInt(b.usefulLifeMonths, 10),
+              b.assetAccountCode ?? cur.asset_account_code, b.accumAccountCode ?? cur.accum_account_code, b.expenseAccountCode ?? cur.expense_account_code,
+              b.postDepreciation == null ? cur.post_depreciation : (b.postDepreciation ? 1 : 0),
+              b.notes ?? cur.notes, id);
+          return json({ data: raw.prepare('SELECT * FROM fixed_assets WHERE id=?').get(id) });
+        }
+        if (id && path.length === 4 && (path[3] === 'archive' || path[3] === 'restore') && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          raw.prepare('UPDATE fixed_assets SET archived_at=?, updated_at=unixepoch() WHERE id=?').run(path[3] === 'archive' ? Math.floor(Date.now() / 1000) : null, id);
+          return json({ ok: true });
+        }
+        if (id && path.length === 4 && path[3] === 'dispose' && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          const dd = acct.toSec(b.disposedDate) || Math.floor(Date.now() / 1000);
+          raw.prepare('UPDATE fixed_assets SET status=?, disposed_date=?, updated_at=unixepoch() WHERE id=?').run(b.restore ? 'active' : 'disposed', b.restore ? null : dd, id);
+          return json({ ok: true });
+        }
+        if (id && path.length === 3 && method === 'DELETE') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          raw.prepare(`DELETE FROM journal_entries WHERE source_type='DEPR' AND source_id=?`).run(id);
+          raw.prepare('DELETE FROM fixed_assets WHERE id=?').run(id);
+          return json({ ok: true });
+        }
+      }
+
+      // ---- Period Closings (Tutup Buku) ----
+      if (sub === 'closings') {
+        if (path.length === 2 && method === 'GET') return json({ data: acct.listClosings(raw) });
+        if (path.length === 2 && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('closing sync', e?.message); }
+          const r = acct.createClosing(raw, { period: b.period, createdBy: uid });
+          if (r.error) return err(r.error, 400);
+          return json({ ok: true, ...r });
+        }
+        const id = path[2];
+        if (id && path.length === 3 && method === 'DELETE') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const r = acct.deleteClosing(raw, id);
+          if (r.error) return err(r.error, 400);
+          return json({ ok: true });
+        }
+      }
+
+      // ---- Sales Profit Report (Laporan Laba Penjualan) ----
+      if (sub === 'sales-profit' && method === 'GET') {
+        autoSync();
+        const { from, to } = parseRange(new URL(request.url));
+        return json({ data: acct.salesProfitReport(raw, { from, to }) });
+      }
+
       return err('Rute akuntansi tidak ditemukan', 404);
     }
 
