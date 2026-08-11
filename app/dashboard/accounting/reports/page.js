@@ -9,15 +9,25 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Scale, Printer, FileSpreadsheet } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Loader2, Scale, Printer, FileSpreadsheet, FileDown } from 'lucide-react';
 import { fmtRp, acctFetcher, defaultRange, todayStr, TYPE_LABEL } from '@/lib/accounting/ui';
 import { exportToExcel } from '@/lib/xlsx-export';
+import { balanceSheetPDF, incomeStatementPDF, incomeStatementComparisonPDF, cashFlowPDF } from '@/lib/pdf/financial';
+
+const idDate = (iso) => { try { return new Date(iso).toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' }); } catch { return iso; } };
+const shiftMonth = (iso, delta) => { const d = new Date(iso); d.setMonth(d.getMonth() + delta); return d.toISOString().slice(0, 10); };
+const PdfBtn = ({ onClick, disabled }) => (
+  <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}><FileDown className="w-4 h-4 mr-2" />PDF</Button>
+);
 
 const PrintBtn = () => (
   <Button variant="outline" size="sm" onClick={() => window.print()}><Printer className="w-4 h-4 mr-2" />Cetak</Button>
 );
 
 export default function ReportsPage() {
+  const { data: coData } = useSWR('/api/settings/company', acctFetcher);
+  const company = coData?.data?.value || {};
   return (
     <div className="space-y-5">
       <div>
@@ -32,9 +42,9 @@ export default function ReportsPage() {
           <TabsTrigger value="cf">Arus Kas</TabsTrigger>
         </TabsList>
         <TabsContent value="tb"><TrialBalance /></TabsContent>
-        <TabsContent value="is"><IncomeStatement /></TabsContent>
-        <TabsContent value="bs"><BalanceSheet /></TabsContent>
-        <TabsContent value="cf"><CashFlow /></TabsContent>
+        <TabsContent value="is"><IncomeStatement company={company} /></TabsContent>
+        <TabsContent value="bs"><BalanceSheet company={company} /></TabsContent>
+        <TabsContent value="cf"><CashFlow company={company} /></TabsContent>
       </Tabs>
     </div>
   );
@@ -100,26 +110,48 @@ function Section({ title, data, sign }) {
     </>
   );
 }
-function IncomeStatement() {
+function IncomeStatement({ company }) {
   const [range, setRange] = useState(defaultRange());
+  const [compare, setCompare] = useState(false);
   const { data, isLoading } = useSWR(`/api/accounting/income-statement?from=${range.from}&to=${range.to}`, acctFetcher);
+  const prevRange = { from: shiftMonth(range.from, -1), to: shiftMonth(range.to, -1) };
+  const { data: prevData } = useSWR(compare ? `/api/accounting/income-statement?from=${prevRange.from}&to=${prevRange.to}` : null, acctFetcher);
   const d = data?.data;
+  const p = prevData?.data;
+  const curLabel = `${idDate(range.from)} – ${idDate(range.to)}`;
+  const prevLabel = `${idDate(prevRange.from)} – ${idDate(prevRange.to)}`;
   const Row = ({ label, value, strong }) => (
     <TableRow className={strong ? 'bg-emerald-50 font-semibold' : 'font-medium'}><TableCell>{label}</TableCell><TableCell className="text-right">{fmtRp(value)}</TableCell></TableRow>
   );
+  const pctStr = (c, pr) => { const cc = Number(c) || 0, pp = Number(pr) || 0; if (pp === 0) return cc === 0 ? '0%' : '+100%'; const v = (cc - pp) / Math.abs(pp) * 100; return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`; };
+  const CmpRow = ({ label, c, pr, strong }) => (
+    <TableRow className={strong ? 'bg-emerald-50 font-semibold' : 'font-medium'}>
+      <TableCell>{label}</TableCell>
+      <TableCell className="text-right">{fmtRp(c)}</TableCell>
+      <TableCell className="text-right text-muted-foreground">{fmtRp(pr)}</TableCell>
+      <TableCell className={`text-right ${(Number(c) - Number(pr)) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{pctStr(c, pr)}</TableCell>
+    </TableRow>
+  );
+  const exportPdf = () => {
+    if (!d) return;
+    if (compare && p) incomeStatementComparisonPDF(d, p, company, curLabel, prevLabel).save(`laba-rugi-perbandingan-${range.from}.pdf`);
+    else incomeStatementPDF(d, company, curLabel).save(`laba-rugi-${range.from}_${range.to}.pdf`);
+  };
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex-row items-center justify-between space-y-0 flex-wrap gap-2">
         <CardTitle className="text-base">Laporan Laba Rugi</CardTitle>
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2 flex-wrap">
+          <label className="flex items-center gap-2 text-xs border rounded-md px-2 h-9 cursor-pointer"><Switch checked={compare} onCheckedChange={setCompare} />Bandingkan bulan sebelumnya</label>
           <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
           <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <PdfBtn onClick={exportPdf} disabled={!d || (compare && !p)} />
           <PrintBtn />
         </div>
       </CardHeader>
       <CardContent>
         {isLoading && <div className="text-center py-6 text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Memuat…</div>}
-        {d && (
+        {d && !compare && (
           <div className="rounded-md border overflow-x-auto max-w-2xl">
             <Table>
               <TableBody>
@@ -137,6 +169,25 @@ function IncomeStatement() {
               </TableBody>
             </Table>
           </div>
+        )}
+        {d && compare && (
+          !p ? <div className="text-center py-6 text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Memuat perbandingan…</div> : (
+            <div className="rounded-md border overflow-x-auto max-w-3xl">
+              <Table>
+                <TableHeader><TableRow><TableHead>Keterangan</TableHead><TableHead className="text-right">Bulan Ini<div className="text-[10px] font-normal text-muted-foreground">{curLabel}</div></TableHead><TableHead className="text-right">Bulan Lalu<div className="text-[10px] font-normal text-muted-foreground">{prevLabel}</div></TableHead><TableHead className="text-right">Δ %</TableHead></TableRow></TableHeader>
+                <TableBody>
+                  <CmpRow label="Pendapatan" c={d.revenue.total} pr={p.revenue.total} />
+                  <CmpRow label="Beban Pokok Penjualan (HPP)" c={d.cogs.total} pr={p.cogs.total} />
+                  <CmpRow label="LABA KOTOR" c={d.grossProfit} pr={p.grossProfit} strong />
+                  <CmpRow label="Beban Operasional" c={d.expense.total} pr={p.expense.total} />
+                  <CmpRow label="LABA OPERASIONAL" c={d.operatingProfit} pr={p.operatingProfit} strong />
+                  <CmpRow label="Pendapatan Lain" c={d.otherIncome.total} pr={p.otherIncome.total} />
+                  <CmpRow label="Beban Lain" c={d.otherExpense.total} pr={p.otherExpense.total} />
+                  <CmpRow label="LABA (RUGI) BERSIH" c={d.netIncome} pr={p.netIncome} strong />
+                </TableBody>
+              </Table>
+            </div>
+          )
         )}
       </CardContent>
     </Card>
@@ -163,7 +214,7 @@ function BsSide({ title, side }) {
     </div>
   );
 }
-function BalanceSheet() {
+function BalanceSheet({ company }) {
   const [asOf, setAsOf] = useState(todayStr());
   const { data, isLoading } = useSWR(`/api/accounting/balance-sheet?asOf=${asOf}`, acctFetcher);
   const d = data?.data;
@@ -173,6 +224,7 @@ function BalanceSheet() {
         <CardTitle className="text-base">Laporan Posisi Keuangan (Neraca)</CardTitle>
         <div className="flex items-end gap-2">
           <div><Label className="text-xs">Per Tanggal</Label><Input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} className="w-40" /></div>
+          <PdfBtn onClick={() => d && balanceSheetPDF(d, company, idDate(asOf)).save(`neraca-${asOf}.pdf`)} disabled={!d} />
           <PrintBtn />
         </div>
       </CardHeader>
@@ -200,7 +252,7 @@ function BalanceSheet() {
 }
 
 /* --------- Arus Kas --------- */
-function CashFlow() {
+function CashFlow({ company }) {
   const [range, setRange] = useState(defaultRange());
   const { data, isLoading } = useSWR(`/api/accounting/cash-flow?from=${range.from}&to=${range.to}`, acctFetcher);
   const d = data?.data;
@@ -214,6 +266,7 @@ function CashFlow() {
         <div className="flex items-end gap-2">
           <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
           <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <PdfBtn onClick={() => d && cashFlowPDF(d, company, `${idDate(range.from)} – ${idDate(range.to)}`).save(`arus-kas-${range.from}_${range.to}.pdf`)} disabled={!d} />
           <PrintBtn />
         </div>
       </CardHeader>
