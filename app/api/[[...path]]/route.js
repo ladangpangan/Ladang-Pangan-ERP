@@ -409,6 +409,42 @@ async function handleRoute(request, { params }) {
         return json({ data: acct.salesProfitReport(raw, { from, to }) });
       }
 
+      // ---- Pencatatan Cepat (Cash Book) ----
+      if (sub === 'cashbook') {
+        if (path.length === 2 && method === 'GET') {
+          const url = new URL(request.url);
+          const { from, to } = parseRange(url);
+          const rows = acct.listCashbook(raw, { from, to, type: url.searchParams.get('type') });
+          return json({ data: rows });
+        }
+        if (path.length === 2 && method === 'POST') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          const r = acct.createQuickEntry(raw, { ...b, createdBy: uid });
+          if (r.error) return err(r.error, 400);
+          return json({ ok: true, ...r });
+        }
+        const id = path[2];
+        if (id && path.length === 3 && (method === 'PUT' || method === 'PATCH')) {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const b = await request.json().catch(() => ({}));
+          const r = acct.updateQuickEntry(raw, id, { ...b, createdBy: uid });
+          if (r.error) return err(r.error, 400);
+          return json({ ok: true, ...r });
+        }
+        if (id && path.length === 3 && method === 'DELETE') {
+          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const j = raw.prepare('SELECT * FROM journal_entries WHERE id=?').get(id);
+          if (!j) return err('Transaksi tidak ditemukan', 404);
+          if (j.is_auto) return err('Transaksi otomatis tidak dapat dihapus di sini', 400);
+          raw.prepare('DELETE FROM journal_entries WHERE id=?').run(id);
+          return json({ ok: true });
+        }
+        if (id && path.length === 4 && path[3] === 'attachment' && method === 'GET') {
+          return json({ attachment: acct.getAttachment(raw, id) });
+        }
+      }
+
       return err('Rute akuntansi tidak ditemukan', 404);
     }
 
@@ -2318,7 +2354,9 @@ async function handleRoute(request, { params }) {
       const totalPaid = Number(paid?.sum || 0);
       const retRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.salesReturns).where(eq(s.salesReturns.salesOrderId, soId)).get();
       const totalReturns = Number(retRow?.sum || 0);
-      const netTotal = Number(soRow.totalAmount) - totalReturns;
+      // Nilai yang benar-benar ditagih ke customer = nilai asli bila faktur di-up (cashback) aktif
+      const billable = (soRow.markupEnabled && Number(soRow.realAmount) > 0) ? Number(soRow.realAmount) : Number(soRow.totalAmount);
+      const netTotal = billable - totalReturns;
       let ps = 'unpaid';
       if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
       else if (totalPaid > 0) ps = 'partial';
@@ -2652,12 +2690,16 @@ async function handleRoute(request, { params }) {
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const totalShrinkageValue = receipts.reduce((a, b) => a + Number(b.totalShrinkageValue || 0), 0);
       const totalShrinkageWeight = receipts.reduce((a, b) => a + Number(b.totalShrinkageWeight || 0), 0);
-      const outstanding = Number(so.totalAmount) - Number(so.paidAmount || 0) - totalReturns;
+      // Faktur di-up (cashback): nilai ditagih ke customer = nilai asli; laba pakai revenue riil (net cashback)
+      const cashbackAmt = (so.markupEnabled && Number(so.cashbackAmount) > 0) ? Number(so.cashbackAmount) : 0;
+      const billable = (so.markupEnabled && Number(so.realAmount) > 0) ? Number(so.realAmount) : Number(so.totalAmount);
+      const outstanding = billable - Number(so.paidAmount || 0) - totalReturns;
       const shippingCost = Number(so.shippingCost || 0);
       const sellerShipping = (so.shippingBearer === 'buyer') ? 0 : shippingCost;
-      const revenue = Number(so.totalAmount || 0);
-      const grossProfit = Math.round(revenue - cogsTotal - sellerShipping);
-      const grossMarginPct = revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : 0;
+      const revenue = Number(so.totalAmount || 0);        // nilai faktur customer (di-up)
+      const netRevenue = revenue - cashbackAmt;            // pendapatan riil setelah cashback
+      const grossProfit = Math.round(netRevenue - cogsTotal - sellerShipping);
+      const grossMarginPct = netRevenue > 0 ? Math.round((grossProfit / netRevenue) * 1000) / 10 : 0;
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
       // Susut Dropship: selisih berat kirim (Surat Jalan) vs berat diterima customer (Penerimaan)
       let dropshipShipVsRecv = null;
@@ -2679,7 +2721,7 @@ async function handleRoute(request, { params }) {
         linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
       }
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, netRevenue, cashbackAmount: cashbackAmt, billable, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
@@ -3086,6 +3128,38 @@ async function handleRoute(request, { params }) {
       db.insert(s.salesPayments).values(p).run();
       const info = recomputeSoPaymentStatus(id);
       return json({ data: p, info }, { status: 201 });
+    }
+
+    // POST /sales-orders/:id/markup - set/unset Faktur di-up + Cashback (opsional)
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'markup' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      const body = await request.json().catch(() => ({}));
+      const enabled = !!body.markupEnabled;
+      const total = Number(so.totalAmount || 0);
+      let realAmount = 0, cashback = 0, recipient = null;
+      if (enabled) {
+        realAmount = Number(body.realAmount || 0);
+        if (!(realAmount > 0)) return err('Nilai asli/net harus lebih dari 0', 400);
+        if (realAmount > total + 0.5) return err('Nilai asli tidak boleh melebihi nilai faktur customer (Rp ' + total.toLocaleString('id-ID') + ')', 400);
+        cashback = (body.cashbackAmount !== undefined && body.cashbackAmount !== null && body.cashbackAmount !== '')
+          ? Number(body.cashbackAmount) : Math.round((total - realAmount) * 100) / 100;
+        if (cashback < 0) cashback = 0;
+        recipient = body.cashbackRecipient ? String(body.cashbackRecipient).slice(0, 200) : null;
+      }
+      db.update(s.salesOrder).set({
+        markupEnabled: enabled,
+        realAmount: enabled ? realAmount : 0,
+        cashbackAmount: enabled ? cashback : 0,
+        cashbackRecipient: enabled ? recipient : null,
+        updatedAt: new Date(),
+      }).where(eq(s.salesOrder.id, id)).run();
+      const info = recomputeSoPaymentStatus(id);
+      const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      return json({ data: updated, info });
     }
 
     // POST /sales-orders/:id/returns - retur penjualan (kembalikan stok ke inventory)
