@@ -134,9 +134,9 @@ export default function SODetailPage() {
               variant="outline"
               onClick={() => {
                 try {
-                  const doc = generateInvoicePDF(so);
+                  const doc = generateInvoicePDF(so, so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {});
                   doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
-                  toast.success('PDF Invoice berhasil diunduh');
+                  toast.success('PDF Faktur (Customer) berhasil diunduh');
                 } catch (e) {
                   console.error('PDF Invoice error:', e);
                   toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
@@ -146,7 +146,7 @@ export default function SODetailPage() {
               <FileDown className="w-4 h-4 mr-1" /> PDF Faktur (Customer)
             </Button>
           )}
-          {so.markupEnabled && Number(so.realAmount) > 0 && (
+          {so.markupEnabled && Number(so.cashbackAmount) > 0 && (
             <Button
               size="sm"
               variant="outline"
@@ -287,50 +287,67 @@ function SumCard({ label, value, sub, color = 'slate' }) {
 }
 
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const effW = (it) => (Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || it.quantity || 0));
 
 function MarkupCard({ so, canEdit, onSaved }) {
-  const total = Number(so.totalAmount || 0);
-  const initReal = Number(so.realAmount) > 0 ? Number(so.realAmount) : total;
+  const items = so.items || [];
   const [enabled, setEnabled] = useState(!!so.markupEnabled);
-  const [realAmount, setRealAmount] = useState(initReal);
-  const [cashback, setCashback] = useState(
-    Number(so.cashbackAmount) > 0 ? Number(so.cashbackAmount) : Math.max(0, total - initReal)
-  );
+  const [markup, setMarkup] = useState(() => {
+    const m = {};
+    for (const it of items) m[it.id] = Number(it.markupUnitPrice) > 0 ? Number(it.markupUnitPrice) : Number(it.unitPrice || 0);
+    return m;
+  });
   const [recipient, setRecipient] = useState(so.cashbackRecipient || '');
-  const [manualCb, setManualCb] = useState(false);
+  const [cashAccount, setCashAccount] = useState(so.cashbackAccount || '');
   const [saving, setSaving] = useState(false);
 
-  // Non-editor: tampilkan ringkas hanya bila aktif
+  const { data: accData } = useSWR(canEdit ? '/api/accounting/accounts?archived=0' : null, fetcher);
+  const cashAccounts = (accData?.data || []).filter(a => a.is_postable && a.type === 'asset' && /kas|bank/i.test(a.name));
+
+  // Non-editor: ringkas
   if (!canEdit) {
     if (!so.markupEnabled) return null;
+    const diup = Number(so.totalAmount) + Number(so.cashbackAmount || 0);
     return (
       <Card className="border-rose-200 bg-rose-50/40">
         <CardContent className="py-3 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
           <div className="flex items-center gap-2 font-semibold text-rose-800"><Calculator className="w-4 h-4" />Faktur di-up (Cashback)</div>
-          <div><span className="text-muted-foreground">Nilai Faktur (di-up): </span><b>{rp(so.totalAmount)}</b></div>
-          <div><span className="text-muted-foreground">Nilai Asli/Net: </span><b>{rp(so.realAmount)}</b></div>
-          <div><span className="text-muted-foreground">Cashback: </span><b className="text-rose-700">{rp(so.cashbackAmount)}</b></div>
+          <div><span className="text-muted-foreground">Harga Jual Asli: </span><b>{rp(so.totalAmount)}</b></div>
+          <div><span className="text-muted-foreground">Faktur di-up: </span><b>{rp(diup)}</b></div>
+          <div><span className="text-muted-foreground">Cashback dikembalikan: </span><b className="text-rose-700">{rp(so.cashbackAmount)}</b></div>
           {so.cashbackRecipient && <div><span className="text-muted-foreground">PIC: </span><b>{so.cashbackRecipient}</b></div>}
         </CardContent>
       </Card>
     );
   }
 
-  const onReal = (v) => {
-    setRealAmount(v);
-    if (!manualCb) setCashback(Math.max(0, Math.round((total - Number(v || 0)) * 100) / 100));
-  };
+  const totalReal = items.reduce((a, it) => a + Number(it.subtotal || 0), 0); // = so.totalAmount (harga asli)
+  const totalCashback = Math.round(items.reduce((a, it) => {
+    const real = Number(it.unitPrice || 0);
+    const mk = Math.max(Number(markup[it.id] || 0), real);
+    const ratio = real > 0 ? mk / real : 1;
+    return a + Number(it.subtotal || 0) * (ratio - 1);
+  }, 0));
+  const totalDiup = totalReal + totalCashback;
 
   const save = async () => {
     if (enabled) {
-      if (!(Number(realAmount) > 0)) return toast.error('Isi Nilai Asli/Net (lebih dari 0)');
-      if (Number(realAmount) > total + 0.5) return toast.error('Nilai asli tidak boleh melebihi nilai faktur customer');
+      for (const it of items) {
+        const mk = Number(markup[it.id] || 0);
+        if (mk + 0.001 < Number(it.unitPrice || 0)) return toast.error(`Harga markup "${it.product?.name || 'item'}" lebih rendah dari harga jual asli`);
+      }
+      if (!(totalCashback > 0)) return toast.error('Belum ada markup — naikkan harga markup minimal pada satu item');
     }
     setSaving(true);
     try {
+      const payload = {
+        markupEnabled: enabled,
+        items: items.map(it => ({ itemId: it.id, markupUnitPrice: Number(markup[it.id] || 0) })),
+        cashbackRecipient: recipient,
+        cashbackAccount: cashAccount || null,
+      };
       const res = await fetch(`/api/sales-orders/${so.id}/markup`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-        body: JSON.stringify({ markupEnabled: enabled, realAmount: Number(realAmount), cashbackAmount: Number(cashback), cashbackRecipient: recipient }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
@@ -339,14 +356,13 @@ function MarkupCard({ so, canEdit, onSaved }) {
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
 
-  const net = Math.max(0, total - Number(cashback || 0));
   return (
     <Card className="border-rose-200">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-rose-600" />Faktur di-up &amp; Cashback <span className="text-xs font-normal text-muted-foreground">(opsional)</span></CardTitle>
-            <CardDescription className="text-xs">Untuk customer yang minta faktur di-up. Selisih dicatat otomatis sebagai Beban Komisi/Cashback; tagihan bersih = nilai asli.</CardDescription>
+            <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-rose-600" />Faktur di-up &amp; Cashback <span className="text-xs font-normal text-muted-foreground">(opsional · per item)</span></CardTitle>
+            <CardDescription className="text-xs">Harga di SO = harga jual asli. Isi harga markup (di-up) per item di sini. Customer transfer penuh nilai di-up, lalu selisih (cashback) dikembalikan dari kas/bank. Cashback/kg = harga markup − harga asli.</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <Label className="text-xs text-muted-foreground">Aktifkan</Label>
@@ -356,29 +372,59 @@ function MarkupCard({ so, canEdit, onSaved }) {
       </CardHeader>
       {enabled && (
         <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-md border overflow-x-auto">
+            <Table>
+              <TableHeader><TableRow>
+                <TableHead>Produk</TableHead>
+                <TableHead className="text-right">Berat (kg)</TableHead>
+                <TableHead className="text-right">Harga Jual Asli/kg</TableHead>
+                <TableHead className="text-right w-44">Harga Markup/kg</TableHead>
+                <TableHead className="text-right">Cashback/kg</TableHead>
+                <TableHead className="text-right">Cashback Baris</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {items.map(it => {
+                  const w = effW(it);
+                  const real = Number(it.unitPrice || 0);
+                  const mk = Number(markup[it.id] || 0);
+                  const cbKg = Math.max(0, Math.max(mk, real) - real);
+                  const ratio = real > 0 ? Math.max(mk, real) / real : 1;
+                  const cbLine = Math.max(0, Math.round(Number(it.subtotal || 0) * (ratio - 1)));
+                  return (
+                    <TableRow key={it.id}>
+                      <TableCell className="text-sm">{it.product?.name || '-'}<div className="text-[11px] text-muted-foreground">{it.product?.sku}</div></TableCell>
+                      <TableCell className="text-right text-sm">{w.toLocaleString('id-ID')}</TableCell>
+                      <TableCell className="text-right text-sm font-medium">{rp(real)}</TableCell>
+                      <TableCell className="text-right">
+                        <CurrencyInput value={mk} onChange={(v) => setMarkup(prev => ({ ...prev, [it.id]: v }))} className="text-right" />
+                      </TableCell>
+                      <TableCell className="text-right text-sm text-rose-600">{rp(cbKg)}</TableCell>
+                      <TableCell className="text-right text-sm font-medium text-rose-700">{rp(cbLine)}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label className="text-xs">Nilai Faktur Customer (di-up)</Label>
-              <div className="h-9 flex items-center px-3 rounded-md border bg-muted/50 text-sm font-semibold mt-1">{rp(total)}</div>
-              <div className="text-[11px] text-muted-foreground mt-1">= Total SO (yang tampil di faktur customer)</div>
-            </div>
-            <div>
-              <Label className="text-xs">Nilai Asli / Net (dibayar customer)</Label>
-              <CurrencyInput value={realAmount} onChange={onReal} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs">Cashback (selisih)</Label>
-              <CurrencyInput value={cashback} onChange={(v) => { setManualCb(true); setCashback(v); }} className="mt-1" />
-              <div className="text-[11px] text-muted-foreground mt-1">{manualCb ? 'Diisi manual' : 'Otomatis = faktur − asli'}</div>
+              <Label className="text-xs">Dikembalikan dari (Kas/Bank)</Label>
+              <Select value={cashAccount} onValueChange={setCashAccount}>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Default: Bank" /></SelectTrigger>
+                <SelectContent>{cashAccounts.map(a => <SelectItem key={a.id} value={a.code}>{a.name}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
             <div>
               <Label className="text-xs">Penerima Cashback / PIC (opsional)</Label>
               <Input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="mis. Bpk. Budi (Purchasing)" className="mt-1" />
             </div>
           </div>
+
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm bg-rose-50/60 border border-rose-100 rounded-md px-3 py-2">
-            <div><span className="text-muted-foreground">Pendapatan riil (net): </span><b className="text-emerald-700">{rp(net)}</b></div>
-            <div><span className="text-muted-foreground">Beban Cashback/Komisi: </span><b className="text-rose-700">{rp(cashback)}</b></div>
+            <div><span className="text-muted-foreground">Harga jual asli (bersih diterima): </span><b className="text-emerald-700">{rp(totalReal)}</b></div>
+            <div><span className="text-muted-foreground">Faktur di-up (ditransfer customer): </span><b>{rp(totalDiup)}</b></div>
+            <div><span className="text-muted-foreground">Cashback dikembalikan: </span><b className="text-rose-700">{rp(totalCashback)}</b></div>
           </div>
           <div className="flex justify-end">
             <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Receipt className="w-4 h-4 mr-1" />}Simpan</Button>

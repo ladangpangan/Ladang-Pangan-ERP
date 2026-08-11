@@ -2354,8 +2354,9 @@ async function handleRoute(request, { params }) {
       const totalPaid = Number(paid?.sum || 0);
       const retRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.salesReturns).where(eq(s.salesReturns.salesOrderId, soId)).get();
       const totalReturns = Number(retRow?.sum || 0);
-      // Nilai yang benar-benar ditagih ke customer = nilai asli bila faktur di-up (cashback) aktif
-      const billable = (soRow.markupEnabled && Number(soRow.realAmount) > 0) ? Number(soRow.realAmount) : Number(soRow.totalAmount);
+      // Customer membayar penuh nilai faktur di-up = total (harga asli) + cashback; cashback direfund terpisah.
+      const billable = (soRow.markupEnabled && Number(soRow.cashbackAmount) > 0)
+        ? Number(soRow.totalAmount) + Number(soRow.cashbackAmount) : Number(soRow.totalAmount);
       const netTotal = billable - totalReturns;
       let ps = 'unpaid';
       if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
@@ -2690,14 +2691,15 @@ async function handleRoute(request, { params }) {
       const totalReturns = returns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const totalShrinkageValue = receipts.reduce((a, b) => a + Number(b.totalShrinkageValue || 0), 0);
       const totalShrinkageWeight = receipts.reduce((a, b) => a + Number(b.totalShrinkageWeight || 0), 0);
-      // Faktur di-up (cashback): nilai ditagih ke customer = nilai asli; laba pakai revenue riil (net cashback)
+      // Faktur di-up (cashback): customer bayar penuh di-up (= total asli + cashback); cashback direfund sbg kas keluar.
+      // Pendapatan (bruto) = di-up; net (riil) = total asli. Laba pakai nilai riil.
       const cashbackAmt = (so.markupEnabled && Number(so.cashbackAmount) > 0) ? Number(so.cashbackAmount) : 0;
-      const billable = (so.markupEnabled && Number(so.realAmount) > 0) ? Number(so.realAmount) : Number(so.totalAmount);
-      const outstanding = billable - Number(so.paidAmount || 0) - totalReturns;
+      const diupTotal = Number(so.totalAmount) + cashbackAmt;
+      const outstanding = diupTotal - Number(so.paidAmount || 0) - totalReturns;
       const shippingCost = Number(so.shippingCost || 0);
       const sellerShipping = (so.shippingBearer === 'buyer') ? 0 : shippingCost;
-      const revenue = Number(so.totalAmount || 0);        // nilai faktur customer (di-up)
-      const netRevenue = revenue - cashbackAmt;            // pendapatan riil setelah cashback
+      const revenue = diupTotal;                            // pendapatan bruto (faktur di-up)
+      const netRevenue = Number(so.totalAmount || 0);       // pendapatan riil (harga asli)
       const grossProfit = Math.round(netRevenue - cogsTotal - sellerShipping);
       const grossMarginPct = netRevenue > 0 ? Math.round((grossProfit / netRevenue) * 1000) / 10 : 0;
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
@@ -2721,7 +2723,7 @@ async function handleRoute(request, { params }) {
         linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
       }
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, netRevenue, cashbackAmount: cashbackAmt, billable, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
@@ -3130,7 +3132,7 @@ async function handleRoute(request, { params }) {
       return json({ data: p, info }, { status: 201 });
     }
 
-    // POST /sales-orders/:id/markup - set/unset Faktur di-up + Cashback (opsional)
+    // POST /sales-orders/:id/markup - set/unset Faktur di-up + Cashback (opsional, per item)
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'markup' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
@@ -3140,21 +3142,39 @@ async function handleRoute(request, { params }) {
       const body = await request.json().catch(() => ({}));
       const enabled = !!body.markupEnabled;
       const total = Number(so.totalAmount || 0);
-      let realAmount = 0, cashback = 0, recipient = null;
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      // Peta harga MARKUP (di-up) per item dari body.items: [{itemId, markupUnitPrice}]. Harga jual asli = unitPrice (dari SO).
+      const mkMap = {};
+      if (Array.isArray(body.items)) for (const it of body.items) { if (it && it.itemId != null) mkMap[it.itemId] = it.markupUnitPrice; }
+
+      let realAmount = total, cashback = 0, recipient = null, cashbackAccount = null;
       if (enabled) {
-        realAmount = Number(body.realAmount || 0);
-        if (!(realAmount > 0)) return err('Nilai asli/net harus lebih dari 0', 400);
-        if (realAmount > total + 0.5) return err('Nilai asli tidak boleh melebihi nilai faktur customer (Rp ' + total.toLocaleString('id-ID') + ')', 400);
-        cashback = (body.cashbackAmount !== undefined && body.cashbackAmount !== null && body.cashbackAmount !== '')
-          ? Number(body.cashbackAmount) : Math.round((total - realAmount) * 100) / 100;
-        if (cashback < 0) cashback = 0;
+        cashback = 0;
+        for (const it of soItems) {
+          const sub = Number(it.subtotal || 0);           // subtotal baris pada harga asli (sum = total_amount = nilai riil)
+          const realUnit = Number(it.unitPrice || 0);     // harga jual asli
+          let mkUnit = (mkMap[it.id] !== undefined && mkMap[it.id] !== null && mkMap[it.id] !== '') ? Number(mkMap[it.id]) : realUnit;
+          if (isNaN(mkUnit) || mkUnit < 0) mkUnit = 0;
+          if (mkUnit + 0.001 < realUnit) return err('Harga markup tidak boleh lebih rendah dari harga jual asli pada salah satu item', 400);
+          db.update(s.salesOrderItems).set({ markupUnitPrice: mkUnit }).where(eq(s.salesOrderItems.id, it.id)).run();
+          const ratio = realUnit > 0 ? mkUnit / realUnit : 1; // >= 1; cashback = subtotal*(ratio-1)
+          cashback += sub * (ratio - 1);
+        }
+        realAmount = total;                                // nilai riil = total SO (harga asli)
+        cashback = Math.round(cashback * 100) / 100;
+        if (!(cashback > 0)) return err('Belum ada markup — isi harga markup lebih tinggi dari harga jual asli minimal pada satu item', 400);
         recipient = body.cashbackRecipient ? String(body.cashbackRecipient).slice(0, 200) : null;
+        cashbackAccount = body.cashbackAccount ? String(body.cashbackAccount).slice(0, 20) : null;
+      } else {
+        // reset harga markup per item
+        for (const it of soItems) db.update(s.salesOrderItems).set({ markupUnitPrice: 0 }).where(eq(s.salesOrderItems.id, it.id)).run();
       }
       db.update(s.salesOrder).set({
         markupEnabled: enabled,
         realAmount: enabled ? realAmount : 0,
         cashbackAmount: enabled ? cashback : 0,
         cashbackRecipient: enabled ? recipient : null,
+        cashbackAccount: enabled ? cashbackAccount : null,
         updatedAt: new Date(),
       }).where(eq(s.salesOrder.id, id)).run();
       const info = recomputeSoPaymentStatus(id);
