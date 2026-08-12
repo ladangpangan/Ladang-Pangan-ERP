@@ -18770,3 +18770,31 @@ backend:
           - END-TO-END: built the production standalone (`next build` OK, snapshot bundled into the API route server chunk) and ran `DB_PATH=/tmp/fresh.db node .next/standalone/server.js` on a spare port -> log "[seed] Fresh DB detected — restored snapshot: 996 rows across 17 tables"; admin sign-in returned HTTP 200; temp DB then had 209 SO (120 active) / 51 PO. Confirms production first-boot now seeds admin login + all data.
           CAVEAT (documented to user): if the production /app/data volume is EPHEMERAL, the snapshot re-seeds on every restart (baseline reappears; data entered online could reset). If /app/data is a persistent disk, the seed runs once and new data persists. Snapshot is point-in-time; must be regenerated before deploy if preview data changes.
 
+
+#====================================================================================================
+# DURABLE PERSISTENCE — Auto backup/restore of SQLite to MongoDB (survives redeploy/restart)
+#====================================================================================================
+
+backend:
+  - task: "Durable production persistence: auto backup/restore SQLite <-> MongoDB (Cara 2)"
+    implemented: true
+    working: true
+    file: "/app/lib/db/persistence.js (new), /app/lib/db/boot.js (new), /app/instrumentation.js (new), /app/next.config.js (serverExternalPackages + outputFileTracingIncludes), /app/app/api/[[...path]]/route.js (backup hook on mutations)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          PROBLEM: Emergent production container filesystem is EPHEMERAL, so SQLite data (incl. new transactions entered online) resets on redeploy/restart. User chose "Cara 2": use the Emergent-provided MongoDB (MONGO_URL) as a durable BLOB store for the whole SQLite file — keep SQLite for all app logic.
+          DESIGN:
+          - lib/db/persistence.js: connect to MONGO_URL (lazy). mongodb is loaded via createRequire (runtime require) so webpack never bundles its optional peer deps (socks/aws4/gcp-metadata/kerberos/client-encryption); forced into standalone via next.config outputFileTracingIncludes. Functions: restoreDbFromMongoIfNeeded() (restores GridFS backup to DB_PATH only if local DB has 0 users), backupDbToMongo() (better-sqlite3 online .backup() -> GridFS, keeps only latest), scheduleBackup() (8s debounce), startAutoBackup() (60s periodic + SIGTERM/SIGINT flush).
+          - instrumentation.js (edge-safe) -> imports @/lib/db/boot ONLY when NEXT_RUNTIME==='nodejs' -> boot.register(): restore -> getDb() (schema+seed) -> if nothing restored, backup baseline -> startAutoBackup.
+          - route.js: mutating methods (POST/PUT/PATCH/DELETE) wrapped to scheduleBackup() after a successful (<400) response.
+          - If MONGO_URL is unset (preview sandbox) every function is a NO-OP => local dev unchanged (verified: no MONGO_URL in .env, login 200, no errors).
+          VERIFIED (production standalone build + local MongoDB):
+          - Build passes (next build OK, mongodb present in .next/standalone/node_modules, snapshot bundled). Dev also clean (no module-not-found).
+          - END-TO-END durability: first boot on EMPTY DB -> seed 996 rows + baseline backup to Mongo; login 200; real API write (PUT /api/accounting/settings marker) 200; waited for debounced backup; HARD kill -9 + wiped local sqlite (simulates ephemeral redeploy); second boot -> "[persistence] Restored SQLite from MongoDB backup (952 KB)"; marker AND all 209 SO / 4 users survived. RESULT: DURABILITY OK.
+          DEPENDENCY/CAVEAT (told to user): requires MONGO_URL to be present in the deployment env (Emergent provides Atlas Mongo in production). If MONGO_URL is absent in prod, persistence is a no-op and data would still reset — then the bundled seed-snapshot still restores the baseline each boot. Recovery window on a hard crash is ~8s (debounce) / 60s (periodic).
+

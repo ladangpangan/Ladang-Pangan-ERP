@@ -5229,7 +5229,21 @@ async function handleRoute(request, { params }) {
 }
 
 export const GET = handleRoute;
-export const POST = handleRoute;
-export const PUT = handleRoute;
-export const PATCH = handleRoute;
-export const DELETE = handleRoute;
+
+// Wrap mutating methods so a durable backup (to MongoDB) is scheduled after each
+// successful write. No-op in environments without MONGO_URL (e.g. preview sandbox).
+async function handleRouteWithBackup(request, ctx) {
+  const res = await handleRoute(request, ctx);
+  try {
+    if (res && typeof res.status === 'number' && res.status < 400) {
+      const { scheduleBackup } = await import('@/lib/db/persistence');
+      scheduleBackup();
+    }
+  } catch { /* never let backup scheduling break the response */ }
+  return res;
+}
+
+export const POST = handleRouteWithBackup;
+export const PUT = handleRouteWithBackup;
+export const PATCH = handleRouteWithBackup;
+export const DELETE = handleRouteWithBackup;
