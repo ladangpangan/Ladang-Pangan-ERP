@@ -7,9 +7,14 @@ const nextConfig = {
     ],
   },
   // Renamed from experimental.serverComponentsExternalPackages in Next 15.
-  // better-sqlite3 is a native module; it MUST be externalized (not bundled) so the
-  // standalone production server loads the compiled .node binding correctly.
-  serverExternalPackages: ['better-sqlite3'],
+  // Native / server-only packages must NOT be bundled by webpack.
+  serverExternalPackages: ['better-sqlite3', 'mongodb'],
+  // 'mongodb' is loaded at runtime via createRequire (see lib/db/persistence.js) so webpack
+  // never trips over its optional peer deps. Force-include it in the standalone output so the
+  // runtime require can resolve it.
+  outputFileTracingIncludes: {
+    '/api/[[...path]]': ['./node_modules/mongodb/**/*', './node_modules/bson/**/*'],
+  },
   webpack(config, { dev }) {
     if (dev) {
       // Reduce CPU/memory from file watching
