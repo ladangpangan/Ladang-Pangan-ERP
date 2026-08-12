@@ -18742,3 +18742,31 @@ agent_communication:
     -agent: "main"
     -message: "User asked to (1) rollback the 'Ringkasan Riwayat Odoo' dashboard, and (2) add a per-month filter to the existing Sales Order & Purchase Order list pages (default current month, active orders only, by order date) for easier manual cross-check. Both done and self-verified via screenshots. This is a frontend/client-side change (plus removing the earlier report endpoint). NO backend testing needed. Awaiting user decision on whether to run automated frontend testing."
 
+
+#====================================================================================================
+# DEPLOYMENT FIX — Production DB was empty ("User not found") -> first-boot self-seed from snapshot
+#====================================================================================================
+
+backend:
+  - task: "First-boot DB self-seed for empty/production database (fixes 'User not found' + missing Odoo SO/PO in prod)"
+    implemented: true
+    working: true
+    file: "/app/lib/db/seed.js (new), /app/lib/db/seed-snapshot.json (new, 662KB), /app/lib/db/index.js (wired seedIfEmpty before seedAccounting), /app/next.config.js (serverExternalPackages: better-sqlite3), /app/.env (added CORS_ORIGINS, BETTER_AUTH_SECRET)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          ROOT CAUSE of failed/empty production deploy: the app uses SQLite at /app/data/erp.db, but that data file does NOT ship into the Next.js standalone deploy image. So production started with an EMPTY DB -> Better Auth logged "User not found" and the imported Odoo SO/PO data was missing.
+          FIX (code-only, no Docker changes):
+          1. next.config.js: serverExternalPackages changed 'mongodb' -> 'better-sqlite3' so the native SQLite binding is copied into .next/standalone (verified better_sqlite3.node present). This was needed for the standalone server to load the DB driver at all.
+          2. Added a bundled JSON snapshot of the current preview DB (lib/db/seed-snapshot.json: 17 tables, 996 rows incl. admin user+account, 102 contacts, 52 products, 209 SO / 375 items, 51 PO / 100 items, opening-balance journal, app_settings).
+          3. Added lib/db/seed.js -> seedIfEmpty(sqlite): if `SELECT COUNT(*) FROM user == 0` (fresh DB), restores the snapshot (FK off during bulk load, INSERT OR IGNORE, only valid columns). Wired into initSchema BEFORE seedAccounting. Idempotent (no-op once any user exists).
+          4. .env: added CORS_ORIGINS="*" and a strong BETTER_AUTH_SECRET (per deployment agent).
+          VERIFICATION:
+          - Unit test on a fresh temp DB: 996 rows restored, admin present, credential accounts w/ passwords present, PRAGMA foreign_key_check => 0 violations, idempotent.
+          - END-TO-END: built the production standalone (`next build` OK, snapshot bundled into the API route server chunk) and ran `DB_PATH=/tmp/fresh.db node .next/standalone/server.js` on a spare port -> log "[seed] Fresh DB detected — restored snapshot: 996 rows across 17 tables"; admin sign-in returned HTTP 200; temp DB then had 209 SO (120 active) / 51 PO. Confirms production first-boot now seeds admin login + all data.
+          CAVEAT (documented to user): if the production /app/data volume is EPHEMERAL, the snapshot re-seeds on every restart (baseline reappears; data entered online could reset). If /app/data is a persistent disk, the seed runs once and new data persists. Snapshot is point-in-time; must be regenerated before deploy if preview data changes.
+

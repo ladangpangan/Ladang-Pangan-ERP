@@ -6,8 +6,10 @@ const nextConfig = {
       { protocol: 'https', hostname: 'avatars.githubusercontent.com', pathname: '/**' },
     ],
   },
-  // Renamed from experimental.serverComponentsExternalPackages in Next 15
-  serverExternalPackages: ['mongodb'],
+  // Renamed from experimental.serverComponentsExternalPackages in Next 15.
+  // better-sqlite3 is a native module; it MUST be externalized (not bundled) so the
+  // standalone production server loads the compiled .node binding correctly.
+  serverExternalPackages: ['better-sqlite3'],
   webpack(config, { dev }) {
     if (dev) {
       // Reduce CPU/memory from file watching
