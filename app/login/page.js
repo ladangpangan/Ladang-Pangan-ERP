@@ -13,8 +13,8 @@ import { toast } from 'sonner';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@lpi.co.id');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -44,17 +44,6 @@ export default function LoginPage() {
     } catch (e) {
       setError('Terjadi kesalahan: ' + e.message);
     } finally { setLoading(false); }
-  };
-
-  const handleSeed = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/seed', { method: 'POST' });
-      const data = await res.json();
-      if (data.seeded) toast.success('Data awal berhasil dibuat');
-      else toast.info(data.message || 'Sudah ada data');
-    } catch (e) { toast.error('Gagal seed: ' + e.message); }
-    finally { setLoading(false); }
   };
 
   return (
@@ -129,26 +118,6 @@ export default function LoginPage() {
                   Masuk
                 </Button>
               </form>
-              <div className="mt-6 pt-6 border-t">
-                <p className="text-sm text-muted-foreground mb-3">Akun demo untuk testing:</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    { r: 'Admin', e: 'admin@lpi.co.id', p: 'admin123' },
-                    { r: 'Supervisor', e: 'supervisor@lpi.co.id', p: 'super123' },
-                    { r: 'Direktur', e: 'direktur@lpi.co.id', p: 'direktur123' },
-                    { r: 'Operator', e: 'operator@lpi.co.id', p: 'operator123' },
-                  ].map(a => (
-                    <button key={a.e} type="button" onClick={() => { setEmail(a.e); setPassword(a.p); }}
-                      className="p-2 rounded border hover:bg-muted text-left">
-                      <div className="font-semibold">{a.r}</div>
-                      <div className="text-muted-foreground truncate">{a.e}</div>
-                    </button>
-                  ))}
-                </div>
-                <Button type="button" variant="outline" size="sm" className="w-full mt-3" onClick={handleSeed} disabled={loading}>
-                  Inisialisasi Data Awal (jika belum)
-                </Button>
-              </div>
             </CardContent>
           </Card>
         </div>
