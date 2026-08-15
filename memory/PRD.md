@@ -43,5 +43,13 @@ Fixes applied in preview:
 Action: user must REDEPLOY. After redeploy, check prod logs — if backup still says "not authorized on erp_prod", set env `MONGO_DB_NAME` to the authorized database, or contact Emergent Support for the correct MongoDB db name.
 Pre-reset backup: `/root/odoo_mig/erp.db.bak_before_reset_*`. Old snapshot saved: `/root/odoo_mig/seed-snapshot.OLD.json`.
 
+## Kartu Stok (Stock Card) — added 2026-02
+Per-product auditable stock ledger. New table `stock_ledger` (schema.js + CREATE TABLE in index.js) records every
+stock movement via helper `recordLedger()` hooked into: inbound (IN, incl. tally finalize), SO confirm (OUT),
+sales return (RETURN_IN), non-sales/damage (OUT/DAMAGE), CS transfer (TRANSFER_OUT+TRANSFER_IN), opname approve (ADJ).
+Read API: `GET /api/inventory-reports/stock-card?productId=&coldStorageId=&from=&to=` → opening balance, movements
+with running balance, and summary. UI: 5th tab "Kartu Stok" in `/dashboard/inventory-reports` (product/CS/date filters,
+summary cards, ledger table). Backend tested 7/7 pass. Table auto-creates on prod boot (needs redeploy to appear in prod).
+
 ## Credentials
 Admin: `admin@lpi.co.id` / `admin123` (see `/app/memory/test_credentials.md`).
