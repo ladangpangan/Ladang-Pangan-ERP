@@ -13,7 +13,11 @@ import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 
 const DB_PATH = '/app/data/erp.db';
-const DATA = JSON.parse(fs.readFileSync('/tmp/sheet_data.json', 'utf8'));
+const DATA = JSON.parse(fs.readFileSync('/root/odoo_mig/sheet_data.json', 'utf8'));
+// normalize: support both old ({balance:{end_kg}}) and new ({balance_full:{net_kg}}) formats
+const BAL = DATA.balance_full || DATA.balance;
+const getEndKg = (b) => (b.net_kg !== undefined ? b.net_kg : b.end_kg);
+const getEndColly = (b) => (b.net_colly !== undefined ? b.net_colly : b.end_colly);
 const MODE = process.argv[2] || 'validate';
 
 // sheet product name -> ERP SKU
@@ -50,7 +54,7 @@ function prodOf(sheetName) {
 }
 
 // ---- validate mapping ----
-const balProducts = Object.keys(DATA.balance);
+const balProducts = Object.keys(BAL);
 const allSheetProducts = new Set([...balProducts, ...DATA.inbound.map((i) => i.product), ...DATA.outbound.map((o) => o.product)]);
 const unmapped = [...allSheetProducts].filter((p) => !prodOf(p));
 console.log('Sheet products:', allSheetProducts.size, '| unmapped:', unmapped.length, unmapped);
@@ -63,11 +67,11 @@ console.log('\n=== TARGET end-Aug on-hand per product (recap) vs current ERP lot
 let tgtTot = 0, curTot = 0;
 for (const sheetName of balProducts) {
   const p = prodOf(sheetName); if (!p) continue;
-  const b = DATA.balance[sheetName];
+  const b = BAL[sheetName];
   const cur = lotBySku[p.sku];
-  tgtTot += b.end_kg; curTot += cur ? cur.weight : 0;
+  tgtTot += getEndKg(b); curTot += cur ? cur.weight : 0;
   const flag = cur ? '' : '  <== NEW LOT';
-  console.log(`  ${sheetName.padEnd(18)} sku=${p.sku.padEnd(12)} recapEnd=${b.end_kg.toFixed(2).padStart(9)} kg | curERP=${(cur ? cur.weight : 0).toFixed(2).padStart(9)}${flag}`);
+  console.log(`  ${sheetName.padEnd(18)} sku=${p.sku.padEnd(12)} recapEnd=${getEndKg(b).toFixed(2).padStart(9)} kg | curERP=${(cur ? cur.weight : 0).toFixed(2).padStart(9)}${flag}`);
 }
 console.log(`  TOTAL recapEnd=${tgtTot.toFixed(2)} kg | curERP=${curTot.toFixed(2)} kg`);
 
@@ -107,11 +111,11 @@ const tx = db.transaction(() => {
   const handledSku = new Set();
   for (const sheetName of balProducts) {
     const p = prodOf(sheetName); if (!p) continue;
-    const b = DATA.balance[sheetName];
+    const b = BAL[sheetName];
     handledSku.add(p.sku);
     const cur = lotBySku[p.sku];
-    const endKg = r2(Math.max(0, b.end_kg));
-    const endColly = Math.max(0, Math.round(b.end_colly));
+    const endKg = r2(Math.max(0, getEndKg(b)));
+    const endColly = Math.max(0, Math.round(getEndColly(b)));
     if (cur) updLot.run(endKg, endColly, CS_ID, now, cur.id);
     else insLot.run(randomUUID(), p.id, CS_ID, defaultZone, `CS-${p.sku}`, endColly, endKg, 0, now, now);
   }
@@ -167,7 +171,7 @@ const afterBySku = {}; for (const a of after) afterBySku[a.sku] = (afterBySku[a.
 let ok = 0, bad = 0;
 for (const sheetName of balProducts) {
   const p = prodOf(sheetName); if (!p) continue;
-  const tgt = r2(Math.max(0, DATA.balance[sheetName].end_kg));
+  const tgt = r2(Math.max(0, getEndKg(BAL[sheetName])));
   const got = r2(afterBySku[p.sku] || 0);
   if (Math.abs(tgt - got) < 0.5) ok++; else { bad++; console.log(`  MISMATCH ${p.sku}: target=${tgt} got=${got}`); }
 }
