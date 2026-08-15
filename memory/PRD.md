@@ -31,7 +31,17 @@ Source: Odoo `pg_dump` at `/root/odoo_mig/dump.sql` + user's manual recap Google
 - (P2) Advanced analytics; AR/AP aging.
 
 ## Deployment note
-`MONGO_URL` is NOT set in the current preview → data is local only. Before/at deploy, ensure `MONGO_URL` is configured and a backup captures the Aug integration so production restore doesn't revert it.
+`MONGO_URL` is provided by Emergent in production (not in preview). Data durability = SQLite auto-backup to MongoDB (GridFS) via `lib/db/persistence.js`; on a fresh container, `lib/db/seed.js` restores `lib/db/seed-snapshot.json`.
+
+### Production incident (2026-08-15) + fixes (in preview, needs redeploy)
+Symptoms from prod logs after first deploy:
+1. `[persistence] backup/restore failed: not authorized on test` — driver defaulted to the `test` db (MONGO_URL had no db path) which managed clusters forbid.
+2. `[seed] Fresh DB detected — restored snapshot: 996 rows` — the bundled `seed-snapshot.json` was an OLD (Aug 12) dump, so production came up with stale pre-reset data (209 SO / 51 PO / 26 lots), not the clean slate.
+Fixes applied in preview:
+1. `lib/db/persistence.js` — db name now resolves as `MONGO_DB_NAME || DB_NAME || <db from URL path> || 'erp_prod'` (never `test`). `scripts/generate_seed_snapshot.mjs` added.
+2. `lib/db/seed-snapshot.json` — regenerated from the current clean slate (247 rows: login + master data, transactions empty).
+Action: user must REDEPLOY. After redeploy, check prod logs — if backup still says "not authorized on erp_prod", set env `MONGO_DB_NAME` to the authorized database, or contact Emergent Support for the correct MongoDB db name.
+Pre-reset backup: `/root/odoo_mig/erp.db.bak_before_reset_*`. Old snapshot saved: `/root/odoo_mig/seed-snapshot.OLD.json`.
 
 ## Credentials
 Admin: `admin@lpi.co.id` / `admin123` (see `/app/memory/test_credentials.md`).
