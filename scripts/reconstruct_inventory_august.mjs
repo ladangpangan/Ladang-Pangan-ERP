@@ -121,18 +121,21 @@ const tx = db.transaction(() => {
   }
   // any active lot whose product not in recap -> leave as-is (none expected)
 
+  // ensure product_id column exists on inventory_transaction (for per-product stock card)
+  const hasProdCol = db.prepare('PRAGMA table_info(inventory_transaction)').all().some((c) => c.name === 'product_id');
+  if (!hasProdCol) db.prepare('ALTER TABLE inventory_transaction ADD COLUMN product_id TEXT').run();
   // clear previous reconstruction ledger, then insert August movement ledger
   db.prepare("DELETE FROM inventory_transaction WHERE tx_number LIKE 'RCP-%'").run();
   const insTx = db.prepare(`INSERT INTO inventory_transaction
-    (id, transaction_date, transaction_type, reference_id, reference_type, notes, created_by, created_at, tx_number, from_cold_storage_id, to_cold_storage_id, from_zone_id, to_zone_id, total_weight, total_quantity, status)
-    VALUES (@id,@date,@type,@ref_id,@ref_type,@notes,'odoo-import',@created,@txn,@from_cs,@to_cs,@from_z,@to_z,@w,@q,'confirmed')`);
+    (id, transaction_date, transaction_type, product_id, reference_id, reference_type, notes, created_by, created_at, tx_number, from_cold_storage_id, to_cold_storage_id, from_zone_id, to_zone_id, total_weight, total_quantity, status)
+    VALUES (@id,@date,@type,@product_id,@ref_id,@ref_type,@notes,'odoo-import',@created,@txn,@from_cs,@to_cs,@from_z,@to_z,@w,@q,'confirmed')`);
   let seq = 0;
   const nextTxn = () => 'RCP-' + String(++seq).padStart(5, '0');
 
   // inbound (production)
   for (const i of augIn) {
     const p = prodOf(i.product); if (!p) continue;
-    insTx.run({ id: randomUUID(), date: toSec(i.date), type: 'IN', ref_id: null, ref_type: 'WO',
+    insTx.run({ id: randomUUID(), date: toSec(i.date), type: 'IN', product_id: p.id, ref_id: null, ref_type: 'WO',
       notes: `Produksi ${i.kode_produksi || ''} | ${p.sku} | colly ${i.kode || ''}`.trim(),
       created: now, txn: nextTxn(), from_cs: null, to_cs: CS_ID, from_z: null, to_z: (i.pallete && zoneByCode[i.pallete]) || defaultZone,
       w: r2(Math.abs(i.weight)), q: Math.abs(i.colly) });
@@ -145,7 +148,7 @@ const tx = db.transaction(() => {
     const p = prodOf(o.product); if (!p) continue;
     if (o.is_transfer) {
       tfCount++;
-      insTx.run({ id: randomUUID(), date: toSec(o.date), type: 'TRANSFER_CS', ref_id: null, ref_type: 'TRANSFER',
+      insTx.run({ id: randomUUID(), date: toSec(o.date), type: 'TRANSFER_CS', product_id: p.id, ref_id: null, ref_type: 'TRANSFER',
         notes: `Transfer internal | ${p.sku} | colly ${o.kode || ''}`.trim(), created: now, txn: nextTxn(),
         from_cs: CS_ID, to_cs: null, from_z: (o.pallete && zoneByCode[o.pallete]) || defaultZone, to_z: null,
         w: r2(Math.abs(o.weight)), q: Math.abs(o.colly) });
@@ -153,7 +156,7 @@ const tx = db.transaction(() => {
       const erpNo = soNumberOf(o.so);
       const soId = erpNo ? soIdByNumber[erpNo] : null;
       if (soId) linkedSO++;
-      insTx.run({ id: randomUUID(), date: toSec(o.date), type: 'OUT', ref_id: soId, ref_type: 'SO',
+      insTx.run({ id: randomUUID(), date: toSec(o.date), type: 'OUT', product_id: p.id, ref_id: soId, ref_type: 'SO',
         notes: `Penjualan ${o.so || ''}${o.customer ? ' - ' + o.customer : ''} | ${p.sku} | colly ${o.kode || ''}`.trim(),
         created: now, txn: nextTxn(), from_cs: CS_ID, to_cs: null, from_z: (o.pallete && zoneByCode[o.pallete]) || defaultZone, to_z: null,
         w: r2(Math.abs(o.weight)), q: Math.abs(o.colly) });
