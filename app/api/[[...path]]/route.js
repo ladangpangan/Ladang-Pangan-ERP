@@ -41,6 +41,40 @@ function requireRole(session, allowed) {
 }
 
 // -----------------------
+// Stock Ledger (Kartu Stok) helper
+// Records a per-product stock movement. Wrapped in try/catch so a ledger
+// failure never breaks the primary operation.
+// -----------------------
+function recordLedger(db, entry) {
+  try {
+    db.insert(s.stockLedger).values({
+      id: uuidv4(),
+      ledgerDate: entry.ledgerDate || new Date(),
+      productId: entry.productId,
+      coldStorageId: entry.coldStorageId || null,
+      zoneId: entry.zoneId || null,
+      movementType: entry.movementType,
+      referenceType: entry.referenceType || null,
+      referenceId: entry.referenceId || null,
+      referenceNumber: entry.referenceNumber || null,
+      qtyIn: Number(entry.qtyIn || 0),
+      weightIn: Number(entry.weightIn || 0),
+      qtyOut: Number(entry.qtyOut || 0),
+      weightOut: Number(entry.weightOut || 0),
+      hppPerKg: Number(entry.hppPerKg || 0),
+      kodeSimpan: entry.kodeSimpan || null,
+      transactionId: entry.transactionId || null,
+      stockId: entry.stockId || null,
+      notes: entry.notes || null,
+      createdBy: entry.createdBy || null,
+      createdAt: new Date(),
+    }).run();
+  } catch (e) {
+    console.error('[stock_ledger] record failed:', e?.message || e);
+  }
+}
+
+// -----------------------
 // Contact categories (multi-select) helpers
 // -----------------------
 const VALID_CATEGORIES = ['Supplier', 'Customer', 'Agen', 'Dropshipper', 'RPH', 'Karyawan', 'Mitra'];
@@ -2918,6 +2952,23 @@ async function handleRoute(request, { params }) {
           }
           for (const al of allocs) {
             // Kode simpan dikonsumsi penuh (whole storage unit)
+            const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
+            recordLedger(db, {
+              ledgerDate: new Date(),
+              productId: al.productId || it.productId,
+              coldStorageId: stk?.coldStorageId || null,
+              zoneId: stk?.zoneId || null,
+              movementType: 'OUT',
+              referenceType: 'SO',
+              referenceId: id,
+              referenceNumber: so.soNumber,
+              weightOut: Number(stk?.weight || al.weight || 0),
+              qtyOut: Number(stk?.quantity || al.quantity || 0),
+              hppPerKg: Number(stk?.hppPerKg || al.hppPerKg || 0),
+              kodeSimpan: al.kodeSimpan || stk?.kodeSimpan || null,
+              stockId: al.stockId,
+              createdBy: session.user.email,
+            });
             db.update(s.inventoryStock)
               .set({ status: 'used', updatedAt: new Date() })
               .where(eq(s.inventoryStock.id, al.stockId))
@@ -3222,6 +3273,22 @@ async function handleRoute(request, { params }) {
                 .set({ weight: newWeight, quantity: newQty, status: newStatus, updatedAt: new Date() })
                 .where(eq(s.inventoryStock.id, stk.id))
                 .run();
+              recordLedger(db, {
+                ledgerDate: body.returnDate ? new Date(body.returnDate) : new Date(),
+                productId: stk.productId,
+                coldStorageId: stk.coldStorageId,
+                zoneId: stk.zoneId,
+                movementType: 'RETURN_IN',
+                referenceType: 'SR',
+                referenceId: id,
+                referenceNumber: `Retur ${so.soNumber}`,
+                weightIn: w,
+                qtyIn: q,
+                hppPerKg: Number(stk.hppPerKg || 0),
+                kodeSimpan: stk.kodeSimpan,
+                stockId: stk.id,
+                createdBy: session.user.email,
+              });
               restoredCount++;
               restoreLogs.push({ kodeSimpan: stk.kodeSimpan, weightAdded: w, newWeight, statusChanged: stk.status !== newStatus ? `${stk.status}→${newStatus}` : null });
             }
@@ -4301,6 +4368,9 @@ async function handleRoute(request, { params }) {
         createdBy: userEmail, createdAt: new Date(),
       }).run();
       const createdStocks = [];
+      let inboundRefNumber = null;
+      if (body.referenceType === 'PO' && body.referenceId) inboundRefNumber = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, body.referenceId)).get()?.n || null;
+      else if (body.referenceType === 'WO' && body.referenceId) inboundRefNumber = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, body.referenceId)).get()?.n || null;
       for (const it of body.items) {
         // Anti-dedup for WO source: validate & deduct from WO output remaining
         if (body.referenceType === 'WO' && body.referenceId) {
@@ -4359,6 +4429,23 @@ async function handleRoute(request, { params }) {
           transactionId: txId,
         }).run();
         createdStocks.push({ id: stkId, kodeSimpan, weight: Number(it.weight || 0), quantity: Number(it.quantity || 0), productId: it.productId });
+        recordLedger(db, {
+          ledgerDate: new Date(),
+          productId: it.productId,
+          coldStorageId: body.coldStorageId,
+          zoneId: it.zoneId || body.zoneId || null,
+          movementType: 'IN',
+          referenceType: body.referenceType || 'MANUAL',
+          referenceId: body.referenceId || null,
+          referenceNumber: inboundRefNumber,
+          weightIn: Number(it.weight || 0),
+          qtyIn: Number(it.quantity || 0),
+          hppPerKg,
+          kodeSimpan,
+          transactionId: txId,
+          stockId: stkId,
+          createdBy: userEmail,
+        });
       }
       // For PO-sourced inbound: accumulate actual re-weigh (tally) weight per PO item, then
       // recompute PO total + HPP (HPP always references tally weight).
@@ -4604,10 +4691,11 @@ async function handleRoute(request, { params }) {
       // For damage: requires approval (status=pending). For non_sales: confirmed.
       const requiresApproval = subtype === 'damage';
       const isAdmin = session.user.role === 'admin';
+      const outboundBaNo = nextBaNumber('BA');
       db.insert(s.inventoryTransaction).values({
         id: txId, transactionDate: new Date(),
         transactionType: subtype === 'damage' ? 'DAMAGE' : 'NON_SALES',
-        baNumber: nextBaNumber('BA'),
+        baNumber: outboundBaNo,
         baType: subtype === 'damage' ? 'damage' : 'non_sales',
         fromColdStorageId: stocks[0].coldStorageId,
         totalWeight: totalW, totalQuantity: totalQ,
@@ -4621,6 +4709,23 @@ async function handleRoute(request, { params }) {
       if (!requiresApproval || isAdmin) {
         for (const st of stocks) {
           db.update(s.inventoryStock).set({ status: subtype === 'damage' ? 'damaged' : 'used', updatedAt: new Date() }).where(eq(s.inventoryStock.id, st.id)).run();
+          recordLedger(db, {
+            ledgerDate: new Date(),
+            productId: st.productId,
+            coldStorageId: st.coldStorageId,
+            zoneId: st.zoneId,
+            movementType: subtype === 'damage' ? 'DAMAGE' : 'OUT',
+            referenceType: subtype === 'damage' ? 'DAMAGE' : 'NON_SALES',
+            referenceId: txId,
+            referenceNumber: outboundBaNo,
+            weightOut: Number(st.weight || 0),
+            qtyOut: Number(st.quantity || 0),
+            hppPerKg: Number(st.hppPerKg || 0),
+            kodeSimpan: st.kodeSimpan,
+            stockId: st.id,
+            notes: body.reason || null,
+            createdBy: session.user.email,
+          });
         }
       }
       return json({ data: { transactionId: txId, status: requiresApproval && !isAdmin ? 'pending' : 'confirmed', notification: subtype === 'damage' ? { to: ['supervisor', 'direktur'], subject: `Kerusakan/Susut Stock: ${totalW}kg` } : null } }, { status: 201 });
@@ -4639,10 +4744,11 @@ async function handleRoute(request, { params }) {
       const totalW = stocks.reduce((a, b) => a + Number(b.weight || 0), 0);
       const totalQ = stocks.reduce((a, b) => a + Number(b.quantity || 0), 0);
       const txId = uuidv4();
+      const transferBaNo = nextBaNumber('BA');
       db.insert(s.inventoryTransaction).values({
         id: txId, transactionDate: new Date(),
         transactionType: 'TRANSFER_CS',
-        baNumber: nextBaNumber('BA'), baType: 'transfer_cs',
+        baNumber: transferBaNo, baType: 'transfer_cs',
         fromColdStorageId: fromCsId, toColdStorageId: body.toColdStorageId,
         toZoneId: body.toZoneId || null,
         totalWeight: totalW, totalQuantity: totalQ,
@@ -4651,6 +4757,24 @@ async function handleRoute(request, { params }) {
       }).run();
       // Update stock location
       for (const st of stocks) {
+        recordLedger(db, {
+          ledgerDate: new Date(), productId: st.productId,
+          coldStorageId: fromCsId, zoneId: st.zoneId,
+          movementType: 'TRANSFER_OUT', referenceType: 'TRANSFER_CS',
+          referenceId: txId, referenceNumber: transferBaNo,
+          weightOut: Number(st.weight || 0), qtyOut: Number(st.quantity || 0),
+          hppPerKg: Number(st.hppPerKg || 0), kodeSimpan: st.kodeSimpan,
+          stockId: st.id, createdBy: session.user.email,
+        });
+        recordLedger(db, {
+          ledgerDate: new Date(), productId: st.productId,
+          coldStorageId: body.toColdStorageId, zoneId: body.toZoneId || null,
+          movementType: 'TRANSFER_IN', referenceType: 'TRANSFER_CS',
+          referenceId: txId, referenceNumber: transferBaNo,
+          weightIn: Number(st.weight || 0), qtyIn: Number(st.quantity || 0),
+          hppPerKg: Number(st.hppPerKg || 0), kodeSimpan: st.kodeSimpan,
+          stockId: st.id, createdBy: session.user.email,
+        });
         db.update(s.inventoryStock).set({
           coldStorageId: body.toColdStorageId,
           zoneId: body.toZoneId || null,
@@ -4876,6 +5000,27 @@ async function handleRoute(request, { params }) {
       // Apply adjustments to stock quantities/weights
       for (const it of items) {
         if (it.deltaQty !== 0 || it.deltaWeight !== 0) {
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+          const dw = Number(it.deltaWeight || 0);
+          const dq = Number(it.deltaQty || 0);
+          recordLedger(db, {
+            ledgerDate: new Date(),
+            productId: stk?.productId,
+            coldStorageId: op.coldStorageId,
+            zoneId: stk?.zoneId || null,
+            movementType: 'ADJ',
+            referenceType: 'OPNAME',
+            referenceId: id,
+            referenceNumber: op.opnameNumber,
+            weightIn: dw > 0 ? dw : 0,
+            weightOut: dw < 0 ? -dw : 0,
+            qtyIn: dq > 0 ? dq : 0,
+            qtyOut: dq < 0 ? -dq : 0,
+            hppPerKg: Number(stk?.hppPerKg || 0),
+            kodeSimpan: stk?.kodeSimpan || null,
+            stockId: it.stockId,
+            createdBy: op.createdBy,
+          });
           db.update(s.inventoryStock).set({
             quantity: Number(it.physicalQty),
             weight: Number(it.physicalWeight),
@@ -5218,6 +5363,67 @@ async function handleRoute(request, { params }) {
       const enriched = rows.map(r => ({ ...r, coldStorage: r.fromColdStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.fromColdStorageId)).get() : null }));
       const totalDamage = rows.filter(r => r.status === 'confirmed').reduce((a, b) => a + Number(b.totalWeight || 0), 0);
       return json({ data: { items: enriched, summary: { totalRows: rows.length, totalWeight: totalDamage } } });
+    }
+    // Kartu Stok (Stock Card) - per-product movement ledger with running balance
+    if (route === '/inventory-reports/stock-card' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const productId = url.searchParams.get('productId');
+      if (!productId) return err('productId required');
+      const csId = url.searchParams.get('coldStorageId') || null;
+      const fromStr = url.searchParams.get('from');
+      const toStr = url.searchParams.get('to');
+      const fromTs = fromStr ? new Date(`${fromStr}T00:00:00`).getTime() : null;
+      const toTs = toStr ? new Date(`${toStr}T23:59:59.999`).getTime() : null;
+      const conds = [eq(s.stockLedger.productId, productId)];
+      if (csId) conds.push(eq(s.stockLedger.coldStorageId, csId));
+      const allRows = db.select().from(s.stockLedger).where(and(...conds))
+        .orderBy(s.stockLedger.ledgerDate, s.stockLedger.createdAt).all();
+      // Opening balance = net of all rows strictly before `from`
+      let openW = 0, openQ = 0;
+      for (const r of allRows) {
+        const t = new Date(r.ledgerDate).getTime();
+        if (fromTs && t < fromTs) {
+          openW += Number(r.weightIn || 0) - Number(r.weightOut || 0);
+          openQ += Number(r.qtyIn || 0) - Number(r.qtyOut || 0);
+        }
+      }
+      const csCache = {};
+      const csOf = (cid) => {
+        if (!cid) return null;
+        if (csCache[cid] === undefined) csCache[cid] = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, cid)).get() || null;
+        return csCache[cid];
+      };
+      let runW = openW, runQ = openQ;
+      let totalInW = 0, totalOutW = 0, totalInQ = 0, totalOutQ = 0;
+      const movements = [];
+      for (const r of allRows) {
+        const t = new Date(r.ledgerDate).getTime();
+        if (fromTs && t < fromTs) continue;
+        if (toTs && t > toTs) continue;
+        const wIn = Number(r.weightIn || 0), wOut = Number(r.weightOut || 0);
+        const qIn = Number(r.qtyIn || 0), qOut = Number(r.qtyOut || 0);
+        runW += wIn - wOut; runQ += qIn - qOut;
+        totalInW += wIn; totalOutW += wOut; totalInQ += qIn; totalOutQ += qOut;
+        movements.push({ ...r, coldStorage: csOf(r.coldStorageId), balanceWeight: Math.round(runW * 1000) / 1000, balanceQty: Math.round(runQ * 1000) / 1000 });
+      }
+      const product = db.select().from(s.products).where(eq(s.products.id, productId)).get();
+      return json({ data: {
+        product: product ? { id: product.id, sku: product.sku, name: product.name, unit: product.unit, category: product.category } : null,
+        coldStorage: csId ? csOf(csId) : null,
+        opening: { weight: Math.round(openW * 1000) / 1000, qty: Math.round(openQ * 1000) / 1000 },
+        movements,
+        summary: {
+          totalInWeight: Math.round(totalInW * 1000) / 1000,
+          totalOutWeight: Math.round(totalOutW * 1000) / 1000,
+          totalInQty: Math.round(totalInQ * 1000) / 1000,
+          totalOutQty: Math.round(totalOutQ * 1000) / 1000,
+          closingWeight: Math.round(runW * 1000) / 1000,
+          closingQty: Math.round(runQ * 1000) / 1000,
+          count: movements.length,
+        },
+      } });
     }
     // ===================================================================== END REPORTS
 

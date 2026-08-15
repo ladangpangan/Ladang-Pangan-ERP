@@ -1,16 +1,166 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle, ScrollText } from 'lucide-react';
 import { format } from 'date-fns';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
+const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+const MOVE = {
+  IN: { label: 'Masuk', cls: 'bg-emerald-100 text-emerald-700' },
+  OUT: { label: 'Keluar', cls: 'bg-red-100 text-red-700' },
+  RETURN_IN: { label: 'Retur Masuk', cls: 'bg-emerald-100 text-emerald-700' },
+  TRANSFER_IN: { label: 'Transfer Masuk', cls: 'bg-blue-100 text-blue-700' },
+  TRANSFER_OUT: { label: 'Transfer Keluar', cls: 'bg-amber-100 text-amber-700' },
+  ADJ: { label: 'Penyesuaian', cls: 'bg-purple-100 text-purple-700' },
+  DAMAGE: { label: 'Rusak/Susut', cls: 'bg-rose-100 text-rose-700' },
+};
+
+const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+function StockCardTab() {
+  const now = new Date();
+  const [productId, setProductId] = useState('');
+  const [csId, setCsId] = useState('all');
+  const [from, setFrom] = useState(fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [to, setTo] = useState(fmtDate(now));
+
+  const products = useSWR('/api/products', fetcher);
+  const css = useSWR('/api/cold-storages', fetcher);
+
+  const qs = new URLSearchParams();
+  if (productId) qs.set('productId', productId);
+  if (csId && csId !== 'all') qs.set('coldStorageId', csId);
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  const card = useSWR(productId ? `/api/inventory-reports/stock-card?${qs.toString()}` : null, fetcher);
+  const d = card.data?.data;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2"><ScrollText className="w-4 h-4 text-indigo-600" />Kartu Stok</CardTitle>
+        <CardDescription>Riwayat pergerakan stok (masuk / keluar / transfer / penyesuaian) per produk dengan saldo berjalan</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="md:col-span-2">
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Produk</label>
+            <Select value={productId} onValueChange={setProductId}>
+              <SelectTrigger><SelectValue placeholder="Pilih produk…" /></SelectTrigger>
+              <SelectContent>
+                {(products.data?.data || []).map(p => (
+                  <SelectItem key={p.id} value={p.id}>{p.name} {p.sku ? `(${p.sku})` : ''}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Cold Storage</label>
+            <Select value={csId} onValueChange={setCsId}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Semua CS</SelectItem>
+                {(css.data?.data || []).map(c => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Dari</label>
+              <Input type="date" value={from} onChange={e => setFrom(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Sampai</label>
+              <Input type="date" value={to} onChange={e => setTo(e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        {!productId && <div className="py-10 text-center text-muted-foreground text-sm">Pilih produk untuk melihat kartu stok.</div>}
+
+        {productId && card.isLoading && <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
+
+        {productId && d && (
+          <>
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs uppercase text-muted-foreground">Saldo Awal</div><div className="text-xl font-bold">{kg(d.opening?.weight)} kg</div></div>
+              <div className="p-3 rounded-lg border bg-emerald-50"><div className="text-xs uppercase text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(d.summary?.totalInWeight)} kg</div></div>
+              <div className="p-3 rounded-lg border bg-red-50"><div className="text-xs uppercase text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(d.summary?.totalOutWeight)} kg</div></div>
+              <div className="p-3 rounded-lg border bg-indigo-50"><div className="text-xs uppercase text-indigo-700">Saldo Akhir</div><div className="text-xl font-bold text-indigo-700">{kg(d.summary?.closingWeight)} kg</div></div>
+            </div>
+
+            {/* Ledger table */}
+            <div className="rounded-lg border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tanggal</TableHead>
+                    <TableHead>Keterangan</TableHead>
+                    <TableHead>CS</TableHead>
+                    <TableHead className="text-right">Masuk</TableHead>
+                    <TableHead className="text-right">Keluar</TableHead>
+                    <TableHead className="text-right">Saldo</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow className="bg-muted/40">
+                    <TableCell colSpan={5} className="text-sm font-medium text-muted-foreground">Saldo Awal per {from ? format(new Date(from), 'dd MMM yyyy') : '-'}</TableCell>
+                    <TableCell className="text-right font-semibold">{kg(d.opening?.weight)} kg</TableCell>
+                  </TableRow>
+                  {(d.movements || []).length === 0 && (
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Tidak ada pergerakan pada periode ini</TableCell></TableRow>
+                  )}
+                  {(d.movements || []).map(m => {
+                    const mv = MOVE[m.movementType] || { label: m.movementType, cls: 'bg-slate-100 text-slate-700' };
+                    return (
+                      <TableRow key={m.id}>
+                        <TableCell className="text-sm whitespace-nowrap">{format(new Date(m.ledgerDate), 'dd MMM yyyy')}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Badge className={mv.cls}>{mv.label}</Badge>
+                            {m.referenceNumber && <span className="text-xs font-mono text-muted-foreground">{m.referenceNumber}</span>}
+                          </div>
+                          {(m.kodeSimpan || m.notes) && <div className="text-xs text-muted-foreground mt-0.5">{m.kodeSimpan ? `Kode: ${m.kodeSimpan}` : ''}{m.kodeSimpan && m.notes ? ' · ' : ''}{m.notes || ''}</div>}
+                        </TableCell>
+                        <TableCell className="text-sm">{m.coldStorage?.name || '-'}</TableCell>
+                        <TableCell className="text-right text-emerald-700 font-medium">{Number(m.weightIn || 0) > 0 ? `${kg(m.weightIn)}` : '-'}</TableCell>
+                        <TableCell className="text-right text-red-600 font-medium">{Number(m.weightOut || 0) > 0 ? `${kg(m.weightOut)}` : '-'}</TableCell>
+                        <TableCell className="text-right font-semibold">{kg(m.balanceWeight)}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                  {(d.movements || []).length > 0 && (
+                    <TableRow className="bg-indigo-50 font-semibold">
+                      <TableCell colSpan={3} className="text-sm">Saldo Akhir</TableCell>
+                      <TableCell className="text-right text-emerald-700">{kg(d.summary?.totalInWeight)}</TableCell>
+                      <TableCell className="text-right text-red-600">{kg(d.summary?.totalOutWeight)}</TableCell>
+                      <TableCell className="text-right text-indigo-700">{kg(d.summary?.closingWeight)}</TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function InventoryReports() {
   const byCs = useSWR('/api/inventory-reports/by-cs', fetcher);
@@ -21,12 +171,13 @@ export default function InventoryReports() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Link href="/dashboard"><Button variant="ghost" size="icon"><ArrowLeft className="w-5 h-5" /></Button></Link>
-        <div><h1 className="text-2xl font-bold flex items-center gap-2"><Boxes className="w-7 h-7 text-cyan-600" />Laporan Inventory</h1><p className="text-muted-foreground text-sm mt-1">Per CS/produk, mendekati expired, rekap rusak/susut</p></div>
+        <div><h1 className="text-2xl font-bold flex items-center gap-2"><Boxes className="w-7 h-7 text-cyan-600" />Laporan Inventory</h1><p className="text-muted-foreground text-sm mt-1">Per CS/produk, kartu stok, mendekati expired, rekap rusak/susut</p></div>
       </div>
       <Tabs defaultValue="cs">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="cs"><Warehouse className="w-4 h-4 mr-1" />Per CS</TabsTrigger>
           <TabsTrigger value="prod"><Package className="w-4 h-4 mr-1" />Per Produk</TabsTrigger>
+          <TabsTrigger value="card"><ScrollText className="w-4 h-4 mr-1" />Kartu Stok</TabsTrigger>
           <TabsTrigger value="exp"><Clock className="w-4 h-4 mr-1" />Near Expired</TabsTrigger>
           <TabsTrigger value="dmg"><AlertTriangle className="w-4 h-4 mr-1" />Rusak/Susut</TabsTrigger>
         </TabsList>
@@ -72,6 +223,10 @@ export default function InventoryReports() {
                     ))}
                   </TableBody></Table>}
             </CardContent></Card>
+        </TabsContent>
+
+        <TabsContent value="card">
+          <StockCardTab />
         </TabsContent>
 
         <TabsContent value="exp">
