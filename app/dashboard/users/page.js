@@ -47,7 +47,7 @@ export default function UsersPage() {
   // fetch current session user id
   const { data: meData } = useSWR('/api/me', fetcher);
   const currentUserId = meData?.user?.id;
-  const isAdmin = meData?.user?.role === 'admin';
+  const canManageUsers = ['admin', 'supervisor', 'direktur'].includes(meData?.user?.role);
 
   const filtered = (data?.data || []).filter(u => {
     if (!query) return true;
@@ -74,7 +74,7 @@ export default function UsersPage() {
           </h1>
           <p className="text-sm text-muted-foreground">Kelola akun pengguna ERP dan role akses (admin, supervisor, direktur, operator).</p>
         </div>
-        {isAdmin && (
+        {canManageUsers && (
           <Button onClick={() => setCreateOpen(true)} className="bg-emerald-600 hover:bg-emerald-700">
             <UserPlus className="w-4 h-4 mr-2" /> Tambah User
           </Button>
@@ -109,7 +109,7 @@ export default function UsersPage() {
               />
             </div>
             <div className="text-sm text-muted-foreground">Total: {users.length}</div>
-            {isAdmin && <ArchiveTabs value={view} onChange={setView} className="ml-auto" />}
+            {canManageUsers && <ArchiveTabs value={view} onChange={setView} className="ml-auto" />}
           </div>
         </CardHeader>
         <CardContent>
@@ -128,7 +128,7 @@ export default function UsersPage() {
                     <SortHead field="role" sort={sort}>Role</SortHead>
                     <SortHead field="status" sort={sort}>Status</SortHead>
                     <SortHead field="createdAt" sort={sort}>Dibuat</SortHead>
-                    {isAdmin && <TableHead className="text-right">Aksi</TableHead>}
+                    {canManageUsers && <TableHead className="text-right">Aksi</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -150,7 +150,7 @@ export default function UsersPage() {
                       <TableCell className="text-sm text-muted-foreground">
                         {u.createdAt ? format(new Date(u.createdAt * 1000 || u.createdAt), 'dd MMM yyyy') : '-'}
                       </TableCell>
-                      {isAdmin && (
+                      {canManageUsers && (
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
                             <Button size="icon" variant="ghost" title="Edit" onClick={() => setEditUser(u)}>
