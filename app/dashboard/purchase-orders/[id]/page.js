@@ -119,7 +119,7 @@ export default function PODetailPage() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard label="Total PO" value={`Rp ${Number(po.totalAmount).toLocaleString('id-ID')}`} sub="Termasuk ongkir" />
+        <SummaryCard label="Total PO" value={`Rp ${Number(po.totalAmount).toLocaleString('id-ID')}`} sub={(po.additionalCostBearer !== 'supplier' && (po.additionalCostPayMethod || 'utang') === 'utang' && Number(po.additionalCost) > 0) ? 'Termasuk ongkir (utang)' : 'Barang saja'} />
         <SummaryCard label="Sudah Dibayar" value={`Rp ${Number(po.paidAmount).toLocaleString('id-ID')}`} sub={`Status: ${po.paymentStatus}`} color="emerald" />
         <SummaryCard label="Total Retur" value={`Rp ${Number(po.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${po.returns?.length || 0} retur`} color="amber" />
         <SummaryCard label="Outstanding" value={`Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')}`} sub={po.paymentTerm || '-'} color={po.outstanding > 0 ? 'red' : 'slate'} />
@@ -150,6 +150,7 @@ export default function PODetailPage() {
 
         <TabsContent value="info" className="space-y-3">
           <InfoTab po={po} onSaved={mutate} canEdit={canEdit} />
+          <AdditionalCostCard po={po} onSaved={mutate} canEdit={canEdit} />
         </TabsContent>
         <TabsContent value="items"><ItemsTab po={po} onSaved={mutate} canEdit={canOperate} /></TabsContent>
         <TabsContent value="grn"><GrnTab po={po} onSaved={mutate} canOperate={canOperate} /></TabsContent>
@@ -180,7 +181,7 @@ function InfoTab({ po, onSaved, canEdit }) {
     ['Expected Date', po.expectedDate && format(new Date(po.expectedDate), 'dd MMM yyyy')],
     ['Payment Term', po.paymentTerm || '-'],
     ['DP', `Rp ${Number(po.dpAmount).toLocaleString('id-ID')}`],
-    ['Additional Cost', `Rp ${Number(po.additionalCost).toLocaleString('id-ID')}`],
+    ['Biaya Tambahan / Ongkir', `Rp ${Number(po.additionalCost).toLocaleString('id-ID')} · ${po.additionalCostBearer === 'supplier' ? 'ditanggung pemasok' : 'ditanggung kita'}`],
     ['Invoice Number', po.invoiceNumber || '-'],
     ['Invoice Date', po.invoiceDate && format(new Date(po.invoiceDate), 'dd MMM yyyy')],
     ['Due Date', po.dueDate && format(new Date(po.dueDate), 'dd MMM yyyy')],
@@ -198,6 +199,77 @@ function InfoTab({ po, onSaved, canEdit }) {
       </div>
       {po.notes && <div className="pt-3 border-t"><div className="text-xs text-muted-foreground mb-1">Catatan</div><div className="text-sm whitespace-pre-wrap">{po.notes}</div></div>}
     </CardContent></Card>
+  );
+}
+
+function AdditionalCostCard({ po, onSaved, canEdit }) {
+  const [cost, setCost] = useState(String(po.additionalCost || 0));
+  const [bearer, setBearer] = useState(po.additionalCostBearer || 'company');
+  const [payMethod, setPayMethod] = useState(po.additionalCostPayMethod || 'utang');
+  const [saving, setSaving] = useState(false);
+  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const locked = po.pipelineStatus === 'Selesai';
+  const editable = canEdit && !locked;
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/purchase-orders/${po.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ additionalCost: Number(cost || 0), additionalCostBearer: bearer, additionalCostPayMethod: payMethod }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Biaya tambahan disimpan');
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><Truck className="w-4 h-4" />Biaya Tambahan / Ongkir Pembelian</CardTitle>
+        <CardDescription>
+          <b>Ditanggung Pemasok</b> → tidak memengaruhi biaya/laba kita (netral). <b>Ditanggung Kita</b> → dicatat sebagai
+          <b> Beban Angkut Pembelian</b> (mengurangi laba), <b>tidak</b> masuk ke HPP barang.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <Label className="text-xs">Biaya Tambahan (Rp)</Label>
+            <CurrencyInput value={cost} onChange={v => setCost(v)} disabled={!editable} className="mt-1" placeholder="0" />
+          </div>
+          <div>
+            <Label className="text-xs">Ditanggung</Label>
+            <Select value={bearer} onValueChange={setBearer} disabled={!editable}>
+              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="company">Kita (perusahaan) — kurangi laba</SelectItem>
+                <SelectItem value="supplier">Pemasok — netral</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Dibayar via</Label>
+            <Select value={payMethod} onValueChange={setPayMethod} disabled={!editable || bearer === 'supplier'}>
+              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="utang">Utang ke Pemasok (masuk tagihan PO)</SelectItem>
+                <SelectItem value="transfer">Bank / Transfer (kurir/pihak ketiga)</SelectItem>
+                <SelectItem value="tunai">Kas Tunai (kurir/pihak ketiga)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <span className="text-xs text-muted-foreground">
+            {bearer === 'supplier'
+              ? <>Efek ke laba: <b className="text-emerald-700">Rp 0 (netral)</b></>
+              : <>Efek ke laba: <b className="text-red-600">-{rp(cost)}</b> (Beban Angkut){payMethod === 'utang' ? ' · menambah total/utang PO' : payMethod === 'tunai' ? ' · kas keluar tunai' : ' · transfer bank'}</>}
+          </span>
+          {editable && <Button size="sm" onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Biaya Tambahan</Button>}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -291,7 +363,8 @@ function GrnTab({ po, onSaved, canOperate }) {
     setOpen(true);
   };
   const updRow = (pid, field, val) => setRows(prev => prev.map(r => r.productId === pid ? { ...r, [field]: val } : r));
-  const previewTotal = rows.reduce((a, r) => a + Number(r.unitPrice || 0) * Number(r.receivedWeight || 0), 0) + Number(po.additionalCost || 0);
+  const addInTotal = (po.additionalCostBearer !== 'supplier' && (po.additionalCostPayMethod || 'utang') === 'utang');
+  const previewTotal = rows.reduce((a, r) => a + Number(r.unitPrice || 0) * Number(r.receivedWeight || 0), 0) + (addInTotal ? Number(po.additionalCost || 0) : 0);
 
   const create = async () => {
     setSaving(true);
@@ -364,7 +437,7 @@ function GrnTab({ po, onSaved, canOperate }) {
                       </div>
                     ))}
                   </div>
-                  <div className="text-xs text-muted-foreground mt-1.5">Total PO akan direvisi ke: <b className="text-foreground">{fmt(previewTotal)}</b> (harga × berat dikirim + biaya tambahan)</div>
+                  <div className="text-xs text-muted-foreground mt-1.5">Total PO akan direvisi ke: <b className="text-foreground">{fmt(previewTotal)}</b> (harga × berat dikirim{addInTotal ? ' + biaya tambahan (utang)' : ''})</div>
                 </div>
                 <F label="Catatan"><Textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></F>
               </div>
@@ -657,11 +730,11 @@ function HppTab({ po }) {
     <div className="space-y-4">
       <Card>
         <CardHeader><CardTitle className="text-base">Ringkasan HPP</CardTitle>
-          <CardDescription>HPP/kg dihitung dari <b>Rekonsiliasi Tally (berat diterima riil)</b>. Basis invoice terpilih: <b>{totals.invoiceWeightBasis === 'tally' ? 'Rekonsiliasi Tally' : 'Surat Jalan'}</b>. Susut = Berat Dikirim (SJ) − Berat Diterima (Tally).</CardDescription>
+          <CardDescription>HPP/kg dihitung dari <b>Rekonsiliasi Tally (berat diterima riil)</b>, <b>tanpa</b> biaya tambahan/ongkir. Basis invoice terpilih: <b>{totals.invoiceWeightBasis === 'tally' ? 'Rekonsiliasi Tally' : 'Surat Jalan'}</b>. Ongkir yang ditanggung kita dicatat sebagai <b>Beban Angkut Pembelian</b> (di luar HPP). Susut = Berat Dikirim (SJ) − Berat Diterima (Tally).</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
           <Stat label="Subtotal Items" value={`Rp ${Number(totals.subtotal).toLocaleString('id-ID')}`} />
-          <Stat label="Biaya Tambahan" value={`Rp ${Number(totals.additionalCost).toLocaleString('id-ID')}`} />
+          <Stat label={`Biaya Tambahan (${totals.additionalCostBearer === 'supplier' ? 'pemasok' : 'kita·beban'})`} value={`Rp ${Number(totals.additionalCost).toLocaleString('id-ID')}`} />
           <Stat label="Total HPP" value={`Rp ${Number(totals.totalHpp).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} highlight />
           <Stat label="Rata-rata HPP/kg" value={`Rp ${Number(totals.avgHppPerKg).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} highlight />
           <Stat label="Berat Ditagih (Invoice)" value={`${totals.totalWeightBilled} kg`} />

@@ -1714,13 +1714,11 @@ async function handleRoute(request, { params }) {
       const isLB = po.poType === 'Live Bird';
       const method = po.method || 'Timbang Ulang';
       const addCost = Number(po.additionalCost || 0);
-      // basis for proportional distribution = planned weight (or supplier weight if planned=0)
-      const totalPlanned = items.reduce((a, b) => a + Number(b.weight || b.weightSupplier || 0), 0) || 1;
+      const companyBorne = po.additionalCostBearer !== 'supplier';
+      const utangFreight = (companyBorne && (po.additionalCostPayMethod || 'utang') === 'utang') ? addCost : 0;
       let totalAmount = 0;
       let susutTotal = 0;
       for (const it of items) {
-        const planned = Number(it.weight || it.weightSupplier || 0);
-        const share = totalPlanned > 0 ? (planned / totalPlanned) * addCost : 0;
         // For Live Bird: determine invoice-weight (billed) & actual-weight (received)
         let weightBilled, weightActual;
         if (isLB) {
@@ -1737,17 +1735,17 @@ async function handleRoute(request, { params }) {
           weightActual = weightBilled;
         }
         const itemCost = Number(it.unitPrice) * weightBilled;
-        const hppTotal = itemCost + share;
-        const hppPerKg = weightActual > 0 ? hppTotal / weightActual : 0;
+        // Ongkir/biaya tambahan TIDAK dikapitalisasi ke HPP (dibebankan sbg Beban Angkut Pembelian)
+        const hppPerKg = weightActual > 0 ? itemCost / weightActual : 0;
         totalAmount += itemCost;
         if (isLB) {
           const s1 = Number(it.weightSupplier || 0);
           const s2 = Number(it.weightRph || 0);
           if (s1 > 0 && s2 > 0) susutTotal += Math.max(0, s1 - s2);
         }
-        db.update(s.purchaseOrderItems).set({ additionalCostShare: share, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
+        db.update(s.purchaseOrderItems).set({ additionalCostShare: 0, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
       }
-      const finalTotal = totalAmount + addCost;
+      const finalTotal = totalAmount + utangFreight; // ongkir hanya menambah total PO bila ditagih via Utang ke pemasok
       db.update(s.purchaseOrder).set({ totalAmount: finalTotal, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, poId)).run();
       return { totalAmount: finalTotal, susutTotal };
     };
@@ -1804,37 +1802,39 @@ async function handleRoute(request, { params }) {
         basis = ((basisArg || po.invoiceWeightBasis || 'shipped') === 'tally') ? 'tally' : 'shipped';
       }
       const addCost = Number(po.additionalCost || 0);
+      const companyBorne = po.additionalCostBearer !== 'supplier';
+      const utangFreight = (companyBorne && (po.additionalCostPayMethod || 'utang') === 'utang') ? addCost : 0;
       const soRecvMap = (po.isDropship && basis === 'so_receipt') ? getSoRecvMap(po.salesOrderId) : null;
       const billOf = (it) => {
         if (soRecvMap) return soRecvMap[it.productId] != null ? soRecvMap[it.productId] : poBillWeight(it, 'shipped');
         return poBillWeight(it, basis === 'grn' ? 'shipped' : basis);
       };
-      const totalBill = items.reduce((a, it) => a + billOf(it), 0) || 1;
       let subtotal = 0;
       for (const it of items) {
         const billW = billOf(it);
-        const share = totalBill > 0 ? (billW / totalBill) * addCost : 0;
         const itemCost = Number(it.unitPrice || 0) * billW;
         subtotal += itemCost;
-        // HPP/kg dari berat riil (tally bila ada, jika tidak = berat tagih)
+        // HPP/kg dari berat riil (tally bila ada, jika tidak = berat tagih). Ongkir TIDAK dikapitalisasi.
         const tallyW = Number(it.tallyWeight || 0) > 0 ? Number(it.tallyWeight) : billW;
-        const hppPerKg = tallyW > 0 ? (itemCost + share) / tallyW : 0;
-        db.update(s.purchaseOrderItems).set({ additionalCostShare: share, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
+        const hppPerKg = tallyW > 0 ? itemCost / tallyW : 0;
+        db.update(s.purchaseOrderItems).set({ additionalCostShare: 0, hppPerKg }).where(eq(s.purchaseOrderItems.id, it.id)).run();
       }
-      const finalTotal = Math.round((subtotal + addCost) * 100) / 100;
+      const finalTotal = Math.round((subtotal + utangFreight) * 100) / 100;
       db.update(s.purchaseOrder).set({ totalAmount: finalTotal, invoiceWeightBasis: basis, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, poId)).run();
       return { totalAmount: finalTotal, basis };
     };
     // Preview total for a given basis WITHOUT persisting (for UI selector)
     const previewPoTotal = (po, items, basis, soRecvMap) => {
       const addCost = Number(po.additionalCost || 0);
+      const companyBorne = po.additionalCostBearer !== 'supplier';
+      const utangFreight = (companyBorne && (po.additionalCostPayMethod || 'utang') === 'utang') ? addCost : 0;
       const subtotal = items.reduce((a, it) => {
         let w;
         if (basis === 'so_receipt' && soRecvMap) w = soRecvMap[it.productId] != null ? soRecvMap[it.productId] : poBillWeight(it, 'shipped');
         else w = poBillWeight(it, basis === 'grn' ? 'shipped' : basis);
         return a + Number(it.unitPrice || 0) * w;
       }, 0);
-      return Math.round((subtotal + addCost) * 100) / 100;
+      return Math.round((subtotal + utangFreight) * 100) / 100;
     };
 
     // GET /purchase-orders - list with filters
@@ -1885,6 +1885,8 @@ async function handleRoute(request, { params }) {
         isDropship: !!body.isDropship,
         dropshipCustomerId: body.dropshipCustomerId || null,
         additionalCost: Number(body.additionalCost || 0),
+        additionalCostBearer: ['company', 'supplier'].includes(body.additionalCostBearer) ? body.additionalCostBearer : 'company',
+        additionalCostPayMethod: ['tunai', 'transfer', 'utang'].includes(body.additionalCostPayMethod) ? body.additionalCostPayMethod : 'utang',
         dpAmount: Number(body.dpAmount || 0),
         paymentTerm: body.paymentTerm || null,
         notes: body.notes || null,
@@ -2012,7 +2014,7 @@ async function handleRoute(request, { params }) {
       // Method lock: if PO already has method set, cannot change
       if (existing.method && body.method && body.method !== existing.method) return err(`Metode timbang terkunci sebagai "${existing.method}"`);
       const update = {};
-      const fields = ['supplierId', 'poType', 'method', 'expectedDate', 'isDropship', 'dropshipCustomerId', 'additionalCost', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate'];
+      const fields = ['supplierId', 'poType', 'method', 'expectedDate', 'isDropship', 'dropshipCustomerId', 'additionalCost', 'additionalCostBearer', 'additionalCostPayMethod', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;
@@ -2353,6 +2355,8 @@ async function handleRoute(request, { params }) {
       const totals = {
         subtotal: rows.reduce((a, b) => a + b.itemCost, 0),
         additionalCost: Number(po.additionalCost || 0),
+        additionalCostBearer: po.additionalCostBearer || 'company',
+        additionalCostPayMethod: po.additionalCostPayMethod || 'utang',
         totalWeightBilled: rows.reduce((a, b) => a + b.weightBilled, 0),
         totalWeightActual: rows.reduce((a, b) => a + b.weightActual, 0),
         totalSusut: rows.reduce((a, b) => a + b.susut, 0),

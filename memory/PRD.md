@@ -113,3 +113,17 @@ transition add buyer shipping; SO detail returns buyerShipping/goodsRevenue and 
 sellerShipping. engine.salesProfitReport now excludes buyer shipping from revenue and subtracts seller shipping from GP.
 Invoice PDF shows a "Biaya Kirim" line when buyer-borne. Backend tested 5/5. Files: route.js, lib/accounting/engine.js,
 lib/pdf/invoice.js, lib/db/schema.js, lib/db/index.js, app/dashboard/sales-orders/[id]/page.js.
+
+## PO "Biaya Tambahan / Ongkir" bearer + expense treatment — added 2026-02
+User-confirmed: PO additional_cost now has bearer + pay method and is EXPENSED (not capitalized to HPP).
+New columns purchase_order.additional_cost_bearer ('company'|'supplier', default company) and
+additional_cost_pay_method ('utang'|'transfer'|'tunai', default utang). Rules:
+- bearer='supplier' => neutral (not in total, not in HPP, no journal).
+- bearer='company' => Beban Angkut Pembelian (NEW account 5-1300, COGS section) => reduces profit; NOT in HPP.
+  - pay_method='utang' => added to total_amount; PO_INV journal Dr Persediaan(goods)+Dr 5-1300(freight)/Cr Utang(total).
+  - pay_method='transfer'|'tunai' => not in total; separate PO_SHIP journal Dr 5-1300 / Cr Bank|Kas.
+recalcPoHpp/computePoInvoice/previewPoTotal no longer fold additional_cost into hpp_per_kg (share=0). seedAccounting
+now idempotently inserts missing COA accounts. Frontend: PO create form selectors + PO detail Info-tab
+"Biaya Tambahan / Ongkir Pembelian" card. PO PDF shows the freight line only when in total (company+utang).
+Backend tested 5/5. Files: route.js, lib/accounting/engine.js, lib/pdf/invoice.js, lib/db/schema.js, lib/db/index.js,
+app/dashboard/purchase-orders/page.js, app/dashboard/purchase-orders/[id]/page.js.
