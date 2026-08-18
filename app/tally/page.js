@@ -54,6 +54,20 @@ export default function TallyHomePage() {
         </CardContent>
       </Card>
 
+      {/* Mulai Inbound Gudang (Tally) — entry point untuk operator */}
+      <Link href="/tally/inbound" className="block mb-4">
+        <Card className="border-emerald-300 bg-gradient-to-br from-emerald-600 to-emerald-700 text-white hover:shadow-md transition-shadow cursor-pointer">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackagePlus className="w-6 h-6" /></div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold">Inbound Gudang (Tally)</div>
+              <div className="text-xs text-white/90">Simpan barang masuk ke inventory — dari PO (Tally), Work Order, atau Manual</div>
+            </div>
+            <ChevronRight className="w-5 h-5 shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
+
       {/* Tally Inbound draft yang bisa dilanjutkan */}
       {drafts.length > 0 && (
         <Card className="mb-4 border-amber-200 bg-amber-50/40">
