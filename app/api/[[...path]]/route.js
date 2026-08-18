@@ -121,6 +121,20 @@ function generateContactCode(db, category) {
   return code;
 }
 
+// MongoDB-authoritative variant used by the migrated /contacts endpoints (async).
+async function generateContactCodeMongo(category) {
+  const prefix = CONTACT_CODE_PREFIX[category] || 'CT';
+  const codes = await md.mdPluck(md.MD.contacts, 'code');
+  const existing = new Set(codes);
+  const re = new RegExp('^' + prefix + '-(\\d+)$');
+  let max = 0;
+  for (const c of codes) { const m = re.exec(c || ''); if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; } }
+  let n = max + 1;
+  let code = `${prefix}-${String(n).padStart(3, '0')}`;
+  while (existing.has(code)) { n++; code = `${prefix}-${String(n).padStart(3, '0')}`; }
+  return code;
+}
+
 // Root dir for uploaded contact documents (persistent, same volume as erp.db)
 const CONTACT_DOCS_ROOT = nodePath.join(process.cwd(), 'data', 'uploads', 'contacts');
 const ALLOWED_DOC_TYPES = ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya'];
@@ -195,7 +209,7 @@ async function handleRoute(request, { params }) {
       try {
         const archivedAt = isArchive ? new Date() : null;
         // Master data (products/cold-storages) are Mongo-authoritative -> update Mongo first, mirror SQLite.
-        const mdCol = path[0] === 'products' ? md.MD.products : (path[0] === 'cold-storages' ? md.MD.coldStorages : null);
+        const mdCol = path[0] === 'products' ? md.MD.products : (path[0] === 'cold-storages' ? md.MD.coldStorages : (path[0] === 'contacts' ? md.MD.contacts : null));
         if (mdCol) { try { await md.mdUpdate(mdCol, id, { archivedAt, updatedAt: new Date() }); } catch (e) { /* mirror below */ } }
         db.update(tbl).set({ archivedAt, updatedAt: new Date() }).where(eq(tbl.id, id)).run();
         return json({ ok: true, archived: isArchive });
@@ -1008,18 +1022,14 @@ async function handleRoute(request, { params }) {
       const url = new URL(request.url);
       const type = url.searchParams.get('type');
       const q = url.searchParams.get('q');
-      let query = db.select().from(s.contacts);
-      const conds = [];
-      { const ac = archivedCond(s.contacts, url); if (ac) conds.push(ac); }
-      if (q) conds.push(or(
-        like(s.contacts.displayName, `%${q}%`),
-        like(s.contacts.code, `%${q}%`),
-        like(s.contacts.companyName, `%${q}%`),
-        like(s.contacts.phone, `%${q}%`),
-        like(s.contacts.picPhone, `%${q}%`),
-      ));
-      if (conds.length) query = query.where(and(...conds));
-      let rows = query.orderBy(desc(s.contacts.createdAt)).all().map(withCategories);
+      const filter = { ...md.mdArchivedFilter(url.searchParams.get('archived')) };
+      if (q) {
+        const rx = { $regex: q, $options: 'i' };
+        filter.$or = [
+          { displayName: rx }, { code: rx }, { companyName: rx }, { phone: rx }, { picPhone: rx },
+        ];
+      }
+      let rows = (await md.mdList(md.MD.contacts, { filter, sort: { createdAt: -1 } })).map(withCategories);
       // Multi-category filter: match if the requested type is among the contact's categories
       if (type && type !== 'all') rows = rows.filter(r => r.categories.includes(type));
       return json({ data: rows });
@@ -1028,7 +1038,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const category = new URL(request.url).searchParams.get('category') || 'Customer';
-      return json({ code: generateContactCode(db, category) });
+      return json({ code: await generateContactCodeMongo(category) });
     }
     if (route === '/contacts' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -1037,8 +1047,12 @@ async function handleRoute(request, { params }) {
       const cats = categoriesFromBody(body);
       if (!cats || !body.displayName) return err('categories (minimal 1) & displayName required');
       const now = new Date();
+      delete body.id; delete body.createdAt;
       // Auto-generate code if not provided (editable by user before submit)
-      if (!body.code || !String(body.code).trim()) body.code = generateContactCode(db, cats[0]);
+      if (!body.code || !String(body.code).trim()) body.code = await generateContactCodeMongo(cats[0]);
+      // Unique code (Mongo authoritative)
+      const dup = await md.mdFindOne(md.MD.contacts, { code: body.code });
+      if (dup) return err(`Kode "${body.code}" sudah digunakan`, 409);
       // Derive backward-compatible fields from categories
       const derived = {
         contactType: cats[0],
@@ -1046,9 +1060,10 @@ async function handleRoute(request, { params }) {
         isAgent: cats.includes('Agen'),
         isDropshipper: cats.includes('Dropshipper'),
       };
-      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body, ...derived };
+      const row = { id: uuidv4(), ...body, ...derived, archivedAt: body.archivedAt ?? null, createdAt: now, updatedAt: now };
       try {
-        db.insert(s.contacts).values(row).run();
+        await md.mdInsert(md.MD.contacts, row);
+        try { db.insert(s.contacts).values(row).run(); } catch (e) { console.error('[contacts] SQLite mirror insert failed:', e?.message || e); }
         return json({ data: withCategories(row) }, { status: 201 });
       } catch (e) { return err('Failed to create: ' + e.message); }
     }
@@ -1057,7 +1072,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
-      const contact = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      const contact = await md.mdGet(md.MD.contacts, id);
       if (!contact) return err('Contact not found', 404);
       const salesOrders = db.select().from(s.salesOrder).where(eq(s.salesOrder.customerId, id)).orderBy(desc(s.salesOrder.orderDate)).all();
       const purchaseOrders = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.supplierId, id)).orderBy(desc(s.purchaseOrder.orderDate)).all();
@@ -1093,7 +1108,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
-      const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      const row = await md.mdGet(md.MD.contacts, id);
       if (!row) return err('Not found', 404);
       return json({ data: withCategories(row) });
     }
@@ -1113,15 +1128,31 @@ async function handleRoute(request, { params }) {
       } else {
         delete body.categories; // avoid writing a bad value
       }
-      db.update(s.contacts).set({ ...body, updatedAt: new Date() }).where(eq(s.contacts.id, id)).run();
-      const row = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      const patch = { ...body, updatedAt: new Date() };
+      const row = await md.mdUpdate(md.MD.contacts, id, patch);
+      if (!row) return err('Not found', 404);
+      try { db.update(s.contacts).set(patch).where(eq(s.contacts.id, id)).run(); } catch (e) { console.error('[contacts] SQLite mirror update failed:', e?.message || e); }
       return json({ data: withCategories(row) });
     }
     if (route.startsWith('/contacts/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
       const id = path[1];
-      db.delete(s.contacts).where(eq(s.contacts.id, id)).run();
+      const contact = await md.mdGet(md.MD.contacts, id);
+      if (!contact) return err('Kontak tidak ditemukan', 404);
+      // Guard: kontak yang sudah dipakai transaksi / sub-data tidak boleh dihapus (jaga integritas)
+      const refs = [
+        ['Sales Order', db.select().from(s.salesOrder).where(eq(s.salesOrder.customerId, id)).all().length],
+        ['Purchase Order', db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.supplierId, id)).all().length],
+        ['Pelanggan Akhir', db.select().from(s.contactCustomers).where(eq(s.contactCustomers.parentContactId, id)).all().length],
+        ['Komisi', db.select().from(s.commissionRecords).where(eq(s.commissionRecords.dropshipperId, id)).all().length],
+      ].filter(([, n]) => n > 0);
+      if (refs.length > 0) {
+        const detail = refs.map(([name, n]) => `${name} (${n})`).join(', ');
+        return err(`Kontak "${contact.displayName}" sudah dipakai: ${detail}. Tidak dapat dihapus. Arsipkan untuk menonaktifkan.`, 409);
+      }
+      await md.mdDelete(md.MD.contacts, id);
+      try { db.delete(s.contacts).where(eq(s.contacts.id, id)).run(); } catch (e) { console.error('[contacts] SQLite mirror delete failed:', e?.message || e); }
       return json({ ok: true });
     }
 
@@ -1588,7 +1619,7 @@ async function handleRoute(request, { params }) {
       const cnt = (t) => Number(db.select({ c: sql`count(*)` }).from(t).get()?.c || 0);
       const userCount = await authUsers.countUsers();
       return json({
-        contacts: cnt(s.contacts),
+        contacts: await md.mdCount(md.MD.contacts),
         products: await md.mdCount(md.MD.products, md.mdArchivedFilter()),
         coldStorages: await md.mdCount(md.MD.coldStorages, md.mdArchivedFilter()),
         zones: await md.mdCount(md.MD.zones),
