@@ -62,6 +62,19 @@ Atlas MONGO_URL. Backend tested 9/9 pass; deployment agent PASS. NEEDS REDEPLOY.
 (business data still SQLite = per-pod). Deployment: removed .env from .gitignore per Emergent requirement; removed
 MONGO_URL from .env (uses injected Atlas in prod, localhost fallback in preview).
 
+## PROD FIX — MongoDB "not authorized on erp_prod" (deploy) — 2026-02
+Root cause: `lib/db/mongo.js` resolved the DB name WITHOUT reading `process.env.DB_NAME`, so in production it fell
+back to `erp_prod` where the Emergent-injected Atlas user is NOT authorized → Better Auth seed/login + master-data
+ops failed ("not authorized on erp_prod ... find: user"). Meanwhile `lib/db/persistence.js` DID read `DB_NAME`, so the
+SQLite GridFS restore succeeded on the correct DB (explaining the contradictory logs). FIX: `mongo.js` now resolves
+`safeDbName(MONGO_DB_NAME) || safeDbName(DB_NAME) || safeDbName(dbNameFromUrl) || 'erp_prod'` — identical to
+persistence.js. All Mongo access (auth.js, users.js, seed-users.js, masterdata.js) goes through getMongoDb() so the
+single fix propagates. Preview unaffected (no DB_NAME → localhost erp_prod). REQUIRES REDEPLOY to take effect in prod.
+NOTE: Better Auth "Base URL is not set" is a non-fatal warning (login works via dynamic origin); optionally set
+BETTER_AUTH_URL=https://erp.ladangpangan.id in prod env to silence it. IMPORTANT: keep prod at 1 REPLICA — auth &
+master data are shared in Mongo, but transactions still live in per-pod SQLite (file backed up to GridFS), so 2+
+replicas would diverge/lose transaction data until transactions are migrated to Mongo.
+
 ## Credentials
 Admin: `admin@lpi.co.id` / `admin123` (see `/app/memory/test_credentials.md`).
 
