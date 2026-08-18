@@ -64,3 +64,15 @@ MONGO_URL from .env (uses injected Atlas in prod, localhost fallback in preview)
 
 ## Credentials
 Admin: `admin@lpi.co.id` / `admin123` (see `/app/memory/test_credentials.md`).
+
+## Phase 2 — Master Data migrated to MongoDB (DUAL-WRITE) — added 2026-02
+Master data `products`, `cold_storages`, `zones` are now MongoDB-authoritative (db `erp_prod`) with a DUAL-WRITE
+mirror to local SQLite so un-migrated transaction modules keep working. Docs use the UUID as Mongo `_id` (same id
+shared with SQLite + all transaction rows). Reads for these CRUD endpoints come from Mongo; every write
+(POST/PATCH/DELETE + archive/restore) writes Mongo first then mirrors to SQLite via Drizzle. One-time forward
+backfill SQLite->Mongo runs on boot when a Mongo collection is empty (ran: products=52, cold_storages=1, zones=23).
+`/stats` now counts these from Mongo. New file: `lib/db/masterdata.js` (mdList/mdGet/mdInsert/mdUpdate/mdDelete/
+mdDeleteMany/mdCount/mdArchivedFilter + ensureMasterSync). route.js: rewrote products/cold-storages/zones handlers,
+archive handler mirrors archive to Mongo, cold-storage delete cascades zones in Mongo. Backend tested — all pass,
+seeded counts restored after cleanup. LIMITATION: transactions still read master data from the per-pod SQLite mirror,
+so keep prod at 1 replica until transactions are migrated (Phase 2 continued). Next: contacts, then transactions.
