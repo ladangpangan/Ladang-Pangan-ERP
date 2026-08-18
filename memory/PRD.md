@@ -51,5 +51,16 @@ Read API: `GET /api/inventory-reports/stock-card?productId=&coldStorageId=&from=
 with running balance, and summary. UI: 5th tab "Kartu Stok" in `/dashboard/inventory-reports` (product/CS/date filters,
 summary cards, ledger table). Backend tested 7/7 pass. Table auto-creates on prod boot (needs redeploy to appear in prod).
 
+## Phase 1 — Auth/Sessions migrated to MongoDB — added 2026-02
+Fixes production multi-replica 401 "Unauthorized": Better Auth now uses `mongodbAdapter` (shared MongoDB) instead of
+per-pod SQLite. Users/sessions/accounts live in MongoDB (collections user/account/session). Business data still SQLite.
+Key files: lib/db/mongo.js (shared MongoClient, safe db-name), lib/auth/auth.js (mongodbAdapter, transaction:false),
+lib/auth/users.js (Mongo user helpers + sync recipient cache), lib/auth/seed-users.js (seed 4 team users, idempotent),
+lib/db/boot.js (seed + cache prime), route.js (all /users endpoints + createNotification + /stats + profile -> Mongo),
+lib/db/index.js (dropped SQLite FK notifications.user_id). Preview Mongo: localhost:27017 (db erp_prod); prod: injected
+Atlas MONGO_URL. Backend tested 9/9 pass; deployment agent PASS. NEEDS REDEPLOY. Keep prod at 1 replica until Phase 2
+(business data still SQLite = per-pod). Deployment: removed .env from .gitignore per Emergent requirement; removed
+MONGO_URL from .env (uses injected Atlas in prod, localhost fallback in preview).
+
 ## Credentials
 Admin: `admin@lpi.co.id` / `admin123` (see `/app/memory/test_credentials.md`).

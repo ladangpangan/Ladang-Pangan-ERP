@@ -6,6 +6,7 @@ import { eq, and, like, or, ne, desc, sql, inArray, isNotNull, isNull } from 'dr
 import { getDb, getRawSqlite } from '@/lib/db';
 import * as s from '@/lib/db/schema';
 import { getAuth } from '@/lib/auth/auth';
+import * as authUsers from '@/lib/auth/users';
 import { headers } from 'next/headers';
 import { runAgent, executeAction, canWrite } from '@/lib/ai/erp-agent';
 import * as acct from '@/lib/accounting/engine';
@@ -174,11 +175,18 @@ async function handleRoute(request, { params }) {
       const cfg = ARCHIVABLE[path[0]];
       if (!requireRole(session, cfg.roles)) return err('Forbidden', 403);
       const id = path[1];
+      const isArchive = path[2] === 'archive';
+      // Users live in MongoDB (Better Auth) — archive/restore there, not SQLite.
+      if (path[0] === 'users') {
+        if (id === session.user.id) return err('Tidak bisa mengarsipkan akun sendiri', 400);
+        const u = await authUsers.findUserRawById(id);
+        if (!u) return err('Data tidak ditemukan', 404);
+        await authUsers.updateUserById(id, { archivedAt: isArchive ? new Date() : null });
+        return json({ ok: true, archived: isArchive });
+      }
       const tbl = cfg.table;
       const existing = db.select().from(tbl).where(eq(tbl.id, id)).get();
       if (!existing) return err('Data tidak ditemukan', 404);
-      if (path[0] === 'users' && id === session.user.id) return err('Tidak bisa mengarsipkan akun sendiri', 400);
-      const isArchive = path[2] === 'archive';
       try {
         db.update(tbl).set({ archivedAt: isArchive ? new Date() : null, updatedAt: new Date() }).where(eq(tbl.id, id)).run();
         return json({ ok: true, archived: isArchive });
@@ -561,7 +569,7 @@ async function handleRoute(request, { params }) {
     const createNotification = ({ roles = ['supervisor', 'direktur'], type = 'info', category, title, message, entityType, entityId, entityNumber, linkPath, refApprovalId, priority = 'normal' }) => {
       try {
         if (!Array.isArray(roles) || roles.length === 0) return;
-        const recipients = db.select({ id: s.user.id, status: s.user.status }).from(s.user).where(inArray(s.user.role, roles)).all();
+        const recipients = authUsers.getCachedRecipients(roles);
         const now = new Date();
         for (const r of recipients) {
           if (r.status && r.status !== 'active') continue;
@@ -688,14 +696,13 @@ async function handleRoute(request, { params }) {
 
     // ---------- SEED (idempotent) ----------
     if (route === '/seed' && method === 'POST') {
-      const auth = getAuth();
-      // Only allow if no admin exists yet, otherwise no-op
-      const existing = db.select().from(s.user).where(eq(s.user.role, 'admin')).all();
-      if (existing.length > 0) {
+      // Only allow if no admin exists yet, otherwise no-op (users live in MongoDB now)
+      const existingAdmins = await authUsers.findUsersByRoles(['admin']);
+      if (existingAdmins.length > 0) {
         return json({ ok: true, seeded: false, message: 'Admin already exists' });
       }
 
-      // Create default users via better-auth
+      // Create default users via better-auth (MongoDB)
       const defaults = [
         { email: 'admin@lpi.co.id', name: 'Administrator', password: 'admin123', role: 'admin' },
         { email: 'supervisor@lpi.co.id', name: 'Supervisor Ops', password: 'super123', role: 'supervisor' },
@@ -705,12 +712,8 @@ async function handleRoute(request, { params }) {
       const created = [];
       for (const u of defaults) {
         try {
-          const res = await auth.api.signUpEmail({
-            body: { email: u.email, password: u.password, name: u.name, role: u.role, status: 'active' },
-          });
+          await authUsers.createUser({ name: u.name, email: u.email, password: u.password, role: u.role, status: 'active' });
           created.push({ email: u.email, ok: true });
-          // Ensure role is set (better-auth may ignore additional fields on sign-up)
-          db.update(s.user).set({ role: u.role, status: 'active' }).where(eq(s.user.email, u.email)).run();
         } catch (e) {
           created.push({ email: u.email, error: String(e?.message || e) });
         }
@@ -901,10 +904,7 @@ async function handleRoute(request, { params }) {
       if (error) return error;
       if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const url = new URL(request.url);
-      const ac = archivedCond(s.user, url);
-      let uq = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, archivedAt: s.user.archivedAt, createdAt: s.user.createdAt }).from(s.user);
-      if (ac) uq = uq.where(ac);
-      const rows = uq.orderBy(desc(s.user.createdAt)).all();
+      const rows = await authUsers.listUsers(url.searchParams.get('archived'));
       return json({ data: rows });
     }
 
@@ -919,14 +919,11 @@ async function handleRoute(request, { params }) {
       if (!['admin', 'supervisor', 'direktur', 'operator'].includes(role)) return err('Invalid role');
       if (String(password).length < 6) return err('Password minimal 6 karakter');
       // Check duplicate email
-      const existing = db.select().from(s.user).where(eq(s.user.email, email)).all();
-      if (existing.length > 0) return err('Email sudah terdaftar');
+      const existing = await authUsers.findUserRawByEmail(email);
+      if (existing) return err('Email sudah terdaftar');
       try {
-        const auth = getAuth();
-        await auth.api.signUpEmail({ body: { email, password, name } });
-        db.update(s.user).set({ role, status, updatedAt: new Date() }).where(eq(s.user.email, email)).run();
-        const created = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).where(eq(s.user.email, email)).all();
-        return json({ data: created[0] }, { status: 201 });
+        const created = await authUsers.createUser({ name, email, password, role, status });
+        return json({ data: created }, { status: 201 });
       } catch (e) {
         return err('Gagal membuat user: ' + String(e?.message || e), 400);
       }
@@ -939,10 +936,11 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
-      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
-      if (target.length === 0) return err('User tidak ditemukan', 404);
+      const targetRaw = await authUsers.findUserRawById(id);
+      if (!targetRaw) return err('User tidak ditemukan', 404);
+      const target = authUsers.serializeUser(targetRaw);
       // Prevent self-demote/deactivate to avoid lockout
-      if (target[0].id === session.user.id && (body.role && body.role !== target[0].role || body.status && body.status !== 'active')) {
+      if (target.id === session.user.id && ((body.role && body.role !== target.role) || (body.status && body.status !== 'active'))) {
         return err('Tidak bisa mengubah role/status akun sendiri', 400);
       }
       const upd = {};
@@ -956,10 +954,9 @@ async function handleRoute(request, { params }) {
         upd.status = body.status;
       }
       if (Object.keys(upd).length === 0) return err('Tidak ada field yang diubah');
-      upd.updatedAt = new Date();
-      db.update(s.user).set(upd).where(eq(s.user.id, id)).run();
-      const updated = db.select({ id: s.user.id, name: s.user.name, email: s.user.email, role: s.user.role, status: s.user.status, createdAt: s.user.createdAt }).from(s.user).where(eq(s.user.id, id)).all();
-      return json({ data: updated[0] });
+      await authUsers.updateUserById(id, upd);
+      const updated = authUsers.serializeUser(await authUsers.findUserRawById(id));
+      return json({ data: updated });
     }
 
     // POST /users/:id/reset-password - reset password (supervisor/direktur)
@@ -971,19 +968,11 @@ async function handleRoute(request, { params }) {
       const body = await request.json();
       const { newPassword } = body || {};
       if (!newPassword || String(newPassword).length < 6) return err('Password minimal 6 karakter');
-      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
-      if (target.length === 0) return err('User tidak ditemukan', 404);
+      const targetRaw = await authUsers.findUserRawById(id);
+      if (!targetRaw) return err('User tidak ditemukan', 404);
       try {
-        // better-auth stores password hash in account table with providerId='credential'
-        const bcrypt = await import('better-auth/crypto').catch(() => null);
-        // Better-auth exposes its context; simplest approach: update via drizzle using its hash function
-        const authCtx = getAuth().$context ? await getAuth().$context : null;
-        const hashed = authCtx?.password?.hash ? await authCtx.password.hash(newPassword) : null;
-        if (!hashed) throw new Error('Hash function not available');
-        db.update(s.account)
-          .set({ password: hashed, updatedAt: new Date() })
-          .where(and(eq(s.account.userId, id), eq(s.account.providerId, 'credential')))
-          .run();
+        const ok = await authUsers.resetUserPassword(id, newPassword);
+        if (!ok) throw new Error('Credential account not found');
         return json({ ok: true });
       } catch (e) {
         return err('Gagal reset password: ' + String(e?.message || e), 500);
@@ -997,10 +986,9 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       if (id === session.user.id) return err('Tidak bisa menghapus akun sendiri', 400);
-      const target = db.select().from(s.user).where(eq(s.user.id, id)).all();
-      if (target.length === 0) return err('User tidak ditemukan', 404);
-      // Cascade will remove session and account rows via FK
-      db.delete(s.user).where(eq(s.user.id, id)).run();
+      const targetRaw = await authUsers.findUserRawById(id);
+      if (!targetRaw) return err('User tidak ditemukan', 404);
+      await authUsers.deleteUserById(id);
       return json({ ok: true });
     }
 
@@ -1567,12 +1555,13 @@ async function handleRoute(request, { params }) {
     if (route === '/stats' && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const cnt = (t) => Number(db.select({ c: sql`count(*)` }).from(t).get()?.c || 0);
+      const userCount = await authUsers.countUsers();
       return json({
         contacts: cnt(s.contacts),
         products: cnt(s.products),
         coldStorages: cnt(s.coldStorages),
         zones: cnt(s.zones),
-        users: cnt(s.user),
+        users: userCount,
         purchaseOrders: cnt(s.purchaseOrder),
       });
     }
@@ -4672,7 +4661,7 @@ async function handleRoute(request, { params }) {
       const body = await request.json().catch(() => ({}));
       const name = String(body.name || '').trim();
       if (!name) return err('Nama wajib diisi');
-      db.update(s.user).set({ name, updatedAt: new Date() }).where(eq(s.user.id, session.user.id)).run();
+      await authUsers.updateUserById(session.user.id, { name });
       return json({ data: { id: session.user.id, name } });
     }
 
