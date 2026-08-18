@@ -10,9 +10,8 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle, ScrollText, History } from 'lucide-react';
+import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle, ScrollText } from 'lucide-react';
 import { format } from 'date-fns';
-import StockLogbookPanel from './stock-logbook-panel';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -31,36 +30,44 @@ const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2
 
 function StockCardTab() {
   const now = new Date();
-  const [productId, setProductId] = useState('');
+  const [productId, setProductId] = useState('all');
   const [csId, setCsId] = useState('all');
+  const [mType, setMType] = useState('all');
   const [from, setFrom] = useState(fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)));
   const [to, setTo] = useState(fmtDate(now));
 
   const products = useSWR('/api/products', fetcher);
   const css = useSWR('/api/cold-storages', fetcher);
 
+  const isCard = productId && productId !== 'all';
+
+  // Mode Kartu Stok (1 produk) — dengan saldo berjalan
   const qs = new URLSearchParams();
-  if (productId) qs.set('productId', productId);
-  if (csId && csId !== 'all') qs.set('coldStorageId', csId);
-  if (from) qs.set('from', from);
-  if (to) qs.set('to', to);
-  const card = useSWR(productId ? `/api/inventory-reports/stock-card?${qs.toString()}` : null, fetcher);
+  if (isCard) { qs.set('productId', productId); if (csId !== 'all') qs.set('coldStorageId', csId); if (from) qs.set('from', from); if (to) qs.set('to', to); }
+  const card = useSWR(isCard ? `/api/inventory-reports/stock-card?${qs.toString()}` : null, fetcher);
   const d = card.data?.data;
+
+  // Mode Logbook (semua produk) — lalu lintas stok tanpa saldo berjalan
+  const logQs = new URLSearchParams();
+  if (!isCard) { if (csId !== 'all') logQs.set('coldStorageId', csId); if (mType !== 'all') logQs.set('movementType', mType); if (from) logQs.set('from', from); if (to) logQs.set('to', to); logQs.set('limit', '500'); }
+  const log = useSWR(!isCard ? `/api/stock-ledger?${logQs.toString()}` : null, fetcher, { keepPreviousData: true });
+  const ld = log.data?.data;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2"><ScrollText className="w-4 h-4 text-indigo-600" />Kartu Stok</CardTitle>
-        <CardDescription>Riwayat pergerakan stok (masuk / keluar / transfer / penyesuaian) per produk dengan saldo berjalan</CardDescription>
+        <CardDescription>Pilih <b>Semua Produk</b> untuk melihat logbook lalu lintas stok semua produk; pilih <b>1 produk</b> untuk kartu stok lengkap dengan saldo awal, saldo berjalan &amp; saldo akhir.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Filters */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
           <div className="md:col-span-2">
             <label className="text-xs font-medium text-muted-foreground mb-1 block">Produk</label>
             <Select value={productId} onValueChange={setProductId}>
-              <SelectTrigger><SelectValue placeholder="Pilih produk…" /></SelectTrigger>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="all">Semua Produk (Logbook)</SelectItem>
                 {(products.data?.data || []).map(p => (
                   <SelectItem key={p.id} value={p.id}>{p.name} {p.sku ? `(${p.sku})` : ''}</SelectItem>
                 ))}
@@ -79,23 +86,82 @@ function StockCardTab() {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Dari</label>
-              <Input type="date" value={from} onChange={e => setFrom(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Sampai</label>
-              <Input type="date" value={to} onChange={e => setTo(e.target.value)} />
-            </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Jenis</label>
+            <Select value={mType} onValueChange={setMType} disabled={isCard}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Semua jenis</SelectItem>
+                {Object.keys(MOVE).map(k => <SelectItem key={k} value={k}>{MOVE[k].label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Dari</label>
+            <Input type="date" value={from} onChange={e => setFrom(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Sampai</label>
+            <Input type="date" value={to} onChange={e => setTo(e.target.value)} />
           </div>
         </div>
 
-        {!productId && <div className="py-10 text-center text-muted-foreground text-sm">Pilih produk untuk melihat kartu stok.</div>}
+        {/* MODE LOGBOOK — semua produk (tanpa saldo berjalan) */}
+        {!isCard && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg border bg-emerald-50"><div className="text-xs uppercase text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(ld?.summary?.totalInWeight)} kg</div></div>
+              <div className="p-3 rounded-lg border bg-red-50"><div className="text-xs uppercase text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(ld?.summary?.totalOutWeight)} kg</div></div>
+              <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs uppercase text-muted-foreground">Selisih (Net)</div><div className="text-xl font-bold">{kg((ld?.summary?.totalInWeight || 0) - (ld?.summary?.totalOutWeight || 0))} kg</div></div>
+              <div className="p-3 rounded-lg border bg-indigo-50"><div className="text-xs uppercase text-indigo-700">Jumlah Pergerakan</div><div className="text-xl font-bold text-indigo-700">{ld?.total || 0}</div></div>
+            </div>
+            {log.isLoading ? (
+              <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>
+            ) : (ld?.movements || []).length === 0 ? (
+              <div className="py-10 text-center text-muted-foreground text-sm">Belum ada pergerakan stok untuk filter ini.</div>
+            ) : (
+              <div className="rounded-lg border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Tanggal</TableHead>
+                      <TableHead>Jenis</TableHead>
+                      <TableHead>Produk</TableHead>
+                      <TableHead>Kode Simpan</TableHead>
+                      <TableHead>Referensi</TableHead>
+                      <TableHead>CS</TableHead>
+                      <TableHead className="text-right">Masuk</TableHead>
+                      <TableHead className="text-right">Keluar</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(ld?.movements || []).map(m => {
+                      const mv = MOVE[m.movementType] || { label: m.movementType, cls: 'bg-slate-100 text-slate-700' };
+                      return (
+                        <TableRow key={m.id}>
+                          <TableCell className="text-xs whitespace-nowrap">{m.ledgerDate ? format(new Date(m.ledgerDate), 'dd MMM yyyy') : '-'}</TableCell>
+                          <TableCell><Badge className={mv.cls}>{mv.label}</Badge></TableCell>
+                          <TableCell className="min-w-[140px]"><div className="text-sm font-medium leading-tight">{m.productName}</div><div className="text-[10px] text-muted-foreground">{m.sku}</div></TableCell>
+                          <TableCell className="font-mono text-xs">{m.kodeSimpan || '-'}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{m.referenceType ? `${m.referenceType}${m.referenceNumber ? ' · ' + m.referenceNumber : ''}` : '-'}</TableCell>
+                          <TableCell className="text-xs">{m.csCode || '-'}</TableCell>
+                          <TableCell className="text-right text-emerald-700 text-sm">{m.weightIn > 0 ? kg(m.weightIn) : ''}</TableCell>
+                          <TableCell className="text-right text-red-600 text-sm">{m.weightOut > 0 ? kg(m.weightOut) : ''}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                {ld && ld.returned < ld.total && <div className="text-center text-xs text-muted-foreground mt-3">Menampilkan {ld.returned} dari {ld.total} pergerakan.</div>}
+              </div>
+            )}
+          </>
+        )}
 
-        {productId && card.isLoading && <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
+        {/* MODE KARTU STOK — 1 produk (dengan saldo berjalan) */}
+        {isCard && card.isLoading && <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
 
-        {productId && d && (
+        {isCard && d && (
           <>
             {/* Summary cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -175,11 +241,10 @@ export default function InventoryReports() {
         <div><h1 className="text-2xl font-bold flex items-center gap-2"><Boxes className="w-7 h-7 text-cyan-600" />Laporan Inventory</h1><p className="text-muted-foreground text-sm mt-1">Per CS/produk, kartu stok, mendekati expired, rekap rusak/susut</p></div>
       </div>
       <Tabs defaultValue="cs">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="cs"><Warehouse className="w-4 h-4 mr-1" />Per CS</TabsTrigger>
           <TabsTrigger value="prod"><Package className="w-4 h-4 mr-1" />Per Produk</TabsTrigger>
           <TabsTrigger value="card"><ScrollText className="w-4 h-4 mr-1" />Kartu Stok</TabsTrigger>
-          <TabsTrigger value="log"><History className="w-4 h-4 mr-1" />Logbook</TabsTrigger>
           <TabsTrigger value="exp"><Clock className="w-4 h-4 mr-1" />Near Expired</TabsTrigger>
           <TabsTrigger value="dmg"><AlertTriangle className="w-4 h-4 mr-1" />Rusak/Susut</TabsTrigger>
         </TabsList>
@@ -229,10 +294,6 @@ export default function InventoryReports() {
 
         <TabsContent value="card">
           <StockCardTab />
-        </TabsContent>
-
-        <TabsContent value="log">
-          <StockLogbookPanel />
         </TabsContent>
 
         <TabsContent value="exp">
