@@ -81,9 +81,8 @@ memory/test_credentials.md
 android-sdk/node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
 node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
 node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
-.env
-.env.*
-*.env
+# NOTE: .env is intentionally NOT ignored — Emergent deployment requires it committed and injects
+# production secrets (MONGO_URL, APP_URL, etc.) at deploy time. Do not add real 3rd-party secrets here.
 credentials.json
 *.key
 .credentials

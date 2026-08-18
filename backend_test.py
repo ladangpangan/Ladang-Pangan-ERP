@@ -1,519 +1,559 @@
 #!/usr/bin/env python3
 """
-Backend API Test: Operator role-permission fix for purchase-orders
-Tests that operator can GET /purchase-orders and /purchase-orders/:id
-but cannot POST/PUT/PATCH/DELETE purchase-orders.
+Backend test for Phase 1 - Better Auth MongoDB Migration
+Tests all 9 steps as specified in test_result.md
+Uses curl to avoid __Secure- cookie prefix issues over HTTP
 """
 
-import requests
+import subprocess
 import json
 import sys
-import re
+import os
 
 BASE_URL = "http://localhost:3000/api"
+ORIGIN = "http://localhost:3000"
 
-# Test credentials
+# Test credentials (MongoDB-backed)
 CREDENTIALS = {
-    "operator": {"email": "operator@lpi.co.id", "password": "operator123"},
     "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
     "supervisor": {"email": "supervisor@lpi.co.id", "password": "super123"},
+    "direktur": {"email": "direktur@lpi.co.id", "password": "direktur123"},
+    "operator": {"email": "operator@lpi.co.id", "password": "operator123"},
 }
 
-# Store cookie headers for each role
-cookie_headers = {}
+def print_test(step, desc):
+    print(f"\n{'='*80}")
+    print(f"STEP {step}: {desc}")
+    print('='*80)
 
-def login(role):
-    """Login and return cookie header"""
-    print(f"\n{'='*60}")
-    print(f"Logging in as {role.upper()}...")
-    print(f"{'='*60}")
+def print_result(success, message):
+    status = "✅ PASS" if success else "❌ FAIL"
+    print(f"{status}: {message}")
+
+def curl_request(method, endpoint, cookies_file=None, data=None, save_cookies=None):
+    """Execute curl request and return (status_code, response_body)"""
+    cmd = ["curl", "-s", "-w", "\\n%{http_code}", "-X", method, f"{BASE_URL}{endpoint}"]
+    cmd.extend(["-H", "Content-Type: application/json"])
+    cmd.extend(["-H", f"Origin: {ORIGIN}"])
     
+    if cookies_file and os.path.exists(cookies_file):
+        cmd.extend(["-b", cookies_file])
+    
+    if save_cookies:
+        cmd.extend(["-c", save_cookies])
+    
+    if data:
+        cmd.extend(["-d", json.dumps(data)])
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = result.stdout
+        lines = output.strip().split('\n')
+        status_code = int(lines[-1])
+        body = '\n'.join(lines[:-1])
+        
+        try:
+            body_json = json.loads(body) if body else {}
+            return status_code, body_json
+        except json.JSONDecodeError:
+            return status_code, body
+    except Exception as e:
+        print(f"  curl error: {e}")
+        return 0, None
+
+def sign_in(role, cookies_file):
+    """Sign in and save session cookies"""
     creds = CREDENTIALS[role]
+    status, body = curl_request(
+        "POST", 
+        "/auth/sign-in/email",
+        data={"email": creds["email"], "password": creds["password"]},
+        save_cookies=cookies_file
+    )
     
-    # Better Auth login endpoint
-    login_url = "http://localhost:3000/api/auth/sign-in/email"
-    payload = {
-        "email": creds["email"],
-        "password": creds["password"]
-    }
+    print(f"  Sign-in {role}: status={status}")
     
-    try:
-        response = requests.post(login_url, json=payload)
-        print(f"Login response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            # Extract cookie from Set-Cookie header
-            cookie_header = response.headers.get('set-cookie', '')
-            match = re.search(r'__Secure-better-auth\.session_token=([^;]+)', cookie_header)
-            if match:
-                cookie_value = match.group(1)
-                cookie_headers[role] = {'Cookie': f'__Secure-better-auth.session_token={cookie_value}'}
-                print(f"✅ Login successful as {role}")
-                return cookie_headers[role]
-            else:
-                print(f"❌ Failed to extract cookie from response")
-                return None
-        else:
-            print(f"❌ Login failed: {response.status_code}")
-            print(f"Response: {response.text}")
-            return None
-    except Exception as e:
-        print(f"❌ Login error: {e}")
-        return None
-
-def test_get_purchase_orders_list(headers, role, expect_status=200):
-    """Test GET /api/purchase-orders"""
-    print(f"\n--- Test: GET /api/purchase-orders as {role.upper()} ---")
-    
-    try:
-        response = requests.get(f"{BASE_URL}/purchase-orders", headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ PASS: Got 200 OK")
-                print(f"Response has 'data' key: {'data' in data}")
-                if 'data' in data:
-                    print(f"Number of POs: {len(data['data'])}")
-                return True, data
-            else:
-                print(f"✅ PASS: Got expected status {expect_status}")
-                return True, None
-        else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False, None
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+    if status == 200 and isinstance(body, dict):
+        user_role = body.get("user", {}).get("role", "unknown")
+        print(f"  User role from response: {user_role}")
+        return True, user_role
+    else:
+        print(f"  Sign-in failed: {body}")
         return False, None
 
-def test_get_purchase_order_detail(headers, role, po_id, expect_status=200):
-    """Test GET /api/purchase-orders/:id"""
-    print(f"\n--- Test: GET /api/purchase-orders/{po_id} as {role.upper()} ---")
+def test_step_1():
+    """Step 1: Sign-in for all 4 roles -> 200, correct role"""
+    print_test(1, "Sign-in for all 4 roles")
     
-    try:
-        response = requests.get(f"{BASE_URL}/purchase-orders/{po_id}", headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
+    all_passed = True
+    cookie_files = {}
+    
+    for role in ["admin", "supervisor", "direktur", "operator"]:
+        cookies_file = f"/tmp/cookies_{role}.txt"
+        success, user_role = sign_in(role, cookies_file)
         
-        if response.status_code == expect_status:
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ PASS: Got 200 OK")
-                print(f"Response has 'data' key: {'data' in data}")
-                if 'data' in data:
-                    po = data['data']
-                    print(f"PO Number: {po.get('poNumber', 'N/A')}")
-                    print(f"PO has items: {'items' in po}")
-                return True, data
+        if success:
+            cookie_files[role] = cookies_file
+            
+            # Verify role by calling /me
+            status, body = curl_request("GET", "/me", cookies_file=cookies_file)
+            if status == 200 and isinstance(body, dict):
+                actual_role = body.get("user", {}).get("role")
+                if actual_role == role:
+                    print_result(True, f"{role}: signed in successfully, role={actual_role}")
+                else:
+                    print_result(False, f"{role}: role mismatch, expected={role}, got={actual_role}")
+                    all_passed = False
             else:
-                print(f"✅ PASS: Got expected status {expect_status}")
-                return True, None
+                print_result(False, f"{role}: /me returned {status}")
+                all_passed = False
         else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False, None
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+            print_result(False, f"{role}: sign-in failed")
+            all_passed = False
+    
+    return all_passed, cookie_files
+
+def test_step_2(cookie_files):
+    """Step 2: SESSION PERSISTENCE - reuse cookie for GET /api/me and /api/stats"""
+    print_test(2, "SESSION PERSISTENCE (core fix)")
+    
+    all_passed = True
+    
+    if "admin" not in cookie_files:
+        print_result(False, "Admin session not available")
+        return False
+    
+    cookies_file = cookie_files["admin"]
+    
+    # Test /me
+    status, body = curl_request("GET", "/me", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"GET /me with admin session: {status}")
+    else:
+        print_result(False, f"GET /me with admin session: {status}")
+        all_passed = False
+    
+    # Test /stats
+    status, body = curl_request("GET", "/stats", cookies_file=cookies_file)
+    if status == 200 and isinstance(body, dict):
+        users = body.get("users", 0)
+        print_result(True, f"GET /stats with admin session: {status}, users={users}")
+    else:
+        print_result(False, f"GET /stats with admin session: {status}")
+        all_passed = False
+    
+    return all_passed
+
+def test_step_3(cookie_files):
+    """Step 3: USER MANAGEMENT as direktur"""
+    print_test(3, "USER MANAGEMENT (as direktur)")
+    
+    all_passed = True
+    created_user_id = None
+    
+    if "direktur" not in cookie_files:
+        print_result(False, "Direktur session not available")
         return False, None
-
-def get_supplier_and_product(headers):
-    """Get a supplier and product for creating PO"""
-    print(f"\n--- Getting supplier and product for PO creation ---")
     
-    try:
-        # Get suppliers
-        response = requests.get(f"{BASE_URL}/contacts?category=Supplier", headers=headers)
-        if response.status_code == 200:
-            suppliers = response.json().get('data', [])
-            if suppliers:
-                supplier_id = suppliers[0]['id']
-                print(f"✅ Found supplier: {suppliers[0].get('displayName', 'N/A')} (ID: {supplier_id})")
+    cookies_file = cookie_files["direktur"]
+    
+    # 3.1: GET /users (should return 4 users)
+    status, body = curl_request("GET", "/users", cookies_file=cookies_file)
+    if status == 200 and isinstance(body, dict):
+        users = body.get("data", [])
+        print_result(True, f"GET /users: {status}, count={len(users)}")
+        initial_count = len(users)
+    else:
+        print_result(False, f"GET /users: {status}")
+        all_passed = False
+        return all_passed, None
+    
+    # 3.2: POST /users (create new user)
+    new_user = {
+        "name": "QA Test User",
+        "email": "qa1@lpi.co.id",
+        "password": "qatest123",
+        "role": "operator",
+        "status": "active"
+    }
+    status, body = curl_request("POST", "/users", cookies_file=cookies_file, data=new_user)
+    if status == 201 and isinstance(body, dict):
+        created_user_id = body.get("data", {}).get("id")
+        print_result(True, f"POST /users: {status}, created user id={created_user_id}")
+    else:
+        print_result(False, f"POST /users: {status}, {body}")
+        all_passed = False
+        return all_passed, None
+    
+    # 3.3: GET /users again (should show 5 users now)
+    status, body = curl_request("GET", "/users", cookies_file=cookies_file)
+    if status == 200 and isinstance(body, dict):
+        users = body.get("data", [])
+        if len(users) == initial_count + 1:
+            print_result(True, f"GET /users after create: count={len(users)} (increased by 1)")
+        else:
+            print_result(False, f"GET /users after create: count={len(users)}, expected={initial_count + 1}")
+            all_passed = False
+    else:
+        print_result(False, f"GET /users after create: {status}")
+        all_passed = False
+    
+    # 3.4: PATCH /users/:id (change role to supervisor)
+    patch_data = {"role": "supervisor"}
+    status, body = curl_request("PATCH", f"/users/{created_user_id}", cookies_file=cookies_file, data=patch_data)
+    if status == 200 and isinstance(body, dict):
+        updated_role = body.get("data", {}).get("role")
+        if updated_role == "supervisor":
+            print_result(True, f"PATCH /users/:id: {status}, role updated to {updated_role}")
+        else:
+            print_result(False, f"PATCH /users/:id: role not updated correctly, got {updated_role}")
+            all_passed = False
+    else:
+        print_result(False, f"PATCH /users/:id: {status}, {body}")
+        all_passed = False
+    
+    # 3.5: POST /users/:id/reset-password
+    reset_data = {"newPassword": "newpass123"}
+    status, body = curl_request("POST", f"/users/{created_user_id}/reset-password", cookies_file=cookies_file, data=reset_data)
+    if status == 200:
+        print_result(True, f"POST /users/:id/reset-password: {status}")
+        
+        # Try to sign in with new password
+        test_cookies = "/tmp/cookies_qa_test.txt"
+        status, body = curl_request(
+            "POST",
+            "/auth/sign-in/email",
+            data={"email": "qa1@lpi.co.id", "password": "newpass123"},
+            save_cookies=test_cookies
+        )
+        if status == 200:
+            print_result(True, f"Sign-in with new password: {status}")
+        else:
+            print_result(False, f"Sign-in with new password: {status}")
+            all_passed = False
+    else:
+        print_result(False, f"POST /users/:id/reset-password: {status}, {body}")
+        all_passed = False
+    
+    # 3.6: DELETE /users/:id
+    status, body = curl_request("DELETE", f"/users/{created_user_id}", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"DELETE /users/:id: {status}")
+    else:
+        print_result(False, f"DELETE /users/:id: {status}, {body}")
+        all_passed = False
+    
+    # 3.7: GET /users again (should be back to original count)
+    status, body = curl_request("GET", "/users", cookies_file=cookies_file)
+    if status == 200 and isinstance(body, dict):
+        users = body.get("data", [])
+        if len(users) == initial_count:
+            print_result(True, f"GET /users after delete: count={len(users)} (back to original)")
+        else:
+            print_result(False, f"GET /users after delete: count={len(users)}, expected={initial_count}")
+            all_passed = False
+    else:
+        print_result(False, f"GET /users after delete: {status}")
+        all_passed = False
+    
+    return all_passed, created_user_id
+
+def test_step_4(cookie_files):
+    """Step 4: AUTHORIZATION - admin and operator should get 403 for user mgmt"""
+    print_test(4, "AUTHORIZATION (403 for admin/operator on user mgmt)")
+    
+    all_passed = True
+    
+    # Test admin: GET /users -> 403
+    if "admin" in cookie_files:
+        status, body = curl_request("GET", "/users", cookies_file=cookie_files["admin"])
+        if status == 403:
+            print_result(True, f"Admin GET /users: {status} (correctly forbidden)")
+        else:
+            print_result(False, f"Admin GET /users: {status}, expected 403")
+            all_passed = False
+        
+        # Test admin: POST /users -> 403
+        new_user = {"name": "Test", "email": "test@test.com", "password": "test123", "role": "operator"}
+        status, body = curl_request("POST", "/users", cookies_file=cookie_files["admin"], data=new_user)
+        if status == 403:
+            print_result(True, f"Admin POST /users: {status} (correctly forbidden)")
+        else:
+            print_result(False, f"Admin POST /users: {status}, expected 403")
+            all_passed = False
+    else:
+        print_result(False, "Admin session not available")
+        all_passed = False
+    
+    # Test operator: GET /users -> 403
+    if "operator" in cookie_files:
+        status, body = curl_request("GET", "/users", cookies_file=cookie_files["operator"])
+        if status == 403:
+            print_result(True, f"Operator GET /users: {status} (correctly forbidden)")
+        else:
+            print_result(False, f"Operator GET /users: {status}, expected 403")
+            all_passed = False
+    else:
+        print_result(False, "Operator session not available")
+        all_passed = False
+    
+    return all_passed
+
+def test_step_5(cookie_files):
+    """Step 5: VALIDATION - duplicate email and weak password"""
+    print_test(5, "VALIDATION (duplicate email, weak password)")
+    
+    all_passed = True
+    
+    if "direktur" not in cookie_files:
+        print_result(False, "Direktur session not available")
+        return False
+    
+    cookies_file = cookie_files["direktur"]
+    
+    # Test duplicate email (admin@lpi.co.id already exists)
+    duplicate_user = {
+        "name": "Duplicate",
+        "email": "admin@lpi.co.id",
+        "password": "test123",
+        "role": "operator"
+    }
+    status, body = curl_request("POST", "/users", cookies_file=cookies_file, data=duplicate_user)
+    if status == 400:
+        print_result(True, f"POST /users with duplicate email: {status} (correctly rejected)")
+    else:
+        print_result(False, f"POST /users with duplicate email: {status}, expected 400")
+        all_passed = False
+    
+    # Test weak password (<6 chars)
+    weak_pass_user = {
+        "name": "Weak Pass",
+        "email": "weakpass@lpi.co.id",
+        "password": "12345",
+        "role": "operator"
+    }
+    status, body = curl_request("POST", "/users", cookies_file=cookies_file, data=weak_pass_user)
+    if status == 400:
+        print_result(True, f"POST /users with weak password: {status} (correctly rejected)")
+    else:
+        print_result(False, f"POST /users with weak password: {status}, expected 400")
+        all_passed = False
+    
+    return all_passed
+
+def test_step_6(cookie_files):
+    """Step 6: SELF-PROTECTION - can't modify/delete own account"""
+    print_test(6, "SELF-PROTECTION (can't modify/delete own account)")
+    
+    all_passed = True
+    
+    if "direktur" not in cookie_files:
+        print_result(False, "Direktur session not available")
+        return False
+    
+    cookies_file = cookie_files["direktur"]
+    
+    # Get direktur's own user ID
+    status, body = curl_request("GET", "/me", cookies_file=cookies_file)
+    if status != 200 or not isinstance(body, dict):
+        print_result(False, f"GET /me failed: {status}")
+        return False
+    
+    own_id = body.get("user", {}).get("id")
+    
+    # Try to change own role
+    patch_data = {"role": "admin"}
+    status, body = curl_request("PATCH", f"/users/{own_id}", cookies_file=cookies_file, data=patch_data)
+    if status == 400:
+        print_result(True, f"PATCH own account (change role): {status} (correctly rejected)")
+    else:
+        print_result(False, f"PATCH own account (change role): {status}, expected 400")
+        all_passed = False
+    
+    # Try to delete own account
+    status, body = curl_request("DELETE", f"/users/{own_id}", cookies_file=cookies_file)
+    if status == 400:
+        print_result(True, f"DELETE own account: {status} (correctly rejected)")
+    else:
+        print_result(False, f"DELETE own account: {status}, expected 400")
+        all_passed = False
+    
+    return all_passed
+
+def test_step_7(cookie_files):
+    """Step 7: PROFILE - PUT /api/account/profile"""
+    print_test(7, "PROFILE UPDATE (PUT /api/account/profile)")
+    
+    all_passed = True
+    
+    if "admin" not in cookie_files:
+        print_result(False, "Admin session not available")
+        return False
+    
+    cookies_file = cookie_files["admin"]
+    
+    # Update profile name
+    profile_data = {"name": "Admin Updated Name"}
+    status, body = curl_request("PUT", "/account/profile", cookies_file=cookies_file, data=profile_data)
+    if status == 200:
+        print_result(True, f"PUT /account/profile: {status}")
+        
+        # Verify name was updated
+        status, body = curl_request("GET", "/me", cookies_file=cookies_file)
+        if status == 200 and isinstance(body, dict):
+            name = body.get("user", {}).get("name")
+            if name == "Admin Updated Name":
+                print_result(True, f"Profile name verified: {name}")
             else:
-                print("⚠️ No suppliers found, creating one...")
-                # Create a supplier
-                create_response = requests.post(f"{BASE_URL}/contacts", json={
-                    "displayName": "Test Supplier for PO",
-                    "categories": ["Supplier"],
-                    "code": "TEST-SUP-PO"
-                }, headers=headers)
-                if create_response.status_code == 201:
-                    supplier_id = create_response.json()['data']['id']
-                    print(f"✅ Created supplier (ID: {supplier_id})")
-                else:
-                    print(f"❌ Failed to create supplier: {create_response.status_code}")
-                    return None, None
+                print_result(False, f"Profile name not updated correctly: {name}")
+                all_passed = False
         else:
-            print(f"❌ Failed to get suppliers: {response.status_code}")
-            return None, None
-        
-        # Get products
-        response = requests.get(f"{BASE_URL}/products", headers=headers)
-        if response.status_code == 200:
-            products = response.json().get('data', [])
-            if products:
-                product_id = products[0]['id']
-                print(f"✅ Found product: {products[0].get('name', 'N/A')} (ID: {product_id})")
-            else:
-                print("⚠️ No products found, creating one...")
-                # Create a product
-                create_response = requests.post(f"{BASE_URL}/products", json={
-                    "name": "Test Product for PO",
-                    "sku": "TEST-PROD-PO",
-                    "unit": "kg",
-                    "basePrice": 50000
-                }, headers=headers)
-                if create_response.status_code == 201:
-                    product_id = create_response.json()['data']['id']
-                    print(f"✅ Created product (ID: {product_id})")
-                else:
-                    print(f"❌ Failed to create product: {create_response.status_code}")
-                    return None, None
-        else:
-            print(f"❌ Failed to get products: {response.status_code}")
-            return None, None
-        
-        return supplier_id, product_id
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        return None, None
+            print_result(False, f"GET /me after profile update: {status}")
+            all_passed = False
+    else:
+        print_result(False, f"PUT /account/profile: {status}, {body}")
+        all_passed = False
+    
+    return all_passed
 
-def create_purchase_order(headers, supplier_id, product_id):
-    """Create a purchase order as admin"""
-    print(f"\n--- Creating Purchase Order as ADMIN ---")
+def test_step_8(cookie_files):
+    """Step 8: REGRESSION - business data endpoints still work"""
+    print_test(8, "REGRESSION (business data still in SQLite)")
     
-    payload = {
-        "supplierId": supplier_id,
-        "poType": "regular",
-        "orderDate": "2026-08-11",
-        "items": [
-            {
-                "productId": product_id,
-                "quantity": 10,
-                "weight": 100,
-                "unitPrice": 50000
-            }
-        ]
-    }
+    all_passed = True
     
-    try:
-        response = requests.post(f"{BASE_URL}/purchase-orders", json=payload, headers=headers)
-        print(f"Status: {response.status_code}")
-        
-        if response.status_code == 201:
-            data = response.json()
-            po_id = data['data']['id']
-            po_number = data['data']['poNumber']
-            print(f"✅ PO created successfully")
-            print(f"PO ID: {po_id}")
-            print(f"PO Number: {po_number}")
-            return po_id
-        else:
-            print(f"❌ Failed to create PO: {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        return None
-
-def test_post_purchase_order(headers, role, supplier_id, product_id, expect_status=403):
-    """Test POST /api/purchase-orders (should be forbidden for operator)"""
-    print(f"\n--- Test: POST /api/purchase-orders as {role.upper()} ---")
-    
-    payload = {
-        "supplierId": supplier_id,
-        "poType": "regular",
-        "orderDate": "2026-08-11",
-        "items": [
-            {
-                "productId": product_id,
-                "quantity": 1,
-                "weight": 10,
-                "unitPrice": 50000
-            }
-        ]
-    }
-    
-    try:
-        response = requests.post(f"{BASE_URL}/purchase-orders", json=payload, headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            print(f"✅ PASS: Got expected status {expect_status}")
-            return True
-        else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+    if "admin" not in cookie_files:
+        print_result(False, "Admin session not available")
         return False
-
-def test_put_purchase_order(headers, role, po_id, expect_status=403):
-    """Test PUT /api/purchase-orders/:id (should be forbidden for operator)"""
-    print(f"\n--- Test: PUT /api/purchase-orders/{po_id} as {role.upper()} ---")
     
-    payload = {
-        "notes": "Test update by operator"
-    }
+    cookies_file = cookie_files["admin"]
     
-    try:
-        response = requests.put(f"{BASE_URL}/purchase-orders/{po_id}", json=payload, headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            print(f"✅ PASS: Got expected status {expect_status}")
-            return True
+    # Test GET /contacts
+    status, body = curl_request("GET", "/contacts", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"GET /contacts: {status}")
+    else:
+        print_result(False, f"GET /contacts: {status}")
+        all_passed = False
+    
+    # Test GET /products
+    status, body = curl_request("GET", "/products", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"GET /products: {status}")
+    else:
+        print_result(False, f"GET /products: {status}")
+        all_passed = False
+    
+    # Test GET /cold-storages
+    status, body = curl_request("GET", "/cold-storages", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"GET /cold-storages: {status}")
+    else:
+        print_result(False, f"GET /cold-storages: {status}")
+        all_passed = False
+    
+    # Test GET /stats
+    status, body = curl_request("GET", "/stats", cookies_file=cookies_file)
+    if status == 200:
+        print_result(True, f"GET /stats: {status}")
+    else:
+        print_result(False, f"GET /stats: {status}")
+        all_passed = False
+    
+    # Test operator can GET /purchase-orders
+    if "operator" in cookie_files:
+        status, body = curl_request("GET", "/purchase-orders", cookies_file=cookie_files["operator"])
+        if status == 200:
+            print_result(True, f"Operator GET /purchase-orders: {status}")
         else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        return False
+            print_result(False, f"Operator GET /purchase-orders: {status}")
+            all_passed = False
+    
+    return all_passed
 
-def test_patch_purchase_order(headers, role, po_id, expect_status=403):
-    """Test PATCH /api/purchase-orders/:id (should be forbidden for operator)"""
-    print(f"\n--- Test: PATCH /api/purchase-orders/{po_id} as {role.upper()} ---")
+def test_step_9(cookie_files):
+    """Step 9: NOTIFICATIONS - GET /api/notifications"""
+    print_test(9, "NOTIFICATIONS (GET /api/notifications)")
     
-    payload = {
-        "notes": "Test patch by operator"
-    }
+    all_passed = True
     
-    try:
-        response = requests.patch(f"{BASE_URL}/purchase-orders/{po_id}", json=payload, headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            print(f"✅ PASS: Got expected status {expect_status}")
-            return True
-        else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+    if "admin" not in cookie_files:
+        print_result(False, "Admin session not available")
         return False
-
-def test_delete_purchase_order(headers, role, po_id, expect_status=403):
-    """Test DELETE /api/purchase-orders/:id (should be forbidden for operator)"""
-    print(f"\n--- Test: DELETE /api/purchase-orders/{po_id} as {role.upper()} ---")
     
-    try:
-        response = requests.delete(f"{BASE_URL}/purchase-orders/{po_id}", headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            print(f"✅ PASS: Got expected status {expect_status}")
-            return True
-        else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        return False
-
-def test_get_work_orders(headers, role, expect_status=200):
-    """Test GET /api/work-orders (regression test)"""
-    print(f"\n--- Test: GET /api/work-orders as {role.upper()} (REGRESSION) ---")
+    cookies_file = cookie_files["admin"]
     
-    try:
-        response = requests.get(f"{BASE_URL}/work-orders", headers=headers)
-        print(f"Status: {response.status_code} (expected: {expect_status})")
-        
-        if response.status_code == expect_status:
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ PASS: Got 200 OK")
-                print(f"Response has 'data' key: {'data' in data}")
-                if 'data' in data:
-                    print(f"Number of WOs: {len(data['data'])}")
-                return True
-            else:
-                print(f"✅ PASS: Got expected status {expect_status}")
-                return True
-        else:
-            print(f"❌ FAIL: Expected {expect_status}, got {response.status_code}")
-            print(f"Response: {response.text[:200]}")
-            return False
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        return False
+    # Test GET /notifications
+    status, body = curl_request("GET", "/notifications", cookies_file=cookies_file)
+    if status == 200 and isinstance(body, dict):
+        notifications = body.get("data", [])
+        print_result(True, f"GET /notifications: {status}, count={len(notifications)}")
+    else:
+        print_result(False, f"GET /notifications: {status}, {body}")
+        all_passed = False
+    
+    return all_passed
 
 def main():
-    print("\n" + "="*60)
-    print("BACKEND TEST: Operator Purchase Orders Role-Permission Fix")
-    print("="*60)
+    print("\n" + "="*80)
+    print("PHASE 1 - BETTER AUTH MONGODB MIGRATION - BACKEND TEST")
+    print("="*80)
     
-    results = {
-        "passed": 0,
-        "failed": 0,
-        "total": 0
-    }
+    results = {}
     
-    # Step 1: Login as operator
-    operator_headers = login("operator")
-    if not operator_headers:
-        print("\n❌ CRITICAL: Failed to login as operator")
+    # Step 1: Sign-in all roles
+    passed, cookie_files = test_step_1()
+    results["Step 1"] = passed
+    
+    if not cookie_files:
+        print("\n❌ CRITICAL: No sessions available, cannot continue testing")
         sys.exit(1)
     
-    # Step 2: Test GET /api/purchase-orders as operator (expect 200, not 403)
-    print("\n" + "="*60)
-    print("TEST 1: Operator can GET /api/purchase-orders (list)")
-    print("="*60)
-    success, data = test_get_purchase_orders_list(operator_headers, "operator", expect_status=200)
-    results["total"] += 1
-    if success:
-        results["passed"] += 1
-    else:
-        results["failed"] += 1
+    # Step 2: Session persistence
+    results["Step 2"] = test_step_2(cookie_files)
     
-    # Step 3: Login as admin and create a PO
-    admin_headers = login("admin")
-    if not admin_headers:
-        print("\n❌ CRITICAL: Failed to login as admin")
-        sys.exit(1)
+    # Step 3: User management
+    passed, created_user_id = test_step_3(cookie_files)
+    results["Step 3"] = passed
     
-    # Get supplier and product
-    supplier_id, product_id = get_supplier_and_product(admin_headers)
-    if not supplier_id or not product_id:
-        print("\n❌ CRITICAL: Failed to get supplier and product")
-        sys.exit(1)
+    # Step 4: Authorization
+    results["Step 4"] = test_step_4(cookie_files)
     
-    # Create PO
-    po_id = create_purchase_order(admin_headers, supplier_id, product_id)
-    if not po_id:
-        print("\n⚠️ WARNING: Failed to create PO, will skip detail tests")
-        po_id = None
+    # Step 5: Validation
+    results["Step 5"] = test_step_5(cookie_files)
     
-    # Step 4: Test GET /api/purchase-orders/:id as operator (expect 200)
-    if po_id:
-        print("\n" + "="*60)
-        print("TEST 2: Operator can GET /api/purchase-orders/:id (detail)")
-        print("="*60)
-        success, data = test_get_purchase_order_detail(operator_headers, "operator", po_id, expect_status=200)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
+    # Step 6: Self-protection
+    results["Step 6"] = test_step_6(cookie_files)
     
-    # Step 5: Test GET /api/purchase-orders as admin (no regression)
-    print("\n" + "="*60)
-    print("TEST 3: Admin can still GET /api/purchase-orders (no regression)")
-    print("="*60)
-    success, data = test_get_purchase_orders_list(admin_headers, "admin", expect_status=200)
-    results["total"] += 1
-    if success:
-        results["passed"] += 1
-    else:
-        results["failed"] += 1
+    # Step 7: Profile update
+    results["Step 7"] = test_step_7(cookie_files)
     
-    # Step 6: Test GET /api/purchase-orders/:id as admin (no regression)
-    if po_id:
-        print("\n" + "="*60)
-        print("TEST 4: Admin can still GET /api/purchase-orders/:id (no regression)")
-        print("="*60)
-        success, data = test_get_purchase_order_detail(admin_headers, "admin", po_id, expect_status=200)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
+    # Step 8: Regression
+    results["Step 8"] = test_step_8(cookie_files)
     
-    # Step 7: Login as supervisor and test (no regression)
-    supervisor_headers = login("supervisor")
-    if supervisor_headers:
-        print("\n" + "="*60)
-        print("TEST 5: Supervisor can still GET /api/purchase-orders (no regression)")
-        print("="*60)
-        success, data = test_get_purchase_orders_list(supervisor_headers, "supervisor", expect_status=200)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        if po_id:
-            print("\n" + "="*60)
-            print("TEST 6: Supervisor can still GET /api/purchase-orders/:id (no regression)")
-            print("="*60)
-            success, data = test_get_purchase_order_detail(supervisor_headers, "supervisor", po_id, expect_status=200)
-            results["total"] += 1
-            if success:
-                results["passed"] += 1
-            else:
-                results["failed"] += 1
-    
-    # Step 8: Test write operations as operator (should be forbidden)
-    print("\n" + "="*60)
-    print("TEST 7: Operator CANNOT POST /api/purchase-orders (security)")
-    print("="*60)
-    success = test_post_purchase_order(operator_headers, "operator", supplier_id, product_id, expect_status=403)
-    results["total"] += 1
-    if success:
-        results["passed"] += 1
-    else:
-        results["failed"] += 1
-    
-    if po_id:
-        print("\n" + "="*60)
-        print("TEST 8: Operator CANNOT PUT /api/purchase-orders/:id (security)")
-        print("="*60)
-        success = test_put_purchase_order(operator_headers, "operator", po_id, expect_status=403)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        print("\n" + "="*60)
-        print("TEST 9: Operator CANNOT PATCH /api/purchase-orders/:id (security)")
-        print("="*60)
-        success = test_patch_purchase_order(operator_headers, "operator", po_id, expect_status=403)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        
-        print("\n" + "="*60)
-        print("TEST 10: Operator CANNOT DELETE /api/purchase-orders/:id (security)")
-        print("="*60)
-        success = test_delete_purchase_order(operator_headers, "operator", po_id, expect_status=403)
-        results["total"] += 1
-        if success:
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-    
-    # Step 9: Test GET /api/work-orders as operator (regression)
-    print("\n" + "="*60)
-    print("TEST 11: Operator can still GET /api/work-orders (regression)")
-    print("="*60)
-    success = test_get_work_orders(operator_headers, "operator", expect_status=200)
-    results["total"] += 1
-    if success:
-        results["passed"] += 1
-    else:
-        results["failed"] += 1
+    # Step 9: Notifications
+    results["Step 9"] = test_step_9(cookie_files)
     
     # Summary
-    print("\n" + "="*60)
+    print("\n" + "="*80)
     print("TEST SUMMARY")
-    print("="*60)
-    print(f"Total tests: {results['total']}")
-    print(f"Passed: {results['passed']}")
-    print(f"Failed: {results['failed']}")
-    print(f"Success rate: {results['passed']/results['total']*100:.1f}%")
+    print("="*80)
     
-    if results['failed'] == 0:
-        print("\n✅ ALL TESTS PASSED")
-        return 0
+    total = len(results)
+    passed = sum(1 for v in results.values() if v)
+    
+    for step, result in results.items():
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status}: {step}")
+    
+    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)")
+    
+    if passed == total:
+        print("\n🎉 ALL TESTS PASSED!")
+        sys.exit(0)
     else:
-        print(f"\n❌ {results['failed']} TEST(S) FAILED")
-        return 1
+        print(f"\n⚠️  {total - passed} test(s) failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
