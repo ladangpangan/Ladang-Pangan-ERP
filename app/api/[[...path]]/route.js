@@ -10,6 +10,7 @@ import * as authUsers from '@/lib/auth/users';
 import { headers } from 'next/headers';
 import { runAgent, executeAction, canWrite } from '@/lib/ai/erp-agent';
 import * as acct from '@/lib/accounting/engine';
+import * as md from '@/lib/db/masterdata';
 
 // -----------------------
 // Helpers
@@ -145,6 +146,10 @@ async function handleRoute(request, { params }) {
   const method = request.method;
   const db = getDb();
 
+  // Phase 2 (MongoDB): ensure master data (products/cold_storages/zones) is present in Mongo.
+  // Idempotent + guarded (returns instantly after the first successful sync per process).
+  try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
+
   try {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
@@ -188,7 +193,11 @@ async function handleRoute(request, { params }) {
       const existing = db.select().from(tbl).where(eq(tbl.id, id)).get();
       if (!existing) return err('Data tidak ditemukan', 404);
       try {
-        db.update(tbl).set({ archivedAt: isArchive ? new Date() : null, updatedAt: new Date() }).where(eq(tbl.id, id)).run();
+        const archivedAt = isArchive ? new Date() : null;
+        // Master data (products/cold-storages) are Mongo-authoritative -> update Mongo first, mirror SQLite.
+        const mdCol = path[0] === 'products' ? md.MD.products : (path[0] === 'cold-storages' ? md.MD.coldStorages : null);
+        if (mdCol) { try { await md.mdUpdate(mdCol, id, { archivedAt, updatedAt: new Date() }); } catch (e) { /* mirror below */ } }
+        db.update(tbl).set({ archivedAt, updatedAt: new Date() }).where(eq(tbl.id, id)).run();
         return json({ ok: true, archived: isArchive });
       } catch (e) {
         return err('Gagal ' + (isArchive ? 'mengarsipkan' : 'memulihkan') + ': ' + String(e?.message || e), 400);
@@ -1385,20 +1394,17 @@ async function handleRoute(request, { params }) {
       return json({ data: calc });
     }
 
-    // ---------- PRODUCTS ----------
+    // ---------- PRODUCTS ---------- (MongoDB-authoritative, mirrored to SQLite)
     if (route === '/products' && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const url = new URL(request.url);
       const q = url.searchParams.get('q');
       const cat = url.searchParams.get('category');
-      let query = db.select().from(s.products);
-      const conds = [];
-      { const ac = archivedCond(s.products, url); if (ac) conds.push(ac); }
-      if (cat && cat !== 'all') conds.push(eq(s.products.category, cat));
-      if (q) conds.push(or(like(s.products.name, `%${q}%`), like(s.products.sku, `%${q}%`)));
-      if (conds.length) query = query.where(and(...conds));
-      const rows = query.orderBy(desc(s.products.createdAt)).all();
-      // Rata-rata tertimbang HPP/kg dari stok aktif (referensi valuasi untuk SO)
+      const filter = { ...md.mdArchivedFilter(url.searchParams.get('archived')) };
+      if (cat && cat !== 'all') filter.category = cat;
+      if (q) filter.$or = [{ name: { $regex: q, $options: 'i' } }, { sku: { $regex: q, $options: 'i' } }];
+      const rows = await md.mdList(md.MD.products, { filter, sort: { createdAt: -1 } });
+      // Rata-rata tertimbang HPP/kg dari stok aktif (referensi valuasi untuk SO) — tetap dari SQLite (inventory belum migrasi)
       const hppAgg = db.all(sql`SELECT product_id as pid, SUM(hpp_per_kg * weight) as v, SUM(weight) as w FROM inventory_stock WHERE status = 'active' AND (archived_at IS NULL) GROUP BY product_id`);
       const hppMap = {};
       for (const a of hppAgg) {
@@ -1413,15 +1419,22 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const body = await request.json();
       if (!body.sku || !body.name) return err('sku and name required');
+      // Unique SKU (Mongo authoritative)
+      const dup = await md.mdFindOne(md.MD.products, { sku: body.sku });
+      if (dup) return err(`SKU "${body.sku}" sudah digunakan`, 409);
       const now = new Date();
-      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body };
-      try { db.insert(s.products).values(row).run(); return json({ data: row }, { status: 201 }); }
-      catch (e) { return err('Failed to create: ' + e.message); }
+      delete body.id; delete body.createdAt; delete body.avgHppPerKg;
+      const row = { id: uuidv4(), ...body, archivedAt: body.archivedAt ?? null, createdAt: now, updatedAt: now };
+      try {
+        await md.mdInsert(md.MD.products, row);
+        try { db.insert(s.products).values(row).run(); } catch (e) { console.error('[products] SQLite mirror insert failed:', e?.message || e); }
+        return json({ data: row }, { status: 201 });
+      } catch (e) { return err('Failed to create: ' + e.message); }
     }
     if (route.startsWith('/products/') && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const id = path[1];
-      const row = db.select().from(s.products).where(eq(s.products.id, id)).get();
+      const row = await md.mdGet(md.MD.products, id);
       if (!row) return err('Not found', 404);
       return json({ data: row });
     }
@@ -1430,18 +1443,20 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
-      delete body.id; delete body.createdAt;
-      db.update(s.products).set({ ...body, updatedAt: new Date() }).where(eq(s.products.id, id)).run();
-      const row = db.select().from(s.products).where(eq(s.products.id, id)).get();
+      delete body.id; delete body.createdAt; delete body.avgHppPerKg;
+      const patch = { ...body, updatedAt: new Date() };
+      const row = await md.mdUpdate(md.MD.products, id, patch);
+      if (!row) return err('Not found', 404);
+      try { db.update(s.products).set(patch).where(eq(s.products.id, id)).run(); } catch (e) { console.error('[products] SQLite mirror update failed:', e?.message || e); }
       return json({ data: row });
     }
     if (route.startsWith('/products/') && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
       const id = path[1];
-      const prod = db.select().from(s.products).where(eq(s.products.id, id)).get();
+      const prod = await md.mdGet(md.MD.products, id);
       if (!prod) return err('Produk tidak ditemukan', 404);
-      // Cek referensi di transaksi — produk yang sudah dipakai tidak boleh dihapus (jaga integritas data)
+      // Cek referensi di transaksi — produk yang sudah dipakai tidak boleh dihapus (jaga integritas data). Referensi masih di SQLite.
       const refs = [
         ['Sales Order', db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.productId, id)).all().length],
         ['Purchase Order', db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.productId, id)).all().length],
@@ -1454,26 +1469,24 @@ async function handleRoute(request, { params }) {
         return err(`Produk "${prod.name}" sudah dipakai di transaksi: ${detail}. Produk tidak dapat dihapus. Ubah statusnya menjadi "Inactive" untuk menonaktifkan.`, 409);
       }
       try {
-        db.delete(s.products).where(eq(s.products.id, id)).run();
+        await md.mdDelete(md.MD.products, id);
+        try { db.delete(s.products).where(eq(s.products.id, id)).run(); } catch (e) { console.error('[products] SQLite mirror delete failed:', e?.message || e); }
         return json({ ok: true });
       } catch (e) {
         return err('Gagal menghapus produk: ' + (e.message || 'terkait data lain'), 409);
       }
     }
 
-    // ---------- COLD STORAGES ----------
+    // ---------- COLD STORAGES ---------- (MongoDB-authoritative, mirrored to SQLite)
     if (route === '/cold-storages' && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const url = new URL(request.url);
-      const ac = archivedCond(s.coldStorages, url);
-      let q0 = db.select().from(s.coldStorages);
-      if (ac) q0 = q0.where(ac);
-      const rows = q0.orderBy(desc(s.coldStorages.createdAt)).all();
-      // Enrich with zone counts
-      const withZones = rows.map(cs => {
-        const zoneCount = db.select({ c: sql`count(*)` }).from(s.zones).where(eq(s.zones.coldStorageId, cs.id)).get();
-        return { ...cs, zoneCount: Number(zoneCount?.c || 0) };
-      });
+      const rows = await md.mdList(md.MD.coldStorages, { filter: md.mdArchivedFilter(url.searchParams.get('archived')), sort: { createdAt: -1 } });
+      // Enrich with zone counts (dari Mongo)
+      const withZones = await Promise.all(rows.map(async (cs) => {
+        const zoneCount = await md.mdCount(md.MD.zones, { coldStorageId: cs.id });
+        return { ...cs, zoneCount: Number(zoneCount || 0) };
+      }));
       return json({ data: withZones });
     }
     if (route === '/cold-storages' && method === 'POST') {
@@ -1481,17 +1494,23 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const body = await request.json();
       if (!body.code || !body.name) return err('code and name required');
+      const dup = await md.mdFindOne(md.MD.coldStorages, { code: body.code });
+      if (dup) return err(`Kode "${body.code}" sudah digunakan`, 409);
       const now = new Date();
-      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body };
-      try { db.insert(s.coldStorages).values(row).run(); return json({ data: row }, { status: 201 }); }
-      catch (e) { return err('Failed to create: ' + e.message); }
+      delete body.id; delete body.createdAt; delete body.zones; delete body.zoneCount;
+      const row = { id: uuidv4(), ...body, archivedAt: body.archivedAt ?? null, createdAt: now, updatedAt: now };
+      try {
+        await md.mdInsert(md.MD.coldStorages, row);
+        try { db.insert(s.coldStorages).values(row).run(); } catch (e) { console.error('[cold-storages] SQLite mirror insert failed:', e?.message || e); }
+        return json({ data: row }, { status: 201 });
+      } catch (e) { return err('Failed to create: ' + e.message); }
     }
     if (route.startsWith('/cold-storages/') && path.length === 2 && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const id = path[1];
-      const row = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, id)).get();
+      const row = await md.mdGet(md.MD.coldStorages, id);
       if (!row) return err('Not found', 404);
-      const zones = db.select().from(s.zones).where(eq(s.zones.coldStorageId, id)).all();
+      const zones = await md.mdList(md.MD.zones, { filter: { coldStorageId: id }, sort: { code: 1 } });
       return json({ data: { ...row, zones } });
     }
     if (route.startsWith('/cold-storages/') && path.length === 2 && (method === 'PATCH' || method === 'PUT')) {
@@ -1500,27 +1519,32 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt; delete body.zones; delete body.zoneCount;
-      db.update(s.coldStorages).set({ ...body, updatedAt: new Date() }).where(eq(s.coldStorages.id, id)).run();
-      const row = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, id)).get();
+      const patch = { ...body, updatedAt: new Date() };
+      const row = await md.mdUpdate(md.MD.coldStorages, id, patch);
+      if (!row) return err('Not found', 404);
+      try { db.update(s.coldStorages).set(patch).where(eq(s.coldStorages.id, id)).run(); } catch (e) { console.error('[cold-storages] SQLite mirror update failed:', e?.message || e); }
       return json({ data: row });
     }
     if (route.startsWith('/cold-storages/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin'])) return err('Forbidden', 403);
       const id = path[1];
-      db.delete(s.coldStorages).where(eq(s.coldStorages.id, id)).run();
+      await md.mdDelete(md.MD.coldStorages, id);
+      // Cascade zones in Mongo (SQLite mirror has ON DELETE CASCADE)
+      try { await md.mdDeleteMany(md.MD.zones, { coldStorageId: id }); } catch (e) { /* ignore */ }
+      try { db.delete(s.coldStorages).where(eq(s.coldStorages.id, id)).run(); } catch (e) { console.error('[cold-storages] SQLite mirror delete failed:', e?.message || e); }
       return json({ ok: true });
     }
 
-    // ---------- ZONES ----------
+    // ---------- ZONES ---------- (MongoDB-authoritative, mirrored to SQLite)
     // GET  /zones?cold_storage_id=xxx
     if (route === '/zones' && method === 'GET') {
       const { error } = await requireAuth(); if (error) return error;
       const url = new URL(request.url);
       const csId = url.searchParams.get('cold_storage_id');
-      let query = db.select().from(s.zones);
-      if (csId) query = query.where(eq(s.zones.coldStorageId, csId));
-      const rows = query.orderBy(s.zones.code).all();
+      const filter = {};
+      if (csId) filter.coldStorageId = csId;
+      const rows = await md.mdList(md.MD.zones, { filter, sort: { code: 1 } });
       return json({ data: rows });
     }
     if (route === '/zones' && method === 'POST') {
@@ -1529,9 +1553,13 @@ async function handleRoute(request, { params }) {
       const body = await request.json();
       if (!body.coldStorageId || !body.code || !body.name) return err('coldStorageId, code, name required');
       const now = new Date();
-      const row = { id: uuidv4(), createdAt: now, updatedAt: now, ...body };
-      try { db.insert(s.zones).values(row).run(); return json({ data: row }, { status: 201 }); }
-      catch (e) { return err('Failed to create: ' + e.message); }
+      delete body.id; delete body.createdAt;
+      const row = { id: uuidv4(), ...body, createdAt: now, updatedAt: now };
+      try {
+        await md.mdInsert(md.MD.zones, row);
+        try { db.insert(s.zones).values(row).run(); } catch (e) { console.error('[zones] SQLite mirror insert failed:', e?.message || e); }
+        return json({ data: row }, { status: 201 });
+      } catch (e) { return err('Failed to create: ' + e.message); }
     }
     if (route.startsWith('/zones/') && (method === 'PATCH' || method === 'PUT')) {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -1539,15 +1567,18 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt;
-      db.update(s.zones).set({ ...body, updatedAt: new Date() }).where(eq(s.zones.id, id)).run();
-      const row = db.select().from(s.zones).where(eq(s.zones.id, id)).get();
+      const patch = { ...body, updatedAt: new Date() };
+      const row = await md.mdUpdate(md.MD.zones, id, patch);
+      if (!row) return err('Not found', 404);
+      try { db.update(s.zones).set(patch).where(eq(s.zones.id, id)).run(); } catch (e) { console.error('[zones] SQLite mirror update failed:', e?.message || e); }
       return json({ data: row });
     }
     if (route.startsWith('/zones/') && method === 'DELETE') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const id = path[1];
-      db.delete(s.zones).where(eq(s.zones.id, id)).run();
+      await md.mdDelete(md.MD.zones, id);
+      try { db.delete(s.zones).where(eq(s.zones.id, id)).run(); } catch (e) { console.error('[zones] SQLite mirror delete failed:', e?.message || e); }
       return json({ ok: true });
     }
 
@@ -1558,9 +1589,9 @@ async function handleRoute(request, { params }) {
       const userCount = await authUsers.countUsers();
       return json({
         contacts: cnt(s.contacts),
-        products: cnt(s.products),
-        coldStorages: cnt(s.coldStorages),
-        zones: cnt(s.zones),
+        products: await md.mdCount(md.MD.products, md.mdArchivedFilter()),
+        coldStorages: await md.mdCount(md.MD.coldStorages, md.mdArchivedFilter()),
+        zones: await md.mdCount(md.MD.zones),
         users: userCount,
         purchaseOrders: cnt(s.purchaseOrder),
       });
