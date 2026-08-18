@@ -515,6 +515,18 @@ function ItemsTab({ so, onSaved, canEdit }) {
                 <TableCell className="text-right font-semibold">Rp {Number(it.subtotal).toLocaleString('id-ID')}</TableCell>
               </TableRow>
             ))}
+            {(so.shippingBearer === 'buyer' && Number(so.shippingCost || 0) > 0) && (
+              <>
+                <TableRow>
+                  <TableCell colSpan={5} className="text-right text-sm text-muted-foreground">Subtotal Barang</TableCell>
+                  <TableCell className="text-right text-sm">Rp {Number(Number(so.totalAmount) - Number(so.shippingCost || 0)).toLocaleString('id-ID')}</TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell colSpan={5} className="text-right text-sm text-muted-foreground">Biaya Kirim (ditagih ke pembeli)</TableCell>
+                  <TableCell className="text-right text-sm">Rp {Number(so.shippingCost || 0).toLocaleString('id-ID')}</TableCell>
+                </TableRow>
+              </>
+            )}
             <TableRow className="bg-slate-50">
               <TableCell colSpan={5} className="text-right font-semibold">Total</TableCell>
               <TableCell className="text-right font-bold text-emerald-700">Rp {Number(so.totalAmount).toLocaleString('id-ID')}</TableCell>
@@ -741,6 +753,7 @@ function SjTab({ so, onSaved, canOperate }) {
 function ShippingCostCard({ so, onSaved, canEdit }) {
   const [cost, setCost] = useState(String(so.shippingCost || 0));
   const [bearer, setBearer] = useState(so.shippingBearer || 'seller');
+  const [payMethod, setPayMethod] = useState(so.shippingPayMethod || 'transfer');
   const [saving, setSaving] = useState(false);
   const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
   const save = async () => {
@@ -748,7 +761,7 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
     try {
       const res = await fetch(`/api/sales-orders/${so.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shippingCost: Number(cost || 0), shippingBearer: bearer }),
+        body: JSON.stringify({ shippingCost: Number(cost || 0), shippingBearer: bearer, shippingPayMethod: payMethod }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
@@ -760,10 +773,10 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Truck className="w-4 h-4" />Biaya Pengiriman</CardTitle>
-        <CardDescription>Biaya kirim yang kita keluarkan. Bila ditanggung <b>Penjual</b>, ikut mengurangi gross profit.</CardDescription>
+        <CardDescription>Biaya kirim yang perusahaan bayar ke kurir. <b>Pembeli</b> → ditambahkan ke total invoice (pelanggan membayar). <b>Penjual</b> → mengurangi laba (Beban Ongkir).</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <Label className="text-xs">Biaya Kirim (Rp)</Label>
             <CurrencyInput value={cost} onChange={v => setCost(v)} disabled={!canEdit} className="mt-1" placeholder="0" />
@@ -773,14 +786,28 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
             <Select value={bearer} onValueChange={setBearer} disabled={!canEdit}>
               <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="seller">Penjual (kita) — kurangi gross profit</SelectItem>
-                <SelectItem value="buyer">Pembeli — tidak mengurangi gross profit</SelectItem>
+                <SelectItem value="seller">Penjual (kita) — kurangi laba</SelectItem>
+                <SelectItem value="buyer">Pembeli — ditagih di invoice</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Dibayar dari</Label>
+            <Select value={payMethod} onValueChange={setPayMethod} disabled={!canEdit}>
+              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="transfer">Bank / Transfer</SelectItem>
+                <SelectItem value="tunai">Kas Tunai</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">Efek ke GP: {bearer === 'seller' ? <b className="text-red-600">-{rp(cost)}</b> : <b className="text-emerald-700">Rp 0</b>}</span>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <span className="text-xs text-muted-foreground">
+            {bearer === 'seller'
+              ? <>Efek ke laba: <b className="text-red-600">-{rp(cost)}</b></>
+              : <>Ditambah ke invoice: <b className="text-emerald-700">+{rp(cost)}</b> (laba netral)</>}
+          </span>
           {canEdit && <Button size="sm" onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Biaya Kirim</Button>}
         </div>
       </CardContent>
@@ -862,7 +889,9 @@ function PaymentsTab({ so, onSaved, canEdit }) {
 
 function GrossProfitCard({ so }) {
   const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
-  const revenue = Number(so.revenue ?? so.totalAmount ?? 0);
+  const grossRev = Number(so.revenue ?? so.totalAmount ?? 0);
+  const buyerShip = Number(so.buyerShipping || 0);
+  const revenue = grossRev - buyerShip; // penjualan barang (ongkir pembeli bersifat pass-through/netral)
   const cashback = (so.markupEnabled && Number(so.cashbackAmount) > 0) ? Number(so.cashbackAmount) : 0;
   const cogs = Number(so.cogsTotal || 0);
   const shipping = Number(so.sellerShipping || 0);
@@ -882,7 +911,7 @@ function GrossProfitCard({ so }) {
           <div><div className="text-xs text-muted-foreground">Penjualan{cashback > 0 ? ' (di-up)' : ''}</div><div className="font-semibold">{rp(revenue)}</div></div>
           {cashback > 0 && <div><div className="text-xs text-muted-foreground">Cashback</div><div className="font-semibold text-red-600">-{rp(cashback)}</div></div>}
           <div><div className="text-xs text-muted-foreground">HPP (COGS){isDrop && so.linkedPurchaseOrder ? ` · ${so.linkedPurchaseOrder.poNumber}` : ''}</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
-          <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className="font-semibold text-red-600">{shipping > 0 ? '-' + rp(shipping) : rp(0)}</div></div>
+          <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className={`font-semibold ${so.shippingBearer === 'buyer' ? 'text-emerald-700' : 'text-red-600'}`}>{so.shippingBearer === 'buyer' ? (buyerShip > 0 ? '+' + rp(buyerShip) + ' · netral' : rp(0)) : (shipping > 0 ? '-' + rp(shipping) : rp(0))}</div></div>
           <div><div className="text-xs text-muted-foreground">Gross Profit</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{rp(gp)}</div></div>
           <div><div className="text-xs text-muted-foreground">Margin</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{margin}%</div></div>
         </div>

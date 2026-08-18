@@ -2455,6 +2455,7 @@ async function handleRoute(request, { params }) {
     };
 
     const recalcSoTotals = (soId) => {
+      const soRow = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
@@ -2465,9 +2466,11 @@ async function handleRoute(request, { params }) {
         discountTotal += disc;
         db.update(s.salesOrderItems).set({ subtotal: st }).where(eq(s.salesOrderItems.id, it.id)).run();
       }
-      const total = subtotal - discountTotal;
+      // Biaya kirim yang ditanggung PEMBELI ditambahkan ke total (tertagih ke pelanggan)
+      const buyerShip = (soRow?.shippingBearer === 'buyer') ? Number(soRow.shippingCost || 0) : 0;
+      const total = subtotal - discountTotal + buyerShip;
       db.update(s.salesOrder).set({ totalAmount: total, discountTotal, updatedAt: new Date() }).where(eq(s.salesOrder.id, soId)).run();
-      return { subtotal, discountTotal, total };
+      return { subtotal, discountTotal, buyerShip, total };
     };
 
     const recomputeSoPaymentStatus = (soId) => {
@@ -2819,11 +2822,13 @@ async function handleRoute(request, { params }) {
       const diupTotal = Number(so.totalAmount) + cashbackAmt;
       const outstanding = diupTotal - Number(so.paidAmount || 0) - totalReturns;
       const shippingCost = Number(so.shippingCost || 0);
-      const sellerShipping = (so.shippingBearer === 'buyer') ? 0 : shippingCost;
-      const revenue = diupTotal;                            // pendapatan bruto (faktur di-up)
-      const netRevenue = Number(so.totalAmount || 0);       // pendapatan riil (harga asli)
-      const grossProfit = Math.round(netRevenue - cogsTotal - sellerShipping);
-      const grossMarginPct = netRevenue > 0 ? Math.round((grossProfit / netRevenue) * 1000) / 10 : 0;
+      const buyerShipping = (so.shippingBearer === 'buyer') ? shippingCost : 0;   // ditambahkan ke tagihan pelanggan
+      const sellerShipping = (so.shippingBearer === 'buyer') ? 0 : shippingCost;  // ditanggung penjual -> kurangi laba
+      const revenue = diupTotal;                                         // pendapatan bruto (faktur di-up, sudah termasuk ongkir pembeli)
+      const netRevenue = Number(so.totalAmount || 0);                    // total tagihan riil (termasuk ongkir pembeli)
+      const goodsRevenue = netRevenue - buyerShipping;                   // pendapatan barang saja (ongkir pembeli netral thd margin)
+      const grossProfit = Math.round(goodsRevenue - cogsTotal - sellerShipping);
+      const grossMarginPct = goodsRevenue > 0 ? Math.round((grossProfit / goodsRevenue) * 1000) / 10 : 0;
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
       // Susut Dropship: selisih berat kirim (Surat Jalan) vs berat diterima customer (Penerimaan)
       let dropshipShipVsRecv = null;
@@ -2845,7 +2850,7 @@ async function handleRoute(request, { params }) {
         linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
       }
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
@@ -2922,7 +2927,7 @@ async function handleRoute(request, { params }) {
       // Revisi item SO mengikuti total kode simpan terpilih
       totW = Math.round(totW * 100) / 100;
       const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
-      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal }).where(eq(s.salesOrderItems.id, itemId)).run();
+      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal, outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none' }).where(eq(s.salesOrderItems.id, itemId)).run();
       recalcSoTotals(soId);
       const updatedItem = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.id, itemId)).get();
       return json({ data: { item: updatedItem, allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
@@ -2944,17 +2949,18 @@ async function handleRoute(request, { params }) {
       for (const so of sos) {
         const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, so.id)).all();
         if (items.length === 0) continue;
-        let allocatedCount = 0, totalW = 0;
+        let finalCount = 0, draftCount = 0, totalW = 0;
         for (const it of items) {
-          const n = db.select({ c: sql`count(*)` }).from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).get();
-          if (Number(n?.c || 0) > 0) allocatedCount++;
+          const st = it.outboundTallyStatus || 'none';
+          if (st === 'final') finalCount++;
+          else if (st === 'draft') draftCount++;
           totalW += Number(it.weight || 0);
         }
-        if (allocatedCount >= items.length) continue; // sudah teralokasi penuh -> sembunyikan
+        if (finalCount >= items.length) continue; // semua item sudah final (disimpan) -> sembunyikan
         const cust = db.select({ name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
         out.push({
           id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-',
-          orderDate: so.orderDate, itemCount: items.length, allocatedItemCount: allocatedCount,
+          orderDate: so.orderDate, itemCount: items.length, allocatedItemCount: finalCount, draftItemCount: draftCount,
           totalWeight: Math.round(totalW * 100) / 100,
         });
       }
@@ -2979,6 +2985,7 @@ async function handleRoute(request, { params }) {
           orderedWeight: Number(it.weight || 0), orderedQty: Number(it.quantity || 0),
           allocations: allocs.map(a => ({ stockId: a.stockId, kodeSimpan: a.kodeSimpan, weight: Number(a.weight || 0) })),
           allocatedWeight, allocated: allocs.length > 0,
+          tallyStatus: it.outboundTallyStatus || 'none', // none | draft (dicatat) | final (disimpan)
         };
       });
       return json({ data: { id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-', orderDate: so.orderDate, pipelineStatus: so.pipelineStatus, items: outItems } });
@@ -3010,9 +3017,10 @@ async function handleRoute(request, { params }) {
         csCode: csCode(r.coldStorageId), zoneCode: zoneCode(r.zoneId), expiredDate: r.expiredDate,
         diff: Math.round((Number(r.weight || 0) - ordered) * 100) / 100, currentlyAllocated,
       });
-      const list = [...minesStocks.map(r => mapStock(r, true)), ...active.map(r => mapStock(r, false))];
+      const list = [...minesStocks.map(r => mapStock(r, true)), ...active.filter(r => !mineIds.has(r.id)).map(r => mapStock(r, false))];
       // Rekomendasi kombinasi kode simpan yang totalnya paling mendekati berat pesanan
-      const combo = recommendStockCombo(active, ordered);
+      // (hanya di antara stok yang belum dipilih ke item ini)
+      const combo = recommendStockCombo(active.filter(r => !mineIds.has(r.id)), ordered);
       const recommendedIds = Array.from(combo.ids);
       const out = list.map(x => ({ ...x, recommended: combo.ids.has(x.id) }))
         .sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || (Math.abs(a.diff) - Math.abs(b.diff)));
@@ -3025,7 +3033,10 @@ async function handleRoute(request, { params }) {
       } });
     }
 
-    // POST /tally-outbound/orders/:id/items/:itemId/allocate — kunci kode simpan ke item (operator)
+    // POST /tally-outbound/orders/:id/items/:itemId/allocate — Catat (draft) / Simpan (final) kode simpan ke item (operator)
+    // body: { stockIds: [], mode: 'draft' | 'final' }
+    //  - 'draft' (Catat): simpan pilihan kode simpan TANPA mengunci stok & TANPA mengubah total SO. Bisa dilanjutkan.
+    //  - 'final' (Simpan): kunci stok (status=allocated) + revisi berat/subtotal item mengikuti total lot terpilih.
     if (route.startsWith('/tally-outbound/orders/') && path.length === 6 && path[3] === 'items' && path[5] === 'allocate' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
@@ -3037,9 +3048,16 @@ async function handleRoute(request, { params }) {
       if (!item) return err('Item tidak ditemukan', 404);
       const body = await request.json();
       const stockIds = Array.isArray(body.stockIds) ? body.stockIds : [];
-      // Bebaskan alokasi lama item ini (status stok -> active), hapus baris lama
+      const mode = body.mode === 'draft' ? 'draft' : 'final';
+      // Bebaskan alokasi lama item ini: set stok -> active HANYA bila tidak dipakai item/SO lain, lalu hapus baris lama
       const prev = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).all();
-      for (const pv of prev) db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, pv.stockId)).run();
+      for (const pv of prev) {
+        const usedByOther = db.select({ c: sql`count(*)` }).from(s.soItemStocks)
+          .where(and(eq(s.soItemStocks.stockId, pv.stockId), ne(s.soItemStocks.soItemId, itemId))).get();
+        if (Number(usedByOther?.c || 0) === 0) {
+          db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, pv.stockId)).run();
+        }
+      }
       db.delete(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).run();
       const stockHpp = (stk) => {
         let h = Number(stk.hppPerKg || 0);
@@ -3061,14 +3079,28 @@ async function handleRoute(request, { params }) {
           id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
           kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
         }).run();
-        db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
+        // Kunci stok HANYA saat final (Simpan). Draft (Catat) tidak mengunci.
+        if (mode === 'final') {
+          db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
+        }
         totW += w; totQ += q;
       }
       totW = Math.round(totW * 100) / 100;
-      const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
-      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal }).where(eq(s.salesOrderItems.id, itemId)).run();
-      recalcSoTotals(soId);
-      return json({ data: { allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
+      if (mode === 'final') {
+        // Simpan: revisi item mengikuti total lot terpilih + hitung ulang total SO
+        const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
+        db.update(s.salesOrderItems).set({
+          weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal,
+          outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none',
+        }).where(eq(s.salesOrderItems.id, itemId)).run();
+        recalcSoTotals(soId);
+      } else {
+        // Catat (draft): simpan status draft saja. Tidak mengubah berat/subtotal/total SO, stok tidak dikunci.
+        db.update(s.salesOrderItems).set({
+          outboundTallyStatus: stockIds.length > 0 ? 'draft' : 'none',
+        }).where(eq(s.salesOrderItems.id, itemId)).run();
+      }
+      return json({ data: { allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length, mode } });
     }
 
     // PATCH /sales-orders/:id
@@ -3081,7 +3113,7 @@ async function handleRoute(request, { params }) {
       if (['Invoiced', 'Cancelled'].includes(existing.pipelineStatus)) return err('SO tidak dapat diubah pada status ini');
       const body = await request.json();
       const update = {};
-      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer'];
+      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer', 'shippingPayMethod'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;
@@ -3178,6 +3210,10 @@ async function handleRoute(request, { params }) {
           totalQ += Number(it.quantity || 0);
           if (isDropship) continue;
           const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+          if ((it.outboundTallyStatus || 'none') === 'draft') {
+            const prod = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
+            return err(`Item "${prod?.name || it.productId}" masih Draft (baru dicatat). Tekan "Simpan" untuk finalisasi kode simpan sebelum SO dikonfirmasi.`);
+          }
           if (allocs.length === 0) {
             const prod = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
             return err(`Item "${prod?.name || it.productId}" belum dipilih kode simpannya. Alokasikan kode simpan dulu.`);
@@ -3256,7 +3292,7 @@ async function handleRoute(request, { params }) {
           subtotal += line; discountTotal += disc;
           db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
         }
-        upd.totalAmount = subtotal - discountTotal;
+        upd.totalAmount = subtotal - discountTotal + ((so.shippingBearer === 'buyer') ? Number(so.shippingCost || 0) : 0);
         upd.discountTotal = discountTotal;
         if (!so.invoiceNumber) upd.invoiceNumber = nextInvoiceNumber();
         if (!so.invoiceDate) upd.invoiceDate = new Date();
