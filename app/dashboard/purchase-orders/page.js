@@ -53,7 +53,8 @@ const emptyForm = {
   isDropship: false, dropshipCustomerId: '',
   orderDate: new Date().toISOString().slice(0,10),
   expectedDate: '',
-  additionalCost: 0, dpAmount: 0, paymentTerm: 'TOP 14',
+  additionalCost: 0, additionalCostBearer: 'company', additionalCostPayMethod: 'utang',
+  dpAmount: 0, paymentTerm: 'TOP 14',
   items: [emptyItem()],
   notes: '',
 };
@@ -276,7 +277,26 @@ function CreatePODialog({ onSaved }) {
           </Select>
         </F>
         <F label="Down Payment (Rp)"><CurrencyInput value={form.dpAmount} onChange={v => update('dpAmount', v)} placeholder="0" /></F>
-        <F label="Biaya Tambahan / Ongkir (Rp)" className="sm:col-span-2"><CurrencyInput value={form.additionalCost} onChange={v => update('additionalCost', v)} placeholder="0" /></F>
+        <F label="Biaya Tambahan / Ongkir (Rp)"><CurrencyInput value={form.additionalCost} onChange={v => update('additionalCost', v)} placeholder="0" /></F>
+        <F label="Ongkir Ditanggung">
+          <Select value={form.additionalCostBearer} onValueChange={v => update('additionalCostBearer', v)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="company">Kita — kurangi laba (Beban Angkut)</SelectItem>
+              <SelectItem value="supplier">Pemasok — netral</SelectItem>
+            </SelectContent>
+          </Select>
+        </F>
+        <F label="Ongkir Dibayar via" className="sm:col-span-2">
+          <Select value={form.additionalCostPayMethod} onValueChange={v => update('additionalCostPayMethod', v)} disabled={form.additionalCostBearer === 'supplier'}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="utang">Utang ke Pemasok (masuk tagihan PO)</SelectItem>
+              <SelectItem value="transfer">Bank / Transfer (kurir/pihak ketiga)</SelectItem>
+              <SelectItem value="tunai">Kas Tunai (kurir/pihak ketiga)</SelectItem>
+            </SelectContent>
+          </Select>
+        </F>
       </div>
 
       <div className="space-y-2">
@@ -324,7 +344,7 @@ function CreatePODialog({ onSaved }) {
             );
           })}
         </div>
-        <div className="text-sm text-muted-foreground">Estimasi subtotal: <b>Rp {form.items.reduce((a, it) => a + (Number(it.unitPrice) * Number(it.weight)), 0).toLocaleString('id-ID')}</b> + Ongkir Rp {Number(form.additionalCost).toLocaleString('id-ID')}</div>
+        <div className="text-sm text-muted-foreground">Estimasi subtotal: <b>Rp {form.items.reduce((a, it) => a + (Number(it.unitPrice) * Number(it.weight)), 0).toLocaleString('id-ID')}</b>{(form.additionalCostBearer !== 'supplier' && form.additionalCostPayMethod === 'utang' && Number(form.additionalCost) > 0) ? <> + Ongkir (utang) Rp {Number(form.additionalCost).toLocaleString('id-ID')}</> : (Number(form.additionalCost) > 0 && form.additionalCostBearer !== 'supplier') ? <> · Ongkir Rp {Number(form.additionalCost).toLocaleString('id-ID')} dibayar terpisah (Beban Angkut)</> : null}</div>
       </div>
 
       <F label="Catatan"><Textarea rows={2} value={form.notes} onChange={e => update('notes', e.target.value)} /></F>
