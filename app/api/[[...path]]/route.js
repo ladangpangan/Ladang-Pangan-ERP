@@ -925,7 +925,7 @@ async function handleRoute(request, { params }) {
     if (route === '/users' && method === 'GET') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const rows = await authUsers.listUsers(url.searchParams.get('archived'));
       return json({ data: rows });
@@ -935,7 +935,7 @@ async function handleRoute(request, { params }) {
     if (route === '/users' && method === 'POST') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const body = await request.json();
       const { name, email, password, role, status = 'active' } = body || {};
       if (!name || !email || !password || !role) return err('name, email, password, role required');
@@ -956,7 +956,7 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/users/') && path.length === 2 && method === 'PATCH') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const targetRaw = await authUsers.findUserRawById(id);
@@ -986,7 +986,7 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/users/') && path.length === 3 && path[2] === 'reset-password' && method === 'POST') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const { newPassword } = body || {};
@@ -1006,7 +1006,7 @@ async function handleRoute(request, { params }) {
     if (route.startsWith('/users/') && path.length === 2 && method === 'DELETE') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const id = path[1];
       if (id === session.user.id) return err('Tidak bisa menghapus akun sendiri', 400);
       const targetRaw = await authUsers.findUserRawById(id);
