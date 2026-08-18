@@ -6,7 +6,7 @@ import { useSession, authClient } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Smartphone, ChevronRight, LogOut, Wheat, ClipboardList, Loader2, Wifi, WifiOff, History, Play, PackagePlus } from 'lucide-react';
+import { Smartphone, ChevronRight, LogOut, Wheat, ClipboardList, Loader2, Wifi, WifiOff, History, Play, PackagePlus, PackageMinus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
@@ -62,6 +62,20 @@ export default function TallyHomePage() {
             <div className="flex-1 min-w-0">
               <div className="font-bold">Inbound Gudang (Tally)</div>
               <div className="text-xs text-white/90">Simpan barang masuk ke inventory — dari PO (Tally), Work Order, atau Manual</div>
+            </div>
+            <ChevronRight className="w-5 h-5 shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
+
+      {/* Mulai Outbound (SO) — pilih kode simpan untuk item Sales Order */}
+      <Link href="/tally/outbound" className="block mb-4">
+        <Card className="border-orange-300 bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:shadow-md transition-shadow cursor-pointer">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackageMinus className="w-6 h-6" /></div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold">Outbound (SO)</div>
+              <div className="text-xs text-white/90">Pilih kode simpan barang keluar untuk item Sales Order — dengan rekomendasi berat</div>
             </div>
             <ChevronRight className="w-5 h-5 shrink-0" />
           </CardContent>

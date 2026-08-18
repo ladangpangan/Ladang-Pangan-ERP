@@ -2892,6 +2892,145 @@ async function handleRoute(request, { params }) {
       return json({ data: { item: updatedItem, allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
     }
 
+    // =============================================================
+    // TALLY OUTBOUND (Mobile) — operator memilih kode simpan untuk item SO.
+    // Alokasi kode simpan (mengunci stok) — pengurangan stok & Kartu Stok OUT tetap
+    // terjadi saat SO dikonfirmasi supervisor. Data yang diekspos operator TANPA harga.
+    // =============================================================
+    // GET /tally-outbound/orders — SO Draft (stok gudang) yang belum teralokasi penuh
+    if (route === '/tally-outbound/orders' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const sos = db.select().from(s.salesOrder)
+        .where(and(eq(s.salesOrder.pipelineStatus, 'Draft'), eq(s.salesOrder.fulfillmentType, 'stock'), isNull(s.salesOrder.archivedAt)))
+        .orderBy(desc(s.salesOrder.orderDate)).all();
+      const out = [];
+      for (const so of sos) {
+        const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, so.id)).all();
+        if (items.length === 0) continue;
+        let allocatedCount = 0, totalW = 0;
+        for (const it of items) {
+          const n = db.select({ c: sql`count(*)` }).from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).get();
+          if (Number(n?.c || 0) > 0) allocatedCount++;
+          totalW += Number(it.weight || 0);
+        }
+        if (allocatedCount >= items.length) continue; // sudah teralokasi penuh -> sembunyikan
+        const cust = db.select({ name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
+        out.push({
+          id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-',
+          orderDate: so.orderDate, itemCount: items.length, allocatedItemCount: allocatedCount,
+          totalWeight: Math.round(totalW * 100) / 100,
+        });
+      }
+      return json({ data: out });
+    }
+
+    // GET /tally-outbound/orders/:id — detail item + status alokasi (tanpa harga)
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      const cust = db.select({ name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
+      const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+      const outItems = items.map(it => {
+        const p = db.select({ name: s.products.name, sku: s.products.sku, unit: s.products.unit }).from(s.products).where(eq(s.products.id, it.productId)).get();
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+        const allocatedWeight = Math.round(allocs.reduce((a, b) => a + Number(b.weight || 0), 0) * 100) / 100;
+        return {
+          id: it.id, productId: it.productId, productName: p?.name || '-', sku: p?.sku || '', unit: p?.unit || 'kg',
+          orderedWeight: Number(it.weight || 0), orderedQty: Number(it.quantity || 0),
+          allocations: allocs.map(a => ({ stockId: a.stockId, kodeSimpan: a.kodeSimpan, weight: Number(a.weight || 0) })),
+          allocatedWeight, allocated: allocs.length > 0,
+        };
+      });
+      return json({ data: { id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-', orderDate: so.orderDate, pipelineStatus: so.pipelineStatus, items: outItems } });
+    }
+
+    // GET /tally-outbound/orders/:id/items/:itemId/stocks — kode simpan tersedia + rekomendasi (berat mendekati pesanan)
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 6 && path[3] === 'items' && path[5] === 'stocks' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const itemId = path[4];
+      const item = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.id, itemId)).get();
+      if (!item) return err('Item tidak ditemukan', 404);
+      const ordered = Number(item.weight || 0);
+      // Stok aktif (belum dialokasikan) untuk produk item ini
+      const active = db.select().from(s.inventoryStock)
+        .where(and(eq(s.inventoryStock.productId, item.productId), eq(s.inventoryStock.status, 'active'), isNull(s.inventoryStock.archivedAt))).all();
+      // Stok yang sedang dialokasikan ke item INI (agar tampil tercentang)
+      const mine = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).all();
+      const mineIds = new Set(mine.map(m => m.stockId));
+      const minesStocks = [];
+      for (const m of mine) {
+        const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, m.stockId)).get();
+        if (stk) minesStocks.push(stk);
+      }
+      const csCode = (id) => id ? (db.select({ code: s.coldStorages.code }).from(s.coldStorages).where(eq(s.coldStorages.id, id)).get()?.code || null) : null;
+      const zoneCode = (id) => id ? (db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, id)).get()?.code || null) : null;
+      const mapStock = (r, currentlyAllocated) => ({
+        id: r.id, kodeSimpan: r.kodeSimpan, weight: Number(r.weight || 0), quantity: Number(r.quantity || 0),
+        csCode: csCode(r.coldStorageId), zoneCode: zoneCode(r.zoneId), expiredDate: r.expiredDate,
+        diff: Math.round((Number(r.weight || 0) - ordered) * 100) / 100, currentlyAllocated,
+      });
+      const list = [...minesStocks.map(r => mapStock(r, true)), ...active.map(r => mapStock(r, false))];
+      // Rekomendasi: 1 kode simpan aktif dengan berat PALING MENDEKATI berat pesanan
+      let bestId = null, bestAbs = Infinity;
+      for (const r of active) {
+        const ad = Math.abs(Number(r.weight || 0) - ordered);
+        if (ad < bestAbs) { bestAbs = ad; bestId = r.id; }
+      }
+      const out = list.map(x => ({ ...x, recommended: x.id === bestId })).sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
+      return json({ data: { orderedWeight: ordered, stocks: out } });
+    }
+
+    // POST /tally-outbound/orders/:id/items/:itemId/allocate — kunci kode simpan ke item (operator)
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 6 && path[3] === 'items' && path[5] === 'allocate' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2], itemId = path[4];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      if (so.pipelineStatus !== 'Draft') return err('SO sudah dikonfirmasi/diproses, alokasi lewat Tally hanya untuk SO Draft');
+      const item = db.select().from(s.salesOrderItems).where(and(eq(s.salesOrderItems.id, itemId), eq(s.salesOrderItems.salesOrderId, soId))).get();
+      if (!item) return err('Item tidak ditemukan', 404);
+      const body = await request.json();
+      const stockIds = Array.isArray(body.stockIds) ? body.stockIds : [];
+      // Bebaskan alokasi lama item ini (status stok -> active), hapus baris lama
+      const prev = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).all();
+      for (const pv of prev) db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, pv.stockId)).run();
+      db.delete(s.soItemStocks).where(eq(s.soItemStocks.soItemId, itemId)).run();
+      const stockHpp = (stk) => {
+        let h = Number(stk.hppPerKg || 0);
+        if (stk.sourceType === 'PO' && stk.sourceBatch) {
+          const it2 = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+            .where(and(eq(s.purchaseOrderItems.purchaseOrderId, stk.sourceBatch), eq(s.purchaseOrderItems.productId, stk.productId))).get();
+          if (Number(it2?.hpp || 0) > 0) h = Number(it2.hpp);
+        }
+        return Math.round(h);
+      };
+      let totW = 0, totQ = 0;
+      for (const sid of stockIds) {
+        const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, sid)).get();
+        if (!stk) return err(`Stok tidak ditemukan`, 404);
+        if (stk.productId !== item.productId) return err(`Kode simpan ${stk.kodeSimpan} bukan produk item ini`);
+        if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan / tidak aktif`);
+        const w = Number(stk.weight || 0), q = Number(stk.quantity || 0);
+        db.insert(s.soItemStocks).values({
+          id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
+          kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
+        }).run();
+        db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
+        totW += w; totQ += q;
+      }
+      totW = Math.round(totW * 100) / 100;
+      const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
+      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal }).where(eq(s.salesOrderItems.id, itemId)).run();
+      recalcSoTotals(soId);
+      return json({ data: { allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
+    }
+
     // PATCH /sales-orders/:id
     if (route.startsWith('/sales-orders/') && path.length === 2 && (method === 'PATCH' || method === 'PUT')) {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -5477,6 +5616,48 @@ async function handleRoute(request, { params }) {
           count: movements.length,
         },
       } });
+    }
+    // Logbook Stok — SEMUA pergerakan stok (lintas produk) dengan filter. Untuk modul Inventory.
+    if (route === '/stock-ledger' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const productId = url.searchParams.get('productId') || null;
+      const csId = url.searchParams.get('coldStorageId') || null;
+      const mType = url.searchParams.get('movementType') || null;
+      const fromStr = url.searchParams.get('from');
+      const toStr = url.searchParams.get('to');
+      const limit = Math.min(Number(url.searchParams.get('limit') || 300), 1000);
+      const fromTs = fromStr ? new Date(`${fromStr}T00:00:00`).getTime() : null;
+      const toTs = toStr ? new Date(`${toStr}T23:59:59.999`).getTime() : null;
+      const conds = [];
+      if (productId) conds.push(eq(s.stockLedger.productId, productId));
+      if (csId) conds.push(eq(s.stockLedger.coldStorageId, csId));
+      if (mType) conds.push(eq(s.stockLedger.movementType, mType));
+      let q = db.select().from(s.stockLedger);
+      if (conds.length) q = q.where(and(...conds));
+      let rows = q.orderBy(desc(s.stockLedger.ledgerDate), desc(s.stockLedger.createdAt)).all();
+      rows = rows.filter(r => {
+        const t = new Date(r.ledgerDate).getTime();
+        if (fromTs && t < fromTs) return false;
+        if (toTs && t > toTs) return false;
+        return true;
+      });
+      const total = rows.length;
+      let inW = 0, outW = 0, inQ = 0, outQ = 0;
+      for (const r of rows) { inW += Number(r.weightIn || 0); outW += Number(r.weightOut || 0); inQ += Number(r.qtyIn || 0); outQ += Number(r.qtyOut || 0); }
+      const pCache = {}, cCache = {};
+      const pOf = (id) => { if (!id) return null; if (pCache[id] === undefined) pCache[id] = db.select({ name: s.products.name, sku: s.products.sku, unit: s.products.unit }).from(s.products).where(eq(s.products.id, id)).get() || null; return pCache[id]; };
+      const cOf = (id) => { if (!id) return null; if (cCache[id] === undefined) cCache[id] = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, id)).get() || null; return cCache[id]; };
+      const page = rows.slice(0, limit).map(r => { const p = pOf(r.productId); const c = cOf(r.coldStorageId); return {
+        id: r.id, ledgerDate: r.ledgerDate, movementType: r.movementType, referenceType: r.referenceType, referenceNumber: r.referenceNumber,
+        productId: r.productId, productName: p?.name || '-', sku: p?.sku || '', unit: p?.unit || 'kg', csCode: c?.code || null, kodeSimpan: r.kodeSimpan,
+        qtyIn: Number(r.qtyIn || 0), weightIn: Number(r.weightIn || 0), qtyOut: Number(r.qtyOut || 0), weightOut: Number(r.weightOut || 0), hppPerKg: Number(r.hppPerKg || 0), notes: r.notes,
+      }; });
+      return json({ data: { movements: page, total, returned: page.length, summary: {
+        totalInWeight: Math.round(inW * 1000) / 1000, totalOutWeight: Math.round(outW * 1000) / 1000,
+        totalInQty: Math.round(inQ * 1000) / 1000, totalOutQty: Math.round(outQ * 1000) / 1000, count: total,
+      } } });
     }
     // ===================================================================== END REPORTS
 
