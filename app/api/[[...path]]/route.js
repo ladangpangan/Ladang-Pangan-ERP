@@ -154,6 +154,42 @@ export async function OPTIONS() { return cors(new NextResponse(null, { status: 2
 // -----------------------
 // Route dispatch
 // -----------------------
+// Rekomendasi kombinasi kode simpan (subset-sum) yang totalnya PALING MENDEKATI berat pesanan.
+// 0/1 knapsack DP terskala (presisi 0,01 kg). Fallback greedy untuk input sangat besar.
+function recommendStockCombo(lots, targetKg) {
+  const items = (lots || []).map(l => ({ id: l.id, w: Math.round(Number(l.weight || 0) * 100) })).filter(l => l.w > 0);
+  const T = Math.round(Number(targetKg || 0) * 100);
+  if (!items.length || T <= 0) return { ids: new Set(), total: 0 };
+  const maxW = items.reduce((m, l) => Math.max(m, l.w), 0);
+  const BOUND = T + maxW; // izinkan overshoot maksimal satu lot ekstra
+  if (BOUND > 600000 || items.length > 300 || BOUND * items.length > 6000000) {
+    // fallback greedy (aproksimasi) untuk data sangat besar
+    const sorted = [...items].sort((a, b) => b.w - a.w);
+    const ids = new Set(); let sum = 0;
+    for (const l of sorted) { if (sum >= T) break; if (sum + l.w <= T || Math.abs((sum + l.w) - T) <= Math.abs(sum - T)) { ids.add(l.id); sum += l.w; } }
+    return { ids, total: sum / 100 };
+  }
+  const reach = new Uint8Array(BOUND + 1); reach[0] = 1;
+  const from = new Int32Array(BOUND + 1).fill(-1);
+  const prev = new Int32Array(BOUND + 1).fill(-1);
+  for (let i = 0; i < items.length; i++) {
+    const w = items[i].w;
+    for (let sQ = BOUND; sQ >= w; sQ--) {
+      if (reach[sQ - w] && !reach[sQ]) { reach[sQ] = 1; from[sQ] = i; prev[sQ] = sQ - w; }
+    }
+  }
+  let best = -1, bestDiff = Infinity, bestOver = false;
+  for (let sQ = 1; sQ <= BOUND; sQ++) {
+    if (!reach[sQ]) continue;
+    const diff = Math.abs(sQ - T); const over = sQ >= T;
+    if (best === -1 || diff < bestDiff || (diff === bestDiff && over && !bestOver)) { best = sQ; bestDiff = diff; bestOver = over; }
+  }
+  const ids = new Set();
+  let sQ = best;
+  while (sQ > 0 && from[sQ] !== -1) { ids.add(items[from[sQ]].id); sQ = prev[sQ]; }
+  return { ids, total: best / 100 };
+}
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -2975,14 +3011,18 @@ async function handleRoute(request, { params }) {
         diff: Math.round((Number(r.weight || 0) - ordered) * 100) / 100, currentlyAllocated,
       });
       const list = [...minesStocks.map(r => mapStock(r, true)), ...active.map(r => mapStock(r, false))];
-      // Rekomendasi: 1 kode simpan aktif dengan berat PALING MENDEKATI berat pesanan
-      let bestId = null, bestAbs = Infinity;
-      for (const r of active) {
-        const ad = Math.abs(Number(r.weight || 0) - ordered);
-        if (ad < bestAbs) { bestAbs = ad; bestId = r.id; }
-      }
-      const out = list.map(x => ({ ...x, recommended: x.id === bestId })).sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
-      return json({ data: { orderedWeight: ordered, stocks: out } });
+      // Rekomendasi kombinasi kode simpan yang totalnya paling mendekati berat pesanan
+      const combo = recommendStockCombo(active, ordered);
+      const recommendedIds = Array.from(combo.ids);
+      const out = list.map(x => ({ ...x, recommended: combo.ids.has(x.id) }))
+        .sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || (Math.abs(a.diff) - Math.abs(b.diff)));
+      return json({ data: {
+        orderedWeight: ordered,
+        recommendedIds,
+        recommendedTotal: Math.round(combo.total * 100) / 100,
+        recommendedCount: recommendedIds.length,
+        stocks: out,
+      } });
     }
 
     // POST /tally-outbound/orders/:id/items/:itemId/allocate — kunci kode simpan ke item (operator)
