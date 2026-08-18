@@ -10,8 +10,9 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle, ScrollText } from 'lucide-react';
+import { ArrowLeft, Boxes, Loader2, Warehouse, Package, Clock, AlertTriangle, ScrollText, History } from 'lucide-react';
 import { format } from 'date-fns';
+import StockLogbookPanel from './stock-logbook-panel';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -174,10 +175,11 @@ export default function InventoryReports() {
         <div><h1 className="text-2xl font-bold flex items-center gap-2"><Boxes className="w-7 h-7 text-cyan-600" />Laporan Inventory</h1><p className="text-muted-foreground text-sm mt-1">Per CS/produk, kartu stok, mendekati expired, rekap rusak/susut</p></div>
       </div>
       <Tabs defaultValue="cs">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="cs"><Warehouse className="w-4 h-4 mr-1" />Per CS</TabsTrigger>
           <TabsTrigger value="prod"><Package className="w-4 h-4 mr-1" />Per Produk</TabsTrigger>
           <TabsTrigger value="card"><ScrollText className="w-4 h-4 mr-1" />Kartu Stok</TabsTrigger>
+          <TabsTrigger value="log"><History className="w-4 h-4 mr-1" />Logbook</TabsTrigger>
           <TabsTrigger value="exp"><Clock className="w-4 h-4 mr-1" />Near Expired</TabsTrigger>
           <TabsTrigger value="dmg"><AlertTriangle className="w-4 h-4 mr-1" />Rusak/Susut</TabsTrigger>
         </TabsList>
@@ -227,6 +229,10 @@ export default function InventoryReports() {
 
         <TabsContent value="card">
           <StockCardTab />
+        </TabsContent>
+
+        <TabsContent value="log">
+          <StockLogbookPanel />
         </TabsContent>
 
         <TabsContent value="exp">

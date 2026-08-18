@@ -2,14 +2,14 @@
 
 import React, { useState } from 'react';
 import useSWR from 'swr';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, FileBarChart, FileSpreadsheet, TrendingUp } from 'lucide-react';
+import { Loader2, FileSpreadsheet } from 'lucide-react';
 import { fmtRp, fmtDate, acctFetcher, defaultRange } from '@/lib/accounting/ui';
 import { exportToExcel } from '@/lib/xlsx-export';
 
@@ -17,7 +17,7 @@ const KPI = ({ label, value, sub }) => (
   <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">{label}</div><div className="text-xl font-bold mt-1">{value}</div>{sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}</CardContent></Card>
 );
 
-export default function SalesProfitPage() {
+export default function SalesProfitPanel() {
   const [range, setRange] = useState(defaultRange());
   const { data, isLoading } = useSWR(`/api/accounting/sales-profit?from=${range.from}&to=${range.to}`, acctFetcher);
   const d = data?.data;
@@ -43,12 +43,9 @@ export default function SalesProfitPage() {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><TrendingUp className="w-6 h-6 text-emerald-600" />Laporan Laba Penjualan</h1>
-          <p className="text-muted-foreground text-sm">Ringkasan laba kotor (Pendapatan − HPP) per pelanggan & per periode.</p>
-        </div>
+    <div className="space-y-4">
+      <div className="flex items-end justify-between gap-3 flex-wrap">
+        <p className="text-muted-foreground text-sm">Laba kotor (Pendapatan - HPP) per pelanggan &amp; per periode.</p>
         <div className="flex items-end gap-2">
           <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
           <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
@@ -56,7 +53,7 @@ export default function SalesProfitPage() {
         </div>
       </div>
 
-      {isLoading && <div className="text-center py-8 text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Memuat…</div>}
+      {isLoading && <div className="text-center py-8 text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Memuat...</div>}
 
       {d && (
         <>

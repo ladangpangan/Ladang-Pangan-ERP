@@ -40,7 +40,6 @@ const NAV = [
       { href: '/dashboard/purchase-orders', label: 'Purchase Order', icon: ShoppingCart, roles: ['admin','supervisor','direktur','operator'] },
       { href: '/dashboard/work-orders', label: 'Work Order', icon: ClipboardList, roles: ['admin','supervisor','direktur','operator'] },
       { href: '/dashboard/inventory', label: 'Inventory', icon: Boxes, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '/dashboard/inventory/logbook', label: 'Logbook Stok', icon: ScrollText, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin','supervisor','direktur','operator'] },
     ],
   },
@@ -51,7 +50,6 @@ const NAV = [
       { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/production-reports', label: 'Laporan Produksi', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/sales-profit', label: 'Laba Penjualan', icon: TrendingUp, roles: ['admin','supervisor','direktur'] },
     ],
   },
   {

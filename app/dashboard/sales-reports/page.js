@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ArrowLeft, BarChart3, Loader2, TrendingUp, Users, Package, DollarSign } from 'lucide-react';
 import { format } from 'date-fns';
+import SalesProfitPanel from './sales-profit-panel';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -34,11 +35,12 @@ export default function SalesReportsPage() {
       </div>
 
       <Tabs defaultValue="daily">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="daily"><TrendingUp className="w-4 h-4 mr-1" />Daily Sales</TabsTrigger>
           <TabsTrigger value="aging"><DollarSign className="w-4 h-4 mr-1" />AR Aging</TabsTrigger>
           <TabsTrigger value="cust"><Users className="w-4 h-4 mr-1" />By Customer</TabsTrigger>
           <TabsTrigger value="prod"><Package className="w-4 h-4 mr-1" />By Product</TabsTrigger>
+          <TabsTrigger value="profit"><TrendingUp className="w-4 h-4 mr-1" />Laba</TabsTrigger>
         </TabsList>
 
         <TabsContent value="daily">
@@ -174,6 +176,10 @@ export default function SalesReportsPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="profit">
+          <SalesProfitPanel />
         </TabsContent>
       </Tabs>
     </div>
