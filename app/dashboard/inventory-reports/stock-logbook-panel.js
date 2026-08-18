@@ -2,14 +2,13 @@
 
 import React, { useState, useMemo } from 'react';
 import useSWR from 'swr';
-import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, ScrollText, Loader2, ArrowDownToLine, ArrowUpFromLine, RotateCcw } from 'lucide-react';
+import { Loader2, ArrowDownToLine, ArrowUpFromLine, RotateCcw } from 'lucide-react';
 import { format } from 'date-fns';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
@@ -26,7 +25,7 @@ const MOVE = {
   OPENING: { label: 'Saldo Awal', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
 };
 
-export default function StockLogbookPage() {
+export default function StockLogbookPanel() {
   const [productId, setProductId] = useState('all');
   const [csId, setCsId] = useState('all');
   const [mType, setMType] = useState('all');
@@ -59,14 +58,6 @@ export default function StockLogbookPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Link href="/dashboard/inventory"><Button variant="ghost" size="icon"><ArrowLeft className="w-5 h-5" /></Button></Link>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold flex items-center gap-2"><ScrollText className="w-5 h-5 text-emerald-600" /> Logbook Stok</h1>
-          <p className="text-sm text-muted-foreground">Riwayat lalu lintas stok (masuk / keluar / transfer / penyesuaian) lintas produk & cold storage.</p>
-        </div>
-      </div>
-
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card><CardContent className="pt-4 pb-4">
@@ -90,7 +81,7 @@ export default function StockLogbookPage() {
       {/* Filters */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filter</CardTitle>
+          <CardTitle className="text-base">Filter Logbook</CardTitle>
           <CardDescription>Saring berdasarkan produk, cold storage, jenis pergerakan, dan tanggal.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -174,7 +165,7 @@ export default function StockLogbookPage() {
                           <div className="text-[10px] text-muted-foreground">{r.sku}</div>
                         </TableCell>
                         <TableCell className="font-mono text-xs">{r.kodeSimpan || '-'}</TableCell>
-                        <TableCell className="text-xs whitespace-nowrap">{r.referenceType ? `${r.referenceType}${r.referenceNumber ? ' · ' + r.referenceNumber : ''}` : '-'}</TableCell>
+                        <TableCell className="text-xs whitespace-nowrap">{r.referenceType ? `${r.referenceType}${r.referenceNumber ? ' \u00b7 ' + r.referenceNumber : ''}` : '-'}</TableCell>
                         <TableCell className="text-xs">{r.csCode || '-'}</TableCell>
                         <TableCell className="text-right text-emerald-700 text-sm">{r.weightIn > 0 ? kg(r.weightIn) : ''}</TableCell>
                         <TableCell className="text-right text-red-700 text-sm">{r.weightOut > 0 ? kg(r.weightOut) : ''}</TableCell>
