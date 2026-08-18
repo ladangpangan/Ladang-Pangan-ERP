@@ -155,8 +155,12 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
   const { data, isLoading } = useSWR(`/api/tally-outbound/orders/${soId}/items/${item.id}/stocks`, fetcher, { revalidateOnFocus: false });
   const stocks = data?.data?.stocks || [];
   const orderedWeight = data?.data?.orderedWeight ?? item.orderedWeight;
+  const recommendedIds = data?.data?.recommendedIds || [];
+  const recommendedTotal = data?.data?.recommendedTotal || 0;
   const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
   const [saving, setSaving] = useState(false);
+
+  const pickRecommended = () => setSelected(new Set(recommendedIds));
 
   const toggle = (id) => {
     setSelected(prev => {
@@ -200,6 +204,15 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
           {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
           {!isLoading && stocks.length === 0 && (
             <div className="text-center text-sm text-muted-foreground py-8">Tidak ada kode simpan tersedia untuk produk ini di gudang.</div>
+          )}
+          {!isLoading && recommendedIds.length > 0 && (
+            <div className="rounded-lg border border-orange-300 bg-orange-50 p-3 flex items-center justify-between gap-2">
+              <div className="text-xs min-w-0">
+                <div className="font-semibold text-orange-700 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Rekomendasi kombinasi</div>
+                <div className="text-muted-foreground">{recommendedIds.length} kode simpan · total <b>{kg(recommendedTotal)}</b> (selisih {kg(Math.abs(recommendedTotal - orderedWeight))})</div>
+              </div>
+              <Button size="sm" variant="outline" className="border-orange-400 text-orange-700 hover:bg-orange-100 h-8 shrink-0" onClick={pickRecommended}>Pilih</Button>
+            </div>
           )}
           {stocks.map(st => {
             const active = selected.has(st.id);
