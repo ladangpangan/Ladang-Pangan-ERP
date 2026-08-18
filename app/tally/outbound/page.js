@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { ChevronRight, ChevronLeft, Loader2, PackageMinus, Truck, CheckCircle2, Sparkles, Snowflake, Boxes } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Loader2, PackageMinus, Truck, CheckCircle2, Sparkles, Snowflake, Boxes, NotebookPen, Lock } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -53,7 +53,7 @@ function OrderList({ onSelect }) {
       <Card className="mb-4 border-orange-200 bg-gradient-to-br from-orange-50 to-white">
         <CardContent className="pt-4 pb-4">
           <div className="flex items-center gap-2 mb-1"><Truck className="w-5 h-5 text-orange-600" /><span className="font-bold text-sm">Pilih SO untuk Outbound</span></div>
-          <p className="text-xs text-muted-foreground">Pilih Sales Order, lalu tentukan <b>kode simpan</b> untuk tiap item. Sistem memberi rekomendasi kode simpan yang beratnya paling mendekati pesanan.</p>
+          <p className="text-xs text-muted-foreground">Pilih Sales Order, lalu tentukan <b>kode simpan</b> untuk tiap item. Gunakan <b>Catat</b> untuk menyimpan sementara (stok belum dikunci) & <b>Simpan</b> untuk finalisasi.</p>
         </CardContent>
       </Card>
 
@@ -78,7 +78,8 @@ function OrderList({ onSelect }) {
                 <div className="flex items-center gap-2 flex-wrap mt-2 text-xs">
                   <Badge variant="outline">{so.orderDate ? format(new Date(so.orderDate), 'dd MMM yyyy') : '-'}</Badge>
                   <Badge variant="secondary">{kg(so.totalWeight)}</Badge>
-                  <Badge className={done ? 'bg-emerald-600' : 'bg-amber-500'}>{so.allocatedItemCount}/{so.itemCount} item</Badge>
+                  <Badge className={done ? 'bg-emerald-600' : 'bg-amber-500'}>{so.allocatedItemCount}/{so.itemCount} disimpan</Badge>
+                  {so.draftItemCount > 0 && <Badge className="bg-sky-500">{so.draftItemCount} draft</Badge>}
                 </div>
               </CardContent>
             </Card>
@@ -96,8 +97,10 @@ function OrderDetail({ soId }) {
 
   if (isLoading || !so) return <div className="text-center py-10"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
 
-  const allocatedCount = (so.items || []).filter(i => i.allocated).length;
-  const total = (so.items || []).length;
+  const items = so.items || [];
+  const finalCount = items.filter(i => i.tallyStatus === 'final').length;
+  const draftCount = items.filter(i => i.tallyStatus === 'draft').length;
+  const total = items.length;
 
   return (
     <div className="flex-1">
@@ -105,24 +108,29 @@ function OrderDetail({ soId }) {
         <CardContent className="pt-4 pb-4">
           <div className="font-mono font-bold text-sm">{so.soNumber}</div>
           <div className="text-sm font-semibold">{so.customerName}</div>
-          <div className="mt-2 flex items-center gap-2">
-            <Badge className={allocatedCount >= total ? 'bg-emerald-600' : 'bg-amber-500'}>{allocatedCount}/{total} item teralokasi</Badge>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <Badge className={finalCount >= total ? 'bg-emerald-600' : 'bg-amber-500'}>{finalCount}/{total} disimpan</Badge>
+            {draftCount > 0 && <Badge className="bg-sky-500">{draftCount} draft</Badge>}
             <Badge variant="outline">{so.pipelineStatus}</Badge>
           </div>
         </CardContent>
       </Card>
 
       <div className="space-y-3">
-        {(so.items || []).map(it => (
-          <Card key={it.id} className={it.allocated ? 'border-emerald-200' : 'border-amber-200'}>
+        {items.map(it => {
+          const st = it.tallyStatus || 'none';
+          return (
+          <Card key={it.id} className={st === 'final' ? 'border-emerald-200' : st === 'draft' ? 'border-sky-200' : 'border-amber-200'}>
             <CardContent className="pt-4 pb-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm truncate">{it.productName}</div>
                   <div className="text-[11px] text-muted-foreground">{it.sku}</div>
                 </div>
-                {it.allocated
-                  ? <Badge className="bg-emerald-600 shrink-0"><CheckCircle2 className="w-3 h-3 mr-1" />Terpilih</Badge>
+                {st === 'final'
+                  ? <Badge className="bg-emerald-600 shrink-0"><Lock className="w-3 h-3 mr-1" />Tersimpan</Badge>
+                  : st === 'draft'
+                  ? <Badge className="bg-sky-500 shrink-0"><NotebookPen className="w-3 h-3 mr-1" />Draft</Badge>
                   : <Badge className="bg-amber-500 shrink-0">Belum</Badge>}
               </div>
               <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
@@ -136,12 +144,13 @@ function OrderDetail({ soId }) {
                   ))}
                 </div>
               )}
-              <Button size="sm" variant={it.allocated ? 'outline' : 'default'} className="mt-3 w-full h-9" onClick={() => setAllocItem(it)}>
-                <Boxes className="w-4 h-4 mr-1.5" />{it.allocated ? 'Ubah Kode Simpan' : 'Pilih Kode Simpan'}
+              <Button size="sm" variant={st === 'final' ? 'outline' : 'default'} className="mt-3 w-full h-9" onClick={() => setAllocItem(it)}>
+                <Boxes className="w-4 h-4 mr-1.5" />{st === 'final' ? 'Ubah Kode Simpan' : st === 'draft' ? 'Lanjutkan / Simpan' : 'Pilih Kode Simpan'}
               </Button>
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {allocItem && (
@@ -158,7 +167,7 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
   const recommendedIds = data?.data?.recommendedIds || [];
   const recommendedTotal = data?.data?.recommendedTotal || 0;
   const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState(null); // null | 'draft' | 'final'
 
   const pickRecommended = () => setSelected(new Set(recommendedIds));
 
@@ -170,27 +179,32 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
     });
   };
 
+  const selectedStocks = useMemo(() => stocks.filter(st => selected.has(st.id)), [selected, stocks]);
   const selectedWeight = useMemo(() => {
     let w = 0;
-    for (const st of stocks) if (selected.has(st.id)) w += Number(st.weight || 0);
+    for (const st of selectedStocks) w += Number(st.weight || 0);
     return Math.round(w * 100) / 100;
-  }, [selected, stocks]);
+  }, [selectedStocks]);
+  const remaining = Math.round((Number(orderedWeight || 0) - selectedWeight) * 100) / 100;
 
-  const save = async () => {
-    setSaving(true);
+  const submit = async (mode) => {
+    setSaving(mode);
     try {
       const res = await fetch(`/api/tally-outbound/orders/${soId}/items/${item.id}/allocate`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stockIds: Array.from(selected) }),
+        body: JSON.stringify({ stockIds: Array.from(selected), mode }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
-      toast.success(`Kode simpan tersimpan (${kg(j.data?.allocatedWeight)})`);
+      if (mode === 'draft') toast.success(`Dicatat sebagai draft (${kg(j.data?.allocatedWeight)}) · stok belum dikunci`);
+      else toast.success(`Kode simpan disimpan & dikunci (${kg(j.data?.allocatedWeight)})`);
       onSaved();
     } catch (e) {
       toast.error(e.message);
-    } finally { setSaving(false); }
+    } finally { setSaving(null); }
   };
+
+  const busy = saving !== null;
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -199,6 +213,30 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
           <DialogTitle className="text-base">{item.productName}</DialogTitle>
           <div className="text-xs text-muted-foreground">Berat pesanan: <b>{kg(orderedWeight)}</b> · Pilih kode simpan (utuh per-lot)</div>
         </DialogHeader>
+
+        {/* Ringkasan sisa berat dinamis */}
+        <div className="px-4 py-2.5 border-b bg-muted/40">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">Terpilih</span>
+            <b className="text-sm">{kg(selectedWeight)}</b>
+          </div>
+          <div className="flex items-center justify-between text-xs mt-1">
+            <span className="text-muted-foreground">{remaining >= 0 ? 'Sisa yang diminta' : 'Kelebihan'}</span>
+            <b className={`text-sm ${remaining > 0 ? 'text-amber-600' : remaining < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              {remaining === 0 ? 'Pas (0 kg)' : kg(Math.abs(remaining))}
+            </b>
+          </div>
+          {selectedStocks.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {selectedStocks.map(st => (
+                <Badge key={st.id} variant="secondary" className="font-mono text-[10px] gap-1">
+                  {st.kodeSimpan} · {kg(st.weight)}
+                  <button onClick={() => toggle(st.id)} className="ml-0.5 text-muted-foreground hover:text-foreground" aria-label="hapus">×</button>
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
@@ -242,17 +280,14 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
           })}
         </div>
 
-        <DialogFooter className="p-3 border-t flex-row items-center justify-between gap-2 sm:justify-between">
-          <div className="text-xs">
-            <span className="text-muted-foreground">Terpilih:</span> <b>{kg(selectedWeight)}</b>
-            <span className="text-muted-foreground"> / {kg(orderedWeight)}</span>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>Batal</Button>
-            <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Simpan'}
-            </Button>
-          </div>
+        <DialogFooter className="p-3 border-t grid grid-cols-3 gap-2 sm:grid-cols-3">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy} className="w-full">Batal</Button>
+          <Button variant="outline" size="sm" onClick={() => submit('draft')} disabled={busy} className="w-full border-sky-400 text-sky-700 hover:bg-sky-50">
+            {saving === 'draft' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><NotebookPen className="w-4 h-4 mr-1" />Catat</>}
+          </Button>
+          <Button size="sm" onClick={() => submit('final')} disabled={busy || selected.size === 0} className="w-full bg-emerald-600 hover:bg-emerald-700">
+            {saving === 'final' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Lock className="w-4 h-4 mr-1" />Simpan</>}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

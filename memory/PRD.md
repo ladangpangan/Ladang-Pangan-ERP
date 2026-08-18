@@ -89,3 +89,27 @@ mdDeleteMany/mdCount/mdArchivedFilter + ensureMasterSync). route.js: rewrote pro
 archive handler mirrors archive to Mongo, cold-storage delete cascades zones in Mongo. Backend tested — all pass,
 seeded counts restored after cleanup. LIMITATION: transactions still read master data from the per-pod SQLite mirror,
 so keep prod at 1 replica until transactions are migrated (Phase 2 continued). Next: contacts, then transactions.
+
+## Tally Outbound — "Catat" (Draft) vs "Simpan" (Final) — added 2026-02
+Operators allocate kode-simpan (stock lots) to SO Draft items with two modes on
+POST /api/tally-outbound/orders/:id/items/:itemId/allocate body {stockIds, mode:'draft'|'final'}:
+- Catat (draft): saves picked lots into so_item_stocks WITHOUT locking stock (inventory_stock stays 'active') and
+  WITHOUT changing SO totals; sets sales_order_items.outbound_tally_status='draft'. Re-openable/incremental.
+- Simpan (final): locks stock (status='allocated'), revises item weight/qty/subtotal = sum of lots, recalcs SO totals,
+  sets outbound_tally_status='final'.
+New column sales_order_items.outbound_tally_status (default 'none'). SO Confirm (Draft->Confirmed) is BLOCKED while any
+non-dropship item is 'draft' (must Simpan first). Re-pick frees prior lots to 'active' ONLY if not used by another item.
+GET /api/tally-outbound/orders reports allocatedItemCount(=final) + draftItemCount; SO hidden only when all items final.
+Frontend /app/app/tally/outbound/page.js dialog has 3 buttons Batal/Catat/Simpan, shows selected-code chips and a live
+"sisa yang diminta" (ordered - selected). Backend tested 7/7. Selecting lots is optional per SO item — can be done via
+SO detail page OR Tally Outbound; SO-page allocate also now sets outbound_tally_status='final'.
+
+## Biaya Kirim (shipping cost) on SO — fixed 2026-02
+Rules (user-confirmed): shippingBearer='buyer' => shipping ADDED to sales_order.total_amount (billed to customer) AND
+posted as expense (company pays courier) => operating margin NEUTRAL. shippingBearer='seller' => NOT billed; posted as
+Beban Pengiriman/Ongkir (6-1300) => reduces profit/margin. New column sales_order.shipping_pay_method ('tunai'=>Kas |
+'transfer'=>Bank) selects the cash source for the SO_SHIP journal (Dr 6-1300 / Cr Kas|Bank). recalcSoTotals + Invoiced
+transition add buyer shipping; SO detail returns buyerShipping/goodsRevenue and grossProfit=goodsRevenue-cogs-
+sellerShipping. engine.salesProfitReport now excludes buyer shipping from revenue and subtracts seller shipping from GP.
+Invoice PDF shows a "Biaya Kirim" line when buyer-borne. Backend tested 5/5. Files: route.js, lib/accounting/engine.js,
+lib/pdf/invoice.js, lib/db/schema.js, lib/db/index.js, app/dashboard/sales-orders/[id]/page.js.
