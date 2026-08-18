@@ -1753,7 +1753,8 @@ async function handleRoute(request, { params }) {
     // GET /purchase-orders - list with filters
     if (route === '/purchase-orders' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      // operator perlu baca daftar PO untuk melakukan Inbound Tally (berbasis PO) di /tally/inbound
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const status = url.searchParams.get('status');
       const type = url.searchParams.get('type');
@@ -1833,7 +1834,8 @@ async function handleRoute(request, { params }) {
     // GET /purchase-orders/:id - detail
     if (route.startsWith('/purchase-orders/') && path.length === 2 && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      // operator perlu baca detail PO (item + berat Surat Jalan) untuk Inbound Tally di /tally/inbound
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
       const id = path[1];
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
