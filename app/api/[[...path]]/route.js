@@ -16,6 +16,7 @@ import { importMasterData, IMPORT_TEMPLATES } from '@/lib/export/import';
 import * as coaMongo from '@/lib/accounting/coa-mongo';
 import * as jmongo from '@/lib/accounting/journal-mongo';
 import * as salesMongo from '@/lib/db/sales-mongo';
+import * as invMongo from '@/lib/db/inventory-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -225,6 +226,15 @@ function recommendStockCombo(lots, targetKg) {
   return { ids, total: best / 100 };
 }
 
+// Top-level path prefixes (path[0]) whose handlers READ or WRITE inventory_stock.
+// For these we hydrate the per-pod SQLite mirror from MongoDB and, on mutations,
+// diff-persist the changed stock rows back to Mongo (Phase 4, multi-replica safe).
+const INVENTORY_PATHS = new Set([
+  'inventory', 'inventory-stocks', 'inventory-reports',
+  'sales-orders', 'tally-outbound', 'opnames',
+  'accounting', 'dashboard', 'reports',
+]);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -240,6 +250,17 @@ async function handleRoute(request, { params }) {
   // before ANY sales-orders / tally-outbound request (read OR write) so every pod sees the same SO data.
   if (path[0] === 'sales-orders' || path[0] === 'tally-outbound') {
     try { await salesMongo.ensureSalesReady(getRawSqlite()); } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 4 (MongoDB): inventory_stock (physical stock lots + allocation status + quantities) is
+  // MongoDB-authoritative. Hydrate the per-pod SQLite mirror before any request that reads/writes stock,
+  // and (for mutating requests) snapshot the stock signatures so we can diff-persist only what changed.
+  if (INVENTORY_PATHS.has(path[0])) {
+    try {
+      const rawInv = getRawSqlite();
+      await invMongo.ensureInventoryReady(rawInv);
+      if (method !== 'GET' && method !== 'HEAD') invMongo.captureSnapshot(request, rawInv);
+    } catch (e) { /* best-effort */ }
   }
 
   try {
@@ -302,7 +323,7 @@ async function handleRoute(request, { params }) {
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const raw = getRawSqlite();
       if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); } catch (e) { /* best-effort */ } }
-      if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); await invMongo.ensureInventoryReady(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'sales-orders') { try { await salesMongo.ensureSalesReady(raw); } catch (e) { /* best-effort */ } }
       const out = buildExportSheets(raw, path[1]);
       if (!out) return err('Modul ekspor tidak dikenal', 404);
@@ -5871,6 +5892,8 @@ async function handleRouteWithBackup(request, ctx) {
       // Phase 3: after a successful SO-affecting mutation, persist the affected SO aggregate to MongoDB
       // (per-SO upsert — concurrency-safe). Covers /sales-orders/* and /tally-outbound/orders/*.
       await persistSalesAfterMutation(request, res);
+      // Phase 4: diff-persist any inventory_stock rows this request added/changed/removed (concurrency-safe).
+      try { await invMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
