@@ -30,6 +30,7 @@ export default function ImportPanel() {
           <b>Langkah:</b> 1) Unduh template · 2) Isi data dari sistem lama (Odoo) sesuai kolom · 3) Upload file .xlsx.
           Data akan di-<b>upsert</b> (baris yang cocok diperbarui, yang baru dibuat). Untuk migrasi bersih, impor
           <b> Bagan Akun</b>, <b>Produk</b>, & <b>Kontak</b> dulu, lalu Saldo Awal.
+          <br /><b>Catatan:</b> baris contoh di template hanya panduan — <b>hapus/ganti</b> dengan data Anda sebelum upload.
         </AlertDescription>
       </Alert>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -47,9 +48,11 @@ function ImportCard({ mod, tpl }) {
 
   const downloadTemplate = () => {
     if (!tpl) { toast.error('Template belum siap'); return; }
-    const example = {};
-    (tpl.columns || []).forEach(c => { example[c] = tpl.example?.[c] ?? ''; });
-    downloadWorkbook(tpl.filename || `Template_${mod.key}`, [{ name: tpl.sheet || 'Data', rows: [example] }]);
+    const cols = tpl.columns || [];
+    const mkRow = (src) => { const r = {}; cols.forEach(c => { r[c] = src?.[c] ?? ''; }); return r; };
+    const examples = (tpl.examples && tpl.examples.length ? tpl.examples : [{}]).map(mkRow);
+    const blank = mkRow({}); // 1 baris kosong untuk mulai mengisi data Anda
+    downloadWorkbook(tpl.filename || `Template_${mod.key}`, [{ name: tpl.sheet || 'Data', rows: [...examples, blank] }]);
   };
 
   const onFile = async (e) => {
