@@ -15,6 +15,7 @@ import { buildExportSheets } from '@/lib/export/queries';
 import { importMasterData, IMPORT_TEMPLATES } from '@/lib/export/import';
 import * as coaMongo from '@/lib/accounting/coa-mongo';
 import * as jmongo from '@/lib/accounting/journal-mongo';
+import * as salesMongo from '@/lib/db/sales-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -234,6 +235,13 @@ async function handleRoute(request, { params }) {
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
 
+  // Phase 3 (MongoDB): the Sales Order aggregate (sales_order + items + stock allocations + payments)
+  // is MongoDB-authoritative for multi-replica consistency. Hydrate the per-pod SQLite mirror from Mongo
+  // before ANY sales-orders / tally-outbound request (read OR write) so every pod sees the same SO data.
+  if (path[0] === 'sales-orders' || path[0] === 'tally-outbound') {
+    try { await salesMongo.ensureSalesReady(getRawSqlite()); } catch (e) { /* best-effort */ }
+  }
+
   try {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
@@ -295,6 +303,7 @@ async function handleRoute(request, { params }) {
       const raw = getRawSqlite();
       if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'sales-orders') { try { await salesMongo.ensureSalesReady(raw); } catch (e) { /* best-effort */ } }
       const out = buildExportSheets(raw, path[1]);
       if (!out) return err('Modul ekspor tidak dikenal', 404);
       return json({ data: out });
@@ -344,6 +353,10 @@ async function handleRoute(request, { params }) {
       // Cashbook, opening balances, period closings). Hydrate the per-pod SQLite mirror from Mongo
       // before any read/sync so every replica sees the same shared financial data.
       await jmongo.ensureJournalsReady(raw);
+      // Sales Orders are MongoDB-authoritative too — the accounting engine (syncLedger) reads
+      // sales_order / so_item_stocks / sales_payments to regenerate SO auto journals (revenue, COGS,
+      // payments, cashback), so hydrate the SO aggregate BEFORE the engine runs.
+      await salesMongo.ensureSalesReady(raw);
       const uid = session.user.id;
       const sub = path[1] || '';
       const parseRange = (url) => ({
@@ -5855,9 +5868,37 @@ async function handleRouteWithBackup(request, ctx) {
     if (res && typeof res.status === 'number' && res.status < 400) {
       const { scheduleBackup } = await import('@/lib/db/persistence');
       scheduleBackup();
+      // Phase 3: after a successful SO-affecting mutation, persist the affected SO aggregate to MongoDB
+      // (per-SO upsert — concurrency-safe). Covers /sales-orders/* and /tally-outbound/orders/*.
+      await persistSalesAfterMutation(request, res);
     }
-  } catch { /* never let backup scheduling break the response */ }
+  } catch { /* never let post-write hooks break the response */ }
   return res;
+}
+
+// Determine which SO id(s) a just-completed mutating request touched, then push
+// that SO aggregate from the local SQLite mirror to MongoDB.
+async function persistSalesAfterMutation(request, res) {
+  try {
+    const parts = new URL(request.url).pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
+    const p0 = parts[0];
+    const soIds = [];
+    if (p0 === 'sales-orders') {
+      if (parts.length === 1) {
+        // POST /sales-orders (create) -> new id is in the response body { data: { id } }
+        try { const b = await res.clone().json(); if (b?.data?.id) soIds.push(b.data.id); } catch { /* ignore */ }
+      } else if (parts[1]) {
+        soIds.push(parts[1]);
+      }
+    } else if (p0 === 'tally-outbound' && parts[1] === 'orders' && parts[2]) {
+      soIds.push(parts[2]);
+    } else {
+      return;
+    }
+    if (!soIds.length) return;
+    const raw = getRawSqlite();
+    for (const id of soIds) await salesMongo.persistSalesOrderToMongo(raw, id);
+  } catch (e) { console.error('[sales-mongo] persistSalesAfterMutation failed:', e?.message || e); }
 }
 
 export const POST = handleRouteWithBackup;
