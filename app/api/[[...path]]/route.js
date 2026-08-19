@@ -18,6 +18,7 @@ import * as jmongo from '@/lib/accounting/journal-mongo';
 import * as salesMongo from '@/lib/db/sales-mongo';
 import * as invMongo from '@/lib/db/inventory-mongo';
 import * as potxMongo from '@/lib/db/potx-mongo';
+import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -247,6 +248,11 @@ const POTX_PATHS = new Set([
   'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports',
 ]);
 
+// Phase 6: path[0] prefixes that READ or WRITE fixed_assets / stock_opname(+items).
+// fixed_assets CRUD lives under /accounting/fixed-assets; stock_opname under /opnames; the accounting
+// reports/engine read both (depreciation + shrinkage auto journals). Diff-persist, concurrency-safe.
+const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports']);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -283,6 +289,17 @@ async function handleRoute(request, { params }) {
       const rawTx = getRawSqlite();
       await potxMongo.ensureReady(rawTx);
       if (method !== 'GET' && method !== 'HEAD') potxMongo.captureSnapshot(request, rawTx);
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 6 (MongoDB): fixed_assets + stock_opname(+items) are MongoDB-authoritative. The accounting
+  // engine reads them for depreciation & shrinkage auto journals, so hydrate before any accounting/opname
+  // request; on mutations, snapshot for concurrency-safe diff-persist.
+  if (ASSETS_OPNAME_PATHS.has(path[0])) {
+    try {
+      const rawAo = getRawSqlite();
+      await assetsOpnameMongo.ensureReady(rawAo);
+      if (method !== 'GET' && method !== 'HEAD') assetsOpnameMongo.captureSnapshot(request, rawAo);
     } catch (e) { /* best-effort */ }
   }
 
@@ -345,7 +362,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const raw = getRawSqlite();
-      if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); await assetsOpnameMongo.ensureReady(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); await invMongo.ensureInventoryReady(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'sales-orders') { try { await salesMongo.ensureSalesReady(raw); await potxMongo.hydrateToSqlite(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'purchase-orders') { try { await potxMongo.ensureReady(raw); } catch (e) { /* best-effort */ } }
@@ -5920,6 +5937,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await invMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 5: diff-persist any PO / commission / SO-extra rows this request changed (concurrency-safe).
       try { await potxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 6: diff-persist any fixed_assets / stock_opname rows this request changed (concurrency-safe).
+      try { await assetsOpnameMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;

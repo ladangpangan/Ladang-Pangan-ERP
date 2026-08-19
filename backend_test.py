@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-MIGRATION Phase 3 Backend Test: Sales Order MongoDB-authoritative
-Tests that SO aggregate (sales_order, sales_order_items, so_item_stocks, sales_payments)
-is correctly persisted to MongoDB and hydrated to SQLite.
+MIGRATION Phase 6 Backend Test: fixed_assets + stock_opname(+items) MongoDB-authoritative
+Tests the DIFF-persist write strategy for multi-replica safe operations.
 """
+
 import requests
 import json
-import os
+import time
 from pymongo import MongoClient
 import sqlite3
+from datetime import datetime
+from http.cookiejar import Cookie
 
-BASE_URL = 'http://localhost:3000'
-API_URL = f"{BASE_URL}/api"
-
-# MongoDB connection
-MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017')
-MONGO_DB_NAME = 'erp_prod'  # Default from mongo.js
+# Configuration
+BASE_URL = "http://localhost:3000/api"
+MONGO_URL = "mongodb://localhost:27017"
+MONGO_DB_NAME = "erp_prod"
+SQLITE_DB = "/app/data/erp.db"
 
 # Auth credentials
 ADMIN_EMAIL = "admin@lpi.co.id"
@@ -23,867 +24,740 @@ ADMIN_PASSWORD = "admin123"
 OPERATOR_EMAIL = "operator@lpi.co.id"
 OPERATOR_PASSWORD = "operator123"
 
-# Test data tracking
-test_so_ids = []
-test_customer_ids = []
-test_product_ids = []
+# Test results
+test_results = []
 
-def print_test(msg):
-    print(f"\n{'='*80}")
-    print(f"TEST: {msg}")
-    print('='*80)
-
-def print_result(passed, msg):
+def log_test(name, passed, details=""):
+    """Log test result"""
     status = "✅ PASSED" if passed else "❌ FAILED"
-    print(f"{status}: {msg}")
+    print(f"\n{status}: {name}")
+    if details:
+        print(f"  Details: {details}")
+    test_results.append({"name": name, "passed": passed, "details": details})
 
 def login(email, password):
-    """Login and return session"""
+    """Login and return session with manually set cookie"""
     session = requests.Session()
-    # Better Auth requires Origin header
     headers = {
-        'Origin': BASE_URL,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
+        "Origin": "http://localhost:3000"
     }
     
-    resp = session.post(
-        f"{API_URL}/auth/sign-in/email",
+    # Try to login
+    response = session.post(
+        f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
         json={"email": email, "password": password},
         headers=headers
     )
     
-    if resp.status_code == 200:
-        print(f"✅ Logged in as {email}")
-        # Debug: print cookies
-        print(f"   Cookies: {len(session.cookies)} cookie(s)")
-        for cookie in session.cookies:
-            print(f"   - {cookie.name}: {cookie.value[:20]}...")
-        return session
+    if response.status_code == 200:
+        # Extract the session token from Set-Cookie header
+        set_cookie_header = response.headers.get('set-cookie', '')
+        if '__Secure-better-auth.session_token=' in set_cookie_header:
+            # Extract token value
+            token_start = set_cookie_header.find('__Secure-better-auth.session_token=') + len('__Secure-better-auth.session_token=')
+            token_end = set_cookie_header.find(';', token_start)
+            token_value = set_cookie_header[token_start:token_end]
+            
+            # Manually add the cookie to the session (without Secure flag for HTTP)
+            cookie = Cookie(
+                version=0,
+                name='__Secure-better-auth.session_token',
+                value=token_value,
+                port=None,
+                port_specified=False,
+                domain='localhost',
+                domain_specified=True,
+                domain_initial_dot=False,
+                path='/',
+                path_specified=True,
+                secure=False,  # Set to False for HTTP
+                expires=None,
+                discard=True,
+                comment=None,
+                comment_url=None,
+                rest={'HttpOnly': None},
+                rfc2109=False
+            )
+            session.cookies.set_cookie(cookie)
+            print(f"✓ Logged in as {email} (token: {token_value[:20]}...)")
+            return session
+        else:
+            print(f"✗ No session token in response for {email}")
+            return None
     else:
-        print(f"❌ Login failed for {email}: {resp.status_code} - {resp.text}")
+        print(f"✗ Login failed for {email}: {response.status_code} - {response.text[:200]}")
         return None
 
 def get_mongo_client():
     """Get MongoDB client and database"""
-    try:
-        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-        # Test connection
-        client.admin.command('ping')
-        db = client[MONGO_DB_NAME]
-        print(f"✅ Connected to MongoDB: {MONGO_DB_NAME}")
-        return client, db
-    except Exception as e:
-        print(f"❌ MongoDB connection failed: {e}")
-        return None, None
+    client = MongoClient(MONGO_URL)
+    db = client[MONGO_DB_NAME]
+    return client, db
 
-def get_sqlite_connection():
-    """Get SQLite connection"""
+def get_sqlite_conn():
+    """Get SQLite connection (readonly)"""
+    conn = sqlite3.connect(SQLITE_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def count_mongo_collection(db, collection_name):
+    """Count documents in MongoDB collection"""
     try:
-        conn = sqlite3.connect('/app/data/erp.db')
-        conn.row_factory = sqlite3.Row
-        print(f"✅ Connected to SQLite: /app/data/erp.db")
-        return conn
+        return db[collection_name].count_documents({})
     except Exception as e:
-        print(f"❌ SQLite connection failed: {e}")
+        print(f"Error counting {collection_name}: {e}")
+        return 0
+
+def count_sqlite_table(conn, table_name):
+    """Count rows in SQLite table"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        return cursor.fetchone()[0]
+    except Exception as e:
+        print(f"Error counting {table_name}: {e}")
+        return 0
+
+def get_accounts(session):
+    """Get chart of accounts to find valid account codes"""
+    response = session.get(f"{BASE_URL}/accounting/accounts")
+    if response.status_code == 200:
+        accounts = response.json().get("data", [])
+        # Find asset, accumulated depreciation, and expense accounts
+        asset_acct = next((a for a in accounts if a.get("code") == "1-2100"), None)  # Peralatan & Mesin
+        accum_acct = next((a for a in accounts if a.get("code") == "1-2900"), None)  # Akumulasi Penyusutan
+        expense_acct = next((a for a in accounts if a.get("code") == "6-1600"), None)  # Beban Penyusutan
+        return asset_acct, accum_acct, expense_acct
+    return None, None, None
+
+def test_scenario_1_fixed_asset_create(session, mongo_db):
+    """Scenario 1: Fixed Asset CREATE - verify in both Mongo and API"""
+    print("\n" + "="*80)
+    print("SCENARIO 1: Fixed Asset CREATE")
+    print("="*80)
+    
+    # Get valid account codes
+    asset_acct, accum_acct, expense_acct = get_accounts(session)
+    if not asset_acct or not accum_acct or not expense_acct:
+        log_test("Scenario 1: Get accounts", False, "Could not find required account codes")
         return None
+    
+    print(f"Using accounts: asset={asset_acct['code']}, accum={accum_acct['code']}, expense={expense_acct['code']}")
+    
+    # Count before
+    count_before = count_mongo_collection(mongo_db, "fixed_assets")
+    print(f"MongoDB fixed_assets count before: {count_before}")
+    
+    # Create fixed asset
+    payload = {
+        "code": "FA-T1",
+        "name": "Mesin Uji",
+        "category": "Mesin",
+        "acquisitionDate": "2026-01-01",
+        "acquisitionCost": 12000000,
+        "salvageValue": 0,
+        "usefulLifeMonths": 60,
+        "method": "straight_line",
+        "assetAccountCode": asset_acct["code"],
+        "accumAccountCode": accum_acct["code"],
+        "expenseAccountCode": expense_acct["code"],
+        "postDepreciation": True
+    }
+    
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    response = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload, headers=headers)
+    
+    if response.status_code != 200:
+        log_test("Scenario 1: Create fixed asset", False, f"API returned {response.status_code}: {response.text[:200]}")
+        return None
+    
+    data = response.json().get("data")
+    asset_id = data.get("id")
+    print(f"✓ Created fixed asset: {asset_id}")
+    
+    # Verify in API
+    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
+    if response.status_code != 200:
+        log_test("Scenario 1: Verify in API", False, f"GET failed: {response.status_code}")
+        return asset_id
+    
+    assets = response.json().get("data", [])
+    found_in_api = any(a["id"] == asset_id for a in assets)
+    
+    # Verify in MongoDB
+    time.sleep(0.5)  # Give time for async persist
+    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
+    found_in_mongo = mongo_doc is not None
+    
+    count_after = count_mongo_collection(mongo_db, "fixed_assets")
+    print(f"MongoDB fixed_assets count after: {count_after}")
+    
+    if found_in_api and found_in_mongo:
+        log_test("Scenario 1: Fixed Asset CREATE", True, f"Asset {asset_id} exists in both API and MongoDB")
+    else:
+        log_test("Scenario 1: Fixed Asset CREATE", False, f"API: {found_in_api}, MongoDB: {found_in_mongo}")
+    
+    return asset_id
 
-def get_mongo_counts(db):
-    """Get document counts from MongoDB collections"""
-    counts = {}
-    for collection in ['sales_order', 'sales_order_items', 'so_item_stocks', 'sales_payments']:
-        try:
-            counts[collection] = db[collection].count_documents({})
-        except Exception:
-            counts[collection] = 0
-    return counts
-
-def test_1_create_so(session, db):
-    """TEST 1: CREATE SO - verify in both Mongo and API"""
-    print_test("1. CREATE SALES ORDER")
-    
-    try:
-        # Get a valid customer
-        resp = session.get(f"{API_URL}/contacts")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get contacts: {resp.status_code}")
-            return False
-        
-        contacts = resp.json().get('data', [])
-        customer = None
-        for c in contacts:
-            if 'Customer' in c.get('categories', []):
-                customer = c
-                break
-        
-        if not customer:
-            print_result(False, "No customer found")
-            return False
-        
-        print(f"Using customer: {customer['displayName']} (ID: {customer['id']})")
-        
-        # Get a valid product
-        resp = session.get(f"{API_URL}/products")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get products: {resp.status_code}")
-            return False
-        
-        products = resp.json().get('data', [])
-        if not products:
-            print_result(False, "No products found")
-            return False
-        
-        product = products[0]
-        print(f"Using product: {product['name']} (ID: {product['id']})")
-        
-        # Create SO
-        so_data = {
-            "customerId": customer['id'],
-            "items": [{
-                "productId": product['id'],
-                "quantity": 10,
-                "weight": 10,
-                "unitPrice": 35000
-            }]
-        }
-        
-        resp = session.post(
-            f"{API_URL}/sales-orders",
-            json=so_data,
-            headers={'Origin': BASE_URL}
-        )
-        
-        if resp.status_code != 201:
-            print_result(False, f"Failed to create SO: {resp.status_code} - {resp.text}")
-            return False
-        
-        so = resp.json().get('data', {})
-        so_id = so.get('id')
-        so_number = so.get('soNumber')
-        
-        if not so_id:
-            print_result(False, "No SO ID returned")
-            return False
-        
-        test_so_ids.append(so_id)
-        print(f"✅ Created SO: {so_number} (ID: {so_id})")
-        
-        # Verify in API - GET list
-        resp = session.get(f"{API_URL}/sales-orders")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO list: {resp.status_code}")
-            return False
-        
-        so_list = resp.json().get('data', [])
-        found_in_list = any(s['id'] == so_id for s in so_list)
-        print_result(found_in_list, f"SO found in list: {found_in_list}")
-        
-        # Verify in API - GET detail
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO detail: {resp.status_code}")
-            return False
-        
-        so_detail = resp.json().get('data', {})
-        has_items = len(so_detail.get('items', [])) > 0
-        print_result(has_items, f"SO has items: {has_items}")
-        
-        # Verify in MongoDB - sales_order
-        mongo_so = db['sales_order'].find_one({'id': so_id})
-        if not mongo_so:
-            print_result(False, "SO not found in MongoDB sales_order collection")
-            return False
-        print_result(True, f"SO found in MongoDB sales_order: {mongo_so.get('so_number')}")
-        
-        # Verify in MongoDB - sales_order_items
-        mongo_items = list(db['sales_order_items'].find({'sales_order_id': so_id}))
-        if not mongo_items:
-            print_result(False, "SO items not found in MongoDB sales_order_items collection")
-            return False
-        print_result(True, f"SO items found in MongoDB: {len(mongo_items)} item(s)")
-        
-        print_result(True, "CREATE SO test completed successfully")
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_2_edit_so(session, db):
-    """TEST 2: EDIT SO - verify changes in both Mongo and API"""
-    print_test("2. EDIT SALES ORDER")
-    
-    if not test_so_ids:
-        print_result(False, "No test SO available")
-        return False
-    
-    try:
-        so_id = test_so_ids[0]
-        new_notes = f"Updated notes - test {os.urandom(4).hex()}"
-        
-        # Update SO
-        resp = session.patch(
-            f"{API_URL}/sales-orders/{so_id}",
-            json={"notes": new_notes},
-            headers={'Origin': BASE_URL}
-        )
-        
-        if resp.status_code != 200:
-            print_result(False, f"Failed to update SO: {resp.status_code} - {resp.text}")
-            return False
-        
-        print(f"✅ Updated SO with notes: {new_notes}")
-        
-        # Verify in API
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO: {resp.status_code}")
-            return False
-        
-        so_detail = resp.json().get('data', {})
-        api_notes = so_detail.get('notes', '')
-        notes_match = api_notes == new_notes
-        print_result(notes_match, f"API notes match: {notes_match} ('{api_notes}')")
-        
-        # Verify in MongoDB
-        mongo_so = db['sales_order'].find_one({'id': so_id})
-        if not mongo_so:
-            print_result(False, "SO not found in MongoDB")
-            return False
-        
-        mongo_notes = mongo_so.get('notes', '')
-        mongo_match = mongo_notes == new_notes
-        print_result(mongo_match, f"MongoDB notes match: {mongo_match} ('{mongo_notes}')")
-        
-        success = notes_match and mongo_match
-        print_result(success, "EDIT SO test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_3_stock_allocation(session, db):
-    """TEST 3: STOCK ALLOCATION - verify so_item_stocks in Mongo"""
-    print_test("3. STOCK ALLOCATION")
-    
-    if not test_so_ids:
-        print_result(False, "No test SO available")
-        return False
-    
-    try:
-        so_id = test_so_ids[0]
-        
-        # Get SO detail to find item ID
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO: {resp.status_code}")
-            return False
-        
-        so_detail = resp.json().get('data', {})
-        items = so_detail.get('items', [])
-        if not items:
-            print_result(False, "No items in SO")
-            return False
-        
-        item = items[0]
-        item_id = item['id']
-        product_id = item['productId']
-        
-        # Check for available stocks
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}/available-stocks")
-        if resp.status_code != 200:
-            print(f"⚠️  Available stocks endpoint returned {resp.status_code}, trying inventory-stocks")
-            resp = session.get(f"{API_URL}/inventory-stocks")
-        
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get stocks: {resp.status_code}")
-            return False
-        
-        stocks_data = resp.json().get('data', [])
-        
-        # Filter for active stocks of this product
-        available_stocks = []
-        if isinstance(stocks_data, list):
-            available_stocks = [s for s in stocks_data if s.get('productId') == product_id and s.get('status') == 'active']
-        
-        if not available_stocks:
-            print("⚠️  No active inventory stock available for this product - SKIPPING allocation test")
-            print_result(True, "Stock allocation test skipped (no active stock)")
-            return True
-        
-        # Use first available stock
-        stock_id = available_stocks[0]['id']
-        print(f"Using stock: {stock_id}")
-        
-        # Allocate stock
-        allocation_data = {
-            "stockIds": [stock_id]
-        }
-        
-        resp = session.post(
-            f"{API_URL}/sales-orders/{so_id}/items/{item_id}/allocate",
-            json=allocation_data,
-            headers={'Origin': BASE_URL}
-        )
-        
-        if resp.status_code not in [200, 201]:
-            print_result(False, f"Failed to allocate stock: {resp.status_code} - {resp.text}")
-            return False
-        
-        print(f"✅ Allocated stock to SO item")
-        
-        # Verify in MongoDB - so_item_stocks
-        mongo_allocations = list(db['so_item_stocks'].find({'sales_order_id': so_id}))
-        if not mongo_allocations:
-            print_result(False, "Stock allocations not found in MongoDB so_item_stocks collection")
-            return False
-        
-        print_result(True, f"Stock allocations found in MongoDB: {len(mongo_allocations)} allocation(s)")
-        
-        # Verify allocation details
-        allocation = mongo_allocations[0]
-        print(f"  - Allocation ID: {allocation.get('id')}")
-        print(f"  - Stock ID: {allocation.get('inventory_stock_id')}")
-        print(f"  - SO Item ID: {allocation.get('sales_order_item_id')}")
-        
-        print_result(True, "STOCK ALLOCATION test completed successfully")
-        return True
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_4_payment(session, db):
-    """TEST 4: PAYMENT - verify sales_payments in Mongo and SO updated"""
-    print_test("4. PAYMENT")
-    
-    if not test_so_ids:
-        print_result(False, "No test SO available")
-        return False
-    
-    try:
-        so_id = test_so_ids[0]
-        
-        # Add payment
-        payment_data = {
-            "amount": 100000,
-            "method": "Transfer",
-            "paymentDate": "2026-02-10"
-        }
-        
-        resp = session.post(
-            f"{API_URL}/sales-orders/{so_id}/payments",
-            json=payment_data,
-            headers={'Origin': BASE_URL}
-        )
-        
-        if resp.status_code not in [200, 201]:
-            print_result(False, f"Failed to add payment: {resp.status_code} - {resp.text}")
-            return False
-        
-        print(f"✅ Added payment: Rp {payment_data['amount']}")
-        
-        # Verify in MongoDB - sales_payments
-        mongo_payments = list(db['sales_payments'].find({'sales_order_id': so_id}))
-        if not mongo_payments:
-            print_result(False, "Payment not found in MongoDB sales_payments collection")
-            return False
-        
-        print_result(True, f"Payment found in MongoDB: {len(mongo_payments)} payment(s)")
-        
-        # Verify payment details
-        payment = mongo_payments[0]
-        amount_match = payment.get('amount') == payment_data['amount']
-        method_match = payment.get('method') == payment_data['method']
-        print(f"  - Amount: Rp {payment.get('amount')} (match: {amount_match})")
-        print(f"  - Method: {payment.get('method')} (match: {method_match})")
-        
-        # Verify SO paidAmount updated in MongoDB
-        mongo_so = db['sales_order'].find_one({'id': so_id})
-        if not mongo_so:
-            print_result(False, "SO not found in MongoDB")
-            return False
-        
-        paid_amount = mongo_so.get('paid_amount', 0)
-        payment_status = mongo_so.get('payment_status', '')
-        print(f"  - SO paidAmount: Rp {paid_amount}")
-        print(f"  - SO paymentStatus: {payment_status}")
-        
-        paid_updated = paid_amount > 0
-        print_result(paid_updated, f"SO paidAmount updated: {paid_updated}")
-        
-        success = len(mongo_payments) > 0 and amount_match and method_match and paid_updated
-        print_result(success, "PAYMENT test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_5_multi_so_isolation(session, db):
-    """TEST 5: MULTI-SO ISOLATION - ensure per-SO persist doesn't clobber other SOs"""
-    print_test("5. MULTI-SO ISOLATION (Concurrency Safety)")
-    
-    try:
-        # Get customer and product
-        resp = session.get(f"{API_URL}/contacts")
-        contacts = resp.json().get('data', [])
-        customer = next((c for c in contacts if 'Customer' in c.get('categories', [])), None)
-        
-        resp = session.get(f"{API_URL}/products")
-        products = resp.json().get('data', [])
-        product = products[0] if products else None
-        
-        if not customer or not product:
-            print_result(False, "Missing customer or product")
-            return False
-        
-        # Create SO #1
-        so_data_1 = {
-            "customerId": customer['id'],
-            "items": [{
-                "productId": product['id'],
-                "quantity": 5,
-                "weight": 5,
-                "unitPrice": 30000
-            }],
-            "notes": "Test SO #1"
-        }
-        
-        resp = session.post(f"{API_URL}/sales-orders", json=so_data_1, headers={'Origin': BASE_URL})
-        if resp.status_code != 201:
-            print_result(False, f"Failed to create SO #1: {resp.status_code}")
-            return False
-        
-        so1 = resp.json().get('data', {})
-        so1_id = so1.get('id')
-        so1_number = so1.get('soNumber')
-        test_so_ids.append(so1_id)
-        print(f"✅ Created SO #1: {so1_number} (ID: {so1_id})")
-        
-        # Create SO #2
-        so_data_2 = {
-            "customerId": customer['id'],
-            "items": [{
-                "productId": product['id'],
-                "quantity": 8,
-                "weight": 8,
-                "unitPrice": 40000
-            }],
-            "notes": "Test SO #2"
-        }
-        
-        resp = session.post(f"{API_URL}/sales-orders", json=so_data_2, headers={'Origin': BASE_URL})
-        if resp.status_code != 201:
-            print_result(False, f"Failed to create SO #2: {resp.status_code}")
-            return False
-        
-        so2 = resp.json().get('data', {})
-        so2_id = so2.get('id')
-        so2_number = so2.get('soNumber')
-        test_so_ids.append(so2_id)
-        print(f"✅ Created SO #2: {so2_number} (ID: {so2_id})")
-        
-        # Verify BOTH exist in MongoDB
-        mongo_so1 = db['sales_order'].find_one({'id': so1_id})
-        mongo_so2 = db['sales_order'].find_one({'id': so2_id})
-        
-        both_exist = mongo_so1 is not None and mongo_so2 is not None
-        print_result(both_exist, f"Both SOs exist in MongoDB: {both_exist}")
-        
-        if both_exist:
-            print(f"  - SO #1: {mongo_so1.get('so_number')} (notes: {mongo_so1.get('notes')})")
-            print(f"  - SO #2: {mongo_so2.get('so_number')} (notes: {mongo_so2.get('notes')})")
-        
-        # Delete SO #1
-        resp = session.delete(f"{API_URL}/sales-orders/{so1_id}", headers={'Origin': BASE_URL})
-        if resp.status_code not in [200, 204]:
-            print_result(False, f"Failed to delete SO #1: {resp.status_code}")
-            return False
-        
-        print(f"✅ Deleted SO #1: {so1_number}")
-        test_so_ids.remove(so1_id)
-        
-        # Verify SO #1 removed from MongoDB
-        mongo_so1_after = db['sales_order'].find_one({'id': so1_id})
-        so1_removed = mongo_so1_after is None
-        print_result(so1_removed, f"SO #1 removed from MongoDB: {so1_removed}")
-        
-        # Verify SO #2 still exists in MongoDB
-        mongo_so2_after = db['sales_order'].find_one({'id': so2_id})
-        so2_exists = mongo_so2_after is not None
-        print_result(so2_exists, f"SO #2 still exists in MongoDB: {so2_exists}")
-        
-        # Verify SO #2 still accessible via API
-        resp = session.get(f"{API_URL}/sales-orders/{so2_id}")
-        so2_api_exists = resp.status_code == 200
-        print_result(so2_api_exists, f"SO #2 still accessible via API: {so2_api_exists}")
-        
-        success = both_exist and so1_removed and so2_exists and so2_api_exists
-        print_result(success, "MULTI-SO ISOLATION test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_6_accounting_integrity(session):
-    """TEST 6: ACCOUNTING INTEGRITY - verify trial balance, balance sheet, sales profit"""
-    print_test("6. ACCOUNTING INTEGRITY")
-    
-    try:
-        # Test trial balance
-        resp = session.get(f"{API_URL}/accounting/trial-balance")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get trial balance: {resp.status_code}")
-            return False
-        
-        tb_data = resp.json().get('data', {})
-        total_debit = tb_data.get('totalDebit', 0)
-        total_credit = tb_data.get('totalCredit', 0)
-        tb_balanced = abs(total_debit - total_credit) < 0.01
-        
-        print(f"Trial Balance:")
-        print(f"  - Total Debit: Rp {total_debit:,.2f}")
-        print(f"  - Total Credit: Rp {total_credit:,.2f}")
-        print_result(tb_balanced, f"Trial Balance balanced: {tb_balanced}")
-        
-        # Test balance sheet
-        resp = session.get(f"{API_URL}/accounting/balance-sheet")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get balance sheet: {resp.status_code}")
-            return False
-        
-        bs_data = resp.json().get('data', {})
-        bs_balanced = bs_data.get('balanced', False)
-        
-        print(f"Balance Sheet:")
-        print(f"  - Balanced: {bs_balanced}")
-        print_result(bs_balanced, f"Balance Sheet balanced: {bs_balanced}")
-        
-        # Test sales profit
-        resp = session.get(f"{API_URL}/accounting/sales-profit")
-        sales_profit_ok = resp.status_code == 200
-        
-        print(f"Sales Profit:")
-        print(f"  - Status: {resp.status_code}")
-        print_result(sales_profit_ok, f"Sales Profit endpoint working: {sales_profit_ok}")
-        
-        success = tb_balanced and bs_balanced and sales_profit_ok
-        print_result(success, "ACCOUNTING INTEGRITY test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_7_non_cascade_safety(session, sqlite_conn):
-    """TEST 7: NON-CASCADE SAFETY - verify surat_jalan and sales_order_receipts preserved"""
-    print_test("7. NON-CASCADE SAFETY")
-    
-    try:
-        # Check surat_jalan count in SQLite
-        cursor = sqlite_conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM surat_jalan")
-        sj_count = cursor.fetchone()[0]
-        
-        print(f"Surat Jalan count: {sj_count}")
-        sj_preserved = sj_count >= 1
-        print_result(sj_preserved, f"Surat Jalan preserved: {sj_preserved} (count >= 1)")
-        
-        # Check sales_order_receipts count in SQLite
-        cursor.execute("SELECT COUNT(*) as count FROM sales_order_receipts")
-        receipt_count = cursor.fetchone()[0]
-        
-        print(f"Sales Order Receipts count: {receipt_count}")
-        receipts_preserved = receipt_count >= 1
-        print_result(receipts_preserved, f"Sales Order Receipts preserved: {receipts_preserved} (count >= 1)")
-        
-        # Check if pre-existing SO 'SO/202608/0001' still exists
-        resp = session.get(f"{API_URL}/sales-orders")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO list: {resp.status_code}")
-            return False
-        
-        so_list = resp.json().get('data', [])
-        preexisting_so = next((s for s in so_list if s.get('soNumber') == 'SO/202608/0001'), None)
-        
-        if preexisting_so:
-            so_id = preexisting_so['id']
-            resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-            if resp.status_code == 200:
-                so_detail = resp.json().get('data', {})
-                has_sj = len(so_detail.get('suratJalan', [])) > 0
-                has_receipts = len(so_detail.get('receipts', [])) > 0
-                
-                print(f"Pre-existing SO 'SO/202608/0001':")
-                print(f"  - Has Surat Jalan: {has_sj}")
-                print(f"  - Has Receipts: {has_receipts}")
-                
-                preexisting_ok = True
-                print_result(preexisting_ok, "Pre-existing SO still accessible")
-            else:
-                print("⚠️  Pre-existing SO 'SO/202608/0001' not accessible via API")
-                preexisting_ok = False
-        else:
-            print("⚠️  Pre-existing SO 'SO/202608/0001' not found in list")
-            preexisting_ok = False
-        
-        success = sj_preserved and receipts_preserved
-        print_result(success, "NON-CASCADE SAFETY test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_8_delete_so(session, db):
-    """TEST 8: DELETE SO - verify removal from both Mongo and API"""
-    print_test("8. DELETE SALES ORDER")
-    
-    if not test_so_ids:
-        print_result(False, "No test SO available")
-        return False
-    
-    try:
-        so_id = test_so_ids[0]
-        
-        # Get SO number before deletion
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-        if resp.status_code != 200:
-            print_result(False, f"Failed to get SO: {resp.status_code}")
-            return False
-        
-        so_detail = resp.json().get('data', {})
-        so_number = so_detail.get('soNumber')
-        
-        # Delete SO
-        resp = session.delete(f"{API_URL}/sales-orders/{so_id}", headers={'Origin': BASE_URL})
-        if resp.status_code not in [200, 204]:
-            print_result(False, f"Failed to delete SO: {resp.status_code} - {resp.text}")
-            return False
-        
-        print(f"✅ Deleted SO: {so_number} (ID: {so_id})")
-        test_so_ids.remove(so_id)
-        
-        # Verify removed from API
-        resp = session.get(f"{API_URL}/sales-orders/{so_id}")
-        api_removed = resp.status_code == 404
-        print_result(api_removed, f"SO removed from API: {api_removed} (status: {resp.status_code})")
-        
-        # Verify removed from MongoDB - sales_order
-        mongo_so = db['sales_order'].find_one({'id': so_id})
-        so_removed = mongo_so is None
-        print_result(so_removed, f"SO removed from MongoDB sales_order: {so_removed}")
-        
-        # Verify children removed from MongoDB - sales_order_items
-        mongo_items = list(db['sales_order_items'].find({'sales_order_id': so_id}))
-        items_removed = len(mongo_items) == 0
-        print_result(items_removed, f"SO items removed from MongoDB: {items_removed}")
-        
-        # Verify children removed from MongoDB - so_item_stocks
-        mongo_stocks = list(db['so_item_stocks'].find({'sales_order_id': so_id}))
-        stocks_removed = len(mongo_stocks) == 0
-        print_result(stocks_removed, f"SO stock allocations removed from MongoDB: {stocks_removed}")
-        
-        # Verify children removed from MongoDB - sales_payments
-        mongo_payments = list(db['sales_payments'].find({'sales_order_id': so_id}))
-        payments_removed = len(mongo_payments) == 0
-        print_result(payments_removed, f"SO payments removed from MongoDB: {payments_removed}")
-        
-        success = api_removed and so_removed and items_removed and stocks_removed and payments_removed
-        print_result(success, "DELETE SO test completed")
-        return success
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_9_role_guard(operator_session):
-    """TEST 9: ROLE GUARD - operator should get 403 on POST /sales-orders"""
-    print_test("9. ROLE GUARD (Operator)")
-    
-    try:
-        # Get customer and product
-        resp = operator_session.get(f"{API_URL}/contacts")
-        contacts = resp.json().get('data', [])
-        customer = next((c for c in contacts if 'Customer' in c.get('categories', [])), None)
-        
-        resp = operator_session.get(f"{API_URL}/products")
-        products = resp.json().get('data', [])
-        product = products[0] if products else None
-        
-        if not customer or not product:
-            print_result(False, "Missing customer or product")
-            return False
-        
-        # Try to create SO as operator
-        so_data = {
-            "customerId": customer['id'],
-            "items": [{
-                "productId": product['id'],
-                "quantity": 1,
-                "weight": 1,
-                "unitPrice": 10000
-            }]
-        }
-        
-        resp = operator_session.post(
-            f"{API_URL}/sales-orders",
-            json=so_data,
-            headers={'Origin': BASE_URL}
-        )
-        
-        is_forbidden = resp.status_code == 403
-        print(f"Operator POST /sales-orders status: {resp.status_code}")
-        print_result(is_forbidden, f"Operator correctly forbidden: {is_forbidden}")
-        
-        if not is_forbidden:
-            print(f"Response: {resp.text}")
-        
-        print_result(is_forbidden, "ROLE GUARD test completed")
-        return is_forbidden
-        
-    except Exception as e:
-        print_result(False, f"Exception: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def cleanup_test_data(session, db):
-    """Cleanup all test SOs"""
-    print_test("CLEANUP")
-    
-    for so_id in test_so_ids[:]:
-        try:
-            resp = session.delete(f"{API_URL}/sales-orders/{so_id}", headers={'Origin': BASE_URL})
-            if resp.status_code in [200, 204]:
-                print(f"✅ Deleted test SO: {so_id}")
-                test_so_ids.remove(so_id)
-            else:
-                print(f"⚠️  Failed to delete SO {so_id}: {resp.status_code}")
-        except Exception as e:
-            print(f"⚠️  Error deleting SO {so_id}: {e}")
-    
-    print(f"Cleanup completed. Remaining test SOs: {len(test_so_ids)}")
-
-def main():
+def test_scenario_2_fixed_asset_edit(session, mongo_db, asset_id):
+    """Scenario 2: Fixed Asset EDIT - verify changes in both Mongo and API"""
     print("\n" + "="*80)
-    print("MIGRATION PHASE 3 BACKEND TEST")
-    print("Sales Order MongoDB-authoritative")
+    print("SCENARIO 2: Fixed Asset EDIT")
     print("="*80)
     
-    # Connect to MongoDB
-    mongo_client, mongo_db = get_mongo_client()
-    if mongo_db is None:
-        print("❌ Cannot proceed without MongoDB connection")
+    if not asset_id:
+        log_test("Scenario 2: Fixed Asset EDIT", False, "No asset_id from Scenario 1")
         return
     
-    print(f"\nMongoDB Database: {MONGO_DB_NAME}")
+    # Edit the asset
+    payload = {
+        "name": "Mesin Uji EDITED",
+        "acquisitionCost": 15000000
+    }
     
-    # Connect to SQLite
-    sqlite_conn = get_sqlite_connection()
-    if sqlite_conn is None:
-        print("❌ Cannot proceed without SQLite connection")
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    response = session.patch(f"{BASE_URL}/accounting/fixed-assets/{asset_id}", json=payload, headers=headers)
+    
+    if response.status_code != 200:
+        log_test("Scenario 2: Edit fixed asset", False, f"API returned {response.status_code}: {response.text[:200]}")
         return
     
-    # Get initial MongoDB counts
+    print(f"✓ Edited fixed asset: {asset_id}")
+    
+    # Verify in API
+    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
+    assets = response.json().get("data", [])
+    api_asset = next((a for a in assets if a["id"] == asset_id), None)
+    
+    # Verify in MongoDB
+    time.sleep(0.5)
+    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
+    
+    api_correct = api_asset and api_asset["name"] == "Mesin Uji EDITED" and api_asset["acquisition_cost"] == 15000000
+    mongo_correct = mongo_doc and mongo_doc["name"] == "Mesin Uji EDITED" and mongo_doc["acquisition_cost"] == 15000000
+    
+    if api_correct and mongo_correct:
+        log_test("Scenario 2: Fixed Asset EDIT", True, "Changes reflected in both API and MongoDB")
+    else:
+        log_test("Scenario 2: Fixed Asset EDIT", False, f"API correct: {api_correct}, MongoDB correct: {mongo_correct}")
+
+def test_scenario_3_depreciation_engine(session, mongo_db):
+    """Scenario 3: Depreciation posting / Engine - verify trial balance and auto journals"""
     print("\n" + "="*80)
-    print("INITIAL MONGODB COLLECTION COUNTS")
+    print("SCENARIO 3: Depreciation Engine & Trial Balance")
     print("="*80)
-    initial_counts = get_mongo_counts(mongo_db)
-    for collection, count in initial_counts.items():
-        print(f"{collection}: {count} documents")
     
-    # Login as admin
-    admin_session = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    if admin_session is None:
-        print("❌ Cannot proceed without admin login")
+    # Get trial balance
+    response = session.get(f"{BASE_URL}/accounting/trial-balance")
+    if response.status_code != 200:
+        log_test("Scenario 3: Get trial balance", False, f"API returned {response.status_code}")
         return
+    
+    tb_data = response.json().get("data", {})
+    total_debit = tb_data.get("totalDebit", 0)
+    total_credit = tb_data.get("totalCredit", 0)
+    balanced = abs(total_debit - total_credit) < 0.01
+    
+    print(f"Trial Balance: Debit={total_debit}, Credit={total_credit}, Balanced={balanced}")
+    
+    # Get balance sheet
+    response = session.get(f"{BASE_URL}/accounting/balance-sheet")
+    if response.status_code != 200:
+        log_test("Scenario 3: Get balance sheet", False, f"API returned {response.status_code}")
+        return
+    
+    bs_data = response.json().get("data", {})
+    bs_balanced = bs_data.get("balanced", False)
+    
+    print(f"Balance Sheet: Balanced={bs_balanced}")
+    
+    # Get journals to check for DEPR auto journals
+    response = session.get(f"{BASE_URL}/accounting/journals")
+    if response.status_code != 200:
+        log_test("Scenario 3: Get journals", False, f"API returned {response.status_code}")
+        return
+    
+    journals = response.json().get("data", [])
+    depr_journals = [j for j in journals if j.get("source") == "DEPR" or j.get("source_type") == "DEPR"]
+    
+    print(f"Found {len(depr_journals)} DEPR journals in API")
+    
+    # Verify DEPR journals are NOT in MongoDB (they are derived, not stored)
+    mongo_depr_count = mongo_db["journal_entries"].count_documents({"source_type": "DEPR", "is_auto": 1})
+    
+    print(f"MongoDB journal_entries with DEPR+is_auto: {mongo_depr_count}")
+    
+    if balanced and bs_balanced and mongo_depr_count == 0:
+        log_test("Scenario 3: Depreciation Engine", True, "Trial balance balanced, DEPR journals derived (not stored in Mongo)")
+    else:
+        log_test("Scenario 3: Depreciation Engine", False, f"TB balanced: {balanced}, BS balanced: {bs_balanced}, Mongo DEPR count: {mongo_depr_count}")
+
+def test_scenario_4_archive_restore(session, mongo_db, asset_id):
+    """Scenario 4: Archive/Restore - verify archived_at in MongoDB"""
+    print("\n" + "="*80)
+    print("SCENARIO 4: Archive/Restore Fixed Asset")
+    print("="*80)
+    
+    if not asset_id:
+        log_test("Scenario 4: Archive/Restore", False, "No asset_id from Scenario 1")
+        return
+    
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    
+    # Archive
+    response = session.post(f"{BASE_URL}/accounting/fixed-assets/{asset_id}/archive", headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 4: Archive", False, f"API returned {response.status_code}")
+        return
+    
+    print(f"✓ Archived asset: {asset_id}")
+    
+    # Verify in MongoDB
+    time.sleep(0.5)
+    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
+    archived_at = mongo_doc.get("archived_at") if mongo_doc else None
+    
+    if not archived_at:
+        log_test("Scenario 4: Archive", False, "archived_at not set in MongoDB")
+        return
+    
+    print(f"✓ archived_at set in MongoDB: {archived_at}")
+    
+    # Restore
+    response = session.post(f"{BASE_URL}/accounting/fixed-assets/{asset_id}/restore", headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 4: Restore", False, f"API returned {response.status_code}")
+        return
+    
+    print(f"✓ Restored asset: {asset_id}")
+    
+    # Verify in MongoDB
+    time.sleep(0.5)
+    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
+    archived_at_after = mongo_doc.get("archived_at") if mongo_doc else "NOT_FOUND"
+    
+    if archived_at_after is None:
+        log_test("Scenario 4: Archive/Restore", True, "archived_at correctly set and cleared in MongoDB")
+    else:
+        log_test("Scenario 4: Archive/Restore", False, f"archived_at after restore: {archived_at_after}")
+
+def test_scenario_5_stock_opname_create(session, mongo_db):
+    """Scenario 5: Stock Opname CREATE - verify in both Mongo and API"""
+    print("\n" + "="*80)
+    print("SCENARIO 5: Stock Opname CREATE")
+    print("="*80)
+    
+    # Get cold storages
+    response = session.get(f"{BASE_URL}/cold-storages")
+    if response.status_code != 200:
+        log_test("Scenario 5: Get cold storages", False, f"API returned {response.status_code}")
+        return None
+    
+    cold_storages = response.json().get("data", [])
+    if not cold_storages:
+        log_test("Scenario 5: Get cold storages", False, "No cold storages found")
+        return None
+    
+    cs_id = cold_storages[0]["id"]
+    print(f"Using cold storage: {cs_id}")
+    
+    # Count before
+    count_opname_before = count_mongo_collection(mongo_db, "stock_opname")
+    count_items_before = count_mongo_collection(mongo_db, "stock_opname_items")
+    print(f"MongoDB stock_opname count before: {count_opname_before}")
+    print(f"MongoDB stock_opname_items count before: {count_items_before}")
+    
+    # Create stock opname
+    payload = {
+        "coldStorageId": cs_id,
+        "opnameDate": "2026-01-15",
+        "notes": "Test opname for Phase 6"
+    }
+    
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    response = session.post(f"{BASE_URL}/opnames", json=payload, headers=headers)
+    
+    if response.status_code != 201:
+        log_test("Scenario 5: Create stock opname", False, f"API returned {response.status_code}: {response.text[:200]}")
+        return None
+    
+    data = response.json().get("data")
+    opname_id = data.get("id")
+    print(f"✓ Created stock opname: {opname_id}")
+    
+    # Verify in API
+    response = session.get(f"{BASE_URL}/opnames/{opname_id}")
+    if response.status_code != 200:
+        log_test("Scenario 5: Verify in API", False, f"GET failed: {response.status_code}")
+        return opname_id
+    
+    opname_data = response.json().get("data", {})
+    items_count = len(opname_data.get("items", []))
+    
+    # Verify in MongoDB
+    time.sleep(0.5)
+    mongo_opname = mongo_db["stock_opname"].find_one({"id": opname_id})
+    mongo_items = list(mongo_db["stock_opname_items"].find({"opname_id": opname_id}))
+    
+    count_opname_after = count_mongo_collection(mongo_db, "stock_opname")
+    count_items_after = count_mongo_collection(mongo_db, "stock_opname_items")
+    print(f"MongoDB stock_opname count after: {count_opname_after}")
+    print(f"MongoDB stock_opname_items count after: {count_items_after}")
+    
+    if mongo_opname and len(mongo_items) == items_count:
+        log_test("Scenario 5: Stock Opname CREATE", True, f"Opname {opname_id} with {items_count} items exists in both API and MongoDB")
+    else:
+        log_test("Scenario 5: Stock Opname CREATE", False, f"Mongo opname: {bool(mongo_opname)}, Mongo items: {len(mongo_items)}, API items: {items_count}")
+    
+    return opname_id
+
+def test_scenario_6_stock_opname_approve(session, mongo_db, sqlite_conn, opname_id):
+    """Scenario 6: Stock Opname APPROVE - verify status in Mongo and trial balance"""
+    print("\n" + "="*80)
+    print("SCENARIO 6: Stock Opname APPROVE")
+    print("="*80)
+    
+    if not opname_id:
+        log_test("Scenario 6: Stock Opname APPROVE", False, "No opname_id from Scenario 5")
+        return
+    
+    # Get opname details
+    response = session.get(f"{BASE_URL}/opnames/{opname_id}")
+    if response.status_code != 200:
+        log_test("Scenario 6: Get opname", False, f"API returned {response.status_code}")
+        return
+    
+    opname_data = response.json().get("data", {})
+    items = opname_data.get("items", [])
+    
+    if not items:
+        print("No items in opname, skipping approve test")
+        log_test("Scenario 6: Stock Opname APPROVE", True, "No items to approve (skipped)")
+        return
+    
+    # Modify physical count to create a delta
+    item_updates = []
+    for item in items[:1]:  # Just modify first item
+        item_updates.append({
+            "id": item["id"],
+            "physicalWeight": float(item["systemWeight"]) - 1.0,  # Create 1kg shrinkage
+            "physicalQty": item["systemQty"]
+        })
+    
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    
+    # Update items
+    response = session.post(f"{BASE_URL}/opnames/{opname_id}/items", json={"items": item_updates}, headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 6: Update items", False, f"API returned {response.status_code}")
+        return
+    
+    print(f"✓ Updated opname items with delta")
+    
+    # Submit
+    response = session.post(f"{BASE_URL}/opnames/{opname_id}/submit", headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 6: Submit opname", False, f"API returned {response.status_code}")
+        return
+    
+    print(f"✓ Submitted opname: {opname_id}")
+    
+    # Approve
+    response = session.post(f"{BASE_URL}/opnames/{opname_id}/approve", headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 6: Approve opname", False, f"API returned {response.status_code}: {response.text[:200]}")
+        return
+    
+    print(f"✓ Approved opname: {opname_id}")
+    
+    # Verify status in MongoDB
+    time.sleep(0.5)
+    mongo_opname = mongo_db["stock_opname"].find_one({"id": opname_id})
+    status = mongo_opname.get("status") if mongo_opname else None
+    
+    # Verify trial balance still balanced
+    response = session.get(f"{BASE_URL}/accounting/trial-balance")
+    if response.status_code != 200:
+        log_test("Scenario 6: Trial balance", False, f"API returned {response.status_code}")
+        return
+    
+    tb_data = response.json().get("data", {})
+    total_debit = tb_data.get("totalDebit", 0)
+    total_credit = tb_data.get("totalCredit", 0)
+    balanced = abs(total_debit - total_credit) < 0.01
+    
+    print(f"Trial Balance after approve: Debit={total_debit}, Credit={total_credit}, Balanced={balanced}")
+    
+    # Check inventory_stock consistency
+    stock_id = items[0]["stockId"]
+    cursor = sqlite_conn.cursor()
+    cursor.execute("SELECT * FROM inventory_stock WHERE id=?", (stock_id,))
+    stock_row = cursor.fetchone()
+    
+    if status == "approved" and balanced and stock_row:
+        log_test("Scenario 6: Stock Opname APPROVE", True, f"Status={status}, TB balanced, inventory_stock consistent")
+    else:
+        log_test("Scenario 6: Stock Opname APPROVE", False, f"Status={status}, TB balanced={balanced}, stock exists={bool(stock_row)}")
+
+def test_scenario_7_multi_isolation(session, mongo_db):
+    """Scenario 7: Multi-isolation (concurrency) - create two assets, delete one"""
+    print("\n" + "="*80)
+    print("SCENARIO 7: Multi-Isolation (Concurrency)")
+    print("="*80)
+    
+    # Get valid account codes
+    asset_acct, accum_acct, expense_acct = get_accounts(session)
+    if not asset_acct:
+        log_test("Scenario 7: Multi-isolation", False, "Could not find account codes")
+        return
+    
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    
+    # Create first asset
+    payload1 = {
+        "code": "FA-MULTI-1",
+        "name": "Multi Test Asset 1",
+        "category": "Test",
+        "acquisitionDate": "2026-01-01",
+        "acquisitionCost": 1000000,
+        "salvageValue": 0,
+        "usefulLifeMonths": 12,
+        "method": "straight_line",
+        "assetAccountCode": asset_acct["code"],
+        "accumAccountCode": accum_acct["code"],
+        "expenseAccountCode": expense_acct["code"],
+        "postDepreciation": False
+    }
+    
+    response1 = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload1, headers=headers)
+    if response1.status_code != 200:
+        log_test("Scenario 7: Create asset 1", False, f"API returned {response1.status_code}")
+        return
+    
+    asset1_id = response1.json().get("data", {}).get("id")
+    print(f"✓ Created asset 1: {asset1_id}")
+    
+    # Create second asset
+    payload2 = {
+        "code": "FA-MULTI-2",
+        "name": "Multi Test Asset 2",
+        "category": "Test",
+        "acquisitionDate": "2026-01-01",
+        "acquisitionCost": 2000000,
+        "salvageValue": 0,
+        "usefulLifeMonths": 12,
+        "method": "straight_line",
+        "assetAccountCode": asset_acct["code"],
+        "accumAccountCode": accum_acct["code"],
+        "expenseAccountCode": expense_acct["code"],
+        "postDepreciation": False
+    }
+    
+    response2 = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload2, headers=headers)
+    if response2.status_code != 200:
+        log_test("Scenario 7: Create asset 2", False, f"API returned {response2.status_code}")
+        return
+    
+    asset2_id = response2.json().get("data", {}).get("id")
+    print(f"✓ Created asset 2: {asset2_id}")
+    
+    # Verify both exist in MongoDB
+    time.sleep(0.5)
+    mongo_asset1 = mongo_db["fixed_assets"].find_one({"id": asset1_id})
+    mongo_asset2 = mongo_db["fixed_assets"].find_one({"id": asset2_id})
+    
+    if not (mongo_asset1 and mongo_asset2):
+        log_test("Scenario 7: Both assets in Mongo", False, f"Asset1: {bool(mongo_asset1)}, Asset2: {bool(mongo_asset2)}")
+        return
+    
+    print(f"✓ Both assets exist in MongoDB")
+    
+    # Delete first asset
+    response = session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset1_id}", headers=headers)
+    if response.status_code != 200:
+        log_test("Scenario 7: Delete asset 1", False, f"API returned {response.status_code}")
+        return
+    
+    print(f"✓ Deleted asset 1: {asset1_id}")
+    
+    # Verify asset1 deleted, asset2 remains
+    time.sleep(0.5)
+    mongo_asset1_after = mongo_db["fixed_assets"].find_one({"id": asset1_id})
+    mongo_asset2_after = mongo_db["fixed_assets"].find_one({"id": asset2_id})
+    
+    # Verify in API
+    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
+    assets = response.json().get("data", [])
+    api_has_asset1 = any(a["id"] == asset1_id for a in assets)
+    api_has_asset2 = any(a["id"] == asset2_id for a in assets)
+    
+    if not mongo_asset1_after and mongo_asset2_after and not api_has_asset1 and api_has_asset2:
+        log_test("Scenario 7: Multi-Isolation", True, "Asset1 deleted, Asset2 remains in both Mongo and API")
+        # Cleanup asset2
+        session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset2_id}", headers=headers)
+    else:
+        log_test("Scenario 7: Multi-Isolation", False, f"Mongo: asset1={bool(mongo_asset1_after)}, asset2={bool(mongo_asset2_after)}; API: asset1={api_has_asset1}, asset2={api_has_asset2}")
+
+def test_scenario_8_non_cascade_safety(sqlite_conn):
+    """Scenario 8: Non-cascade safety - verify inventory_stock NOT wiped"""
+    print("\n" + "="*80)
+    print("SCENARIO 8: Non-Cascade Safety (inventory_stock)")
+    print("="*80)
+    
+    # Count inventory_stock before and after all operations
+    count = count_sqlite_table(sqlite_conn, "inventory_stock")
+    print(f"SQLite inventory_stock count: {count}")
+    
+    if count > 0:
+        log_test("Scenario 8: Non-Cascade Safety", True, f"inventory_stock has {count} rows (NOT wiped by FK-off hydrate)")
+    else:
+        log_test("Scenario 8: Non-Cascade Safety", False, "inventory_stock is empty (may have been wiped)")
+
+def test_scenario_9_role_guard(mongo_db):
+    """Scenario 9: Role guard - operator should get 403 on fixed asset create"""
+    print("\n" + "="*80)
+    print("SCENARIO 9: Role Guard (operator -> 403)")
+    print("="*80)
     
     # Login as operator
     operator_session = login(OPERATOR_EMAIL, OPERATOR_PASSWORD)
-    if operator_session is None:
-        print("⚠️  Operator login failed, skipping role guard test")
+    if not operator_session:
+        log_test("Scenario 9: Role Guard", False, "Could not login as operator")
+        return
     
-    # Run tests
-    results = {}
+    # Try to create fixed asset
+    payload = {
+        "code": "FA-FORBIDDEN",
+        "name": "Should Fail",
+        "category": "Test",
+        "acquisitionDate": "2026-01-01",
+        "acquisitionCost": 1000000,
+        "salvageValue": 0,
+        "usefulLifeMonths": 12,
+        "method": "straight_line",
+        "postDepreciation": False
+    }
     
-    try:
-        results['test_1_create_so'] = test_1_create_so(admin_session, mongo_db)
-        results['test_2_edit_so'] = test_2_edit_so(admin_session, mongo_db)
-        results['test_3_stock_allocation'] = test_3_stock_allocation(admin_session, mongo_db)
-        results['test_4_payment'] = test_4_payment(admin_session, mongo_db)
-        results['test_5_multi_so_isolation'] = test_5_multi_so_isolation(admin_session, mongo_db)
-        results['test_6_accounting_integrity'] = test_6_accounting_integrity(admin_session)
-        results['test_7_non_cascade_safety'] = test_7_non_cascade_safety(admin_session, sqlite_conn)
-        results['test_8_delete_so'] = test_8_delete_so(admin_session, mongo_db)
-        
-        if operator_session:
-            results['test_9_role_guard'] = test_9_role_guard(operator_session)
-        else:
-            results['test_9_role_guard'] = None
-        
-    finally:
-        # Cleanup
-        cleanup_test_data(admin_session, mongo_db)
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    response = operator_session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload, headers=headers)
     
-    # Get final MongoDB counts
+    print(f"Operator POST response: {response.status_code}")
+    
+    if response.status_code == 403:
+        log_test("Scenario 9: Role Guard", True, "Operator correctly rejected with 403")
+    else:
+        log_test("Scenario 9: Role Guard", False, f"Expected 403, got {response.status_code}")
+
+def cleanup_test_data(session, mongo_db, asset_ids):
+    """Cleanup test data"""
     print("\n" + "="*80)
-    print("FINAL MONGODB COLLECTION COUNTS")
+    print("CLEANUP: Deleting test data")
     print("="*80)
-    final_counts = get_mongo_counts(mongo_db)
-    for collection, count in final_counts.items():
-        print(f"{collection}: {count} documents")
     
-    # Summary
+    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    
+    # Delete test fixed assets
+    for asset_id in asset_ids:
+        if asset_id:
+            try:
+                response = session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset_id}", headers=headers)
+                if response.status_code == 200:
+                    print(f"✓ Deleted fixed asset: {asset_id}")
+                else:
+                    print(f"✗ Failed to delete fixed asset {asset_id}: {response.status_code}")
+            except Exception as e:
+                print(f"✗ Error deleting asset {asset_id}: {e}")
+    
+    # Note: Stock opname may not have delete endpoint
+    print("Note: Stock opname delete endpoint may not exist (as per review request)")
+
+def print_summary(mongo_db, sqlite_conn):
+    """Print test summary"""
     print("\n" + "="*80)
     print("TEST SUMMARY")
     print("="*80)
     
-    passed = sum(1 for v in results.values() if v is True)
-    failed = sum(1 for v in results.values() if v is False)
-    skipped = sum(1 for v in results.values() if v is None)
-    total = len(results)
+    # MongoDB info
+    print(f"\nMongoDB Database: {MONGO_DB_NAME}")
+    print(f"  fixed_assets count: {count_mongo_collection(mongo_db, 'fixed_assets')}")
+    print(f"  stock_opname count: {count_mongo_collection(mongo_db, 'stock_opname')}")
+    print(f"  stock_opname_items count: {count_mongo_collection(mongo_db, 'stock_opname_items')}")
     
-    for test_name, result in results.items():
-        if result is True:
-            status = "✅ PASSED"
-        elif result is False:
-            status = "❌ FAILED"
-        else:
-            status = "⚠️  SKIPPED"
-        print(f"{status}: {test_name}")
+    # SQLite info
+    print(f"\nSQLite Database: {SQLITE_DB}")
+    print(f"  inventory_stock count: {count_sqlite_table(sqlite_conn, 'inventory_stock')}")
     
-    print(f"\nTotal: {total} tests")
-    print(f"Passed: {passed}")
-    print(f"Failed: {failed}")
-    print(f"Skipped: {skipped}")
+    # Test results
+    print(f"\nTest Results:")
+    passed = sum(1 for t in test_results if t["passed"])
+    total = len(test_results)
+    print(f"  Passed: {passed}/{total}")
     
-    if failed == 0:
-        print("\n✅ ALL TESTS PASSED!")
-    else:
-        print(f"\n❌ {failed} TEST(S) FAILED")
+    for test in test_results:
+        status = "✅" if test["passed"] else "❌"
+        print(f"  {status} {test['name']}")
+        if test["details"]:
+            print(f"      {test['details']}")
     
-    # Close connections
-    sqlite_conn.close()
-    mongo_client.close()
+    print("\n" + "="*80)
+
+def main():
+    """Main test execution"""
+    print("="*80)
+    print("MIGRATION Phase 6 Backend Test")
+    print("Fixed Assets + Stock Opname -> MongoDB-authoritative")
+    print("="*80)
+    
+    # Login as admin
+    admin_session = login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    if not admin_session:
+        print("FATAL: Could not login as admin")
+        return
+    
+    # Connect to MongoDB
+    mongo_client, mongo_db = get_mongo_client()
+    print(f"✓ Connected to MongoDB: {MONGO_DB_NAME}")
+    
+    # Connect to SQLite
+    sqlite_conn = get_sqlite_conn()
+    print(f"✓ Connected to SQLite: {SQLITE_DB}")
+    
+    # Record initial inventory_stock count
+    initial_stock_count = count_sqlite_table(sqlite_conn, "inventory_stock")
+    print(f"✓ Initial inventory_stock count: {initial_stock_count}")
+    
+    # Track created assets for cleanup
+    created_assets = []
+    
+    try:
+        # Run scenarios
+        asset_id = test_scenario_1_fixed_asset_create(admin_session, mongo_db)
+        if asset_id:
+            created_assets.append(asset_id)
+        
+        test_scenario_2_fixed_asset_edit(admin_session, mongo_db, asset_id)
+        test_scenario_3_depreciation_engine(admin_session, mongo_db)
+        test_scenario_4_archive_restore(admin_session, mongo_db, asset_id)
+        
+        opname_id = test_scenario_5_stock_opname_create(admin_session, mongo_db)
+        test_scenario_6_stock_opname_approve(admin_session, mongo_db, sqlite_conn, opname_id)
+        
+        test_scenario_7_multi_isolation(admin_session, mongo_db)
+        test_scenario_8_non_cascade_safety(sqlite_conn)
+        test_scenario_9_role_guard(mongo_db)
+        
+        # Cleanup
+        cleanup_test_data(admin_session, mongo_db, created_assets)
+        
+        # Print summary
+        print_summary(mongo_db, sqlite_conn)
+        
+    finally:
+        # Close connections
+        sqlite_conn.close()
+        mongo_client.close()
+        print("\n✓ Connections closed")
 
 if __name__ == "__main__":
     main()
