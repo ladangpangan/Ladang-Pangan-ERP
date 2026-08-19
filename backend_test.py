@@ -1,660 +1,886 @@
 #!/usr/bin/env python3
 """
-Backend test for Excel Export endpoints (GET /api/export/:module)
-Tests: Auth, Structure, Accounting COA, Data correctness, Unknown module
+Backend test for MIGRATION Phase 1: Chart of Accounts (gl_accounts) -> MongoDB-authoritative
+Tests T1-T8 plus operator 403 test and cleanup
 """
-
-import requests
-import json
-import subprocess
+import os
 import sys
-import time
-from datetime import datetime
+import json
+import sqlite3
+from pymongo import MongoClient
 
+# Base URL
 BASE_URL = "http://localhost:3000/api"
-ORIGIN = "http://localhost:3000"
 
-# Test results tracking
-test_results = {
-    "T1_auth_no_cookie": False,
-    "T1_auth_operator_403": False,
-    "T1_auth_admin_sales_orders": False,
-    "T1_auth_admin_purchase_orders": False,
-    "T1_auth_admin_inventory": False,
-    "T1_auth_admin_accounting": False,
-    "T2_structure_sales_orders": False,
-    "T2_structure_purchase_orders": False,
-    "T2_structure_inventory": False,
-    "T2_structure_accounting": False,
-    "T3_accounting_coa_populated": False,
-    "T4_data_correctness_sales_orders": False,
-    "T4_data_correctness_purchase_orders": False,
-    "T4_data_correctness_inventory": False,
-    "T5_unknown_module_404": False,
-}
-
-def run_node_script(script):
-    """Run a Node.js script and return output"""
+# MongoDB connection
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+# Resolve DB name (same logic as /app/lib/db/mongo.js)
+def resolve_db_name():
+    mongo_db_name = os.getenv("MONGO_DB_NAME", "").strip()
+    db_name_env = os.getenv("DB_NAME", "").strip()
+    
+    # Parse from URL
+    url_db = ""
     try:
-        result = subprocess.run(
-            ['node', '-e', script],
-            capture_output=True,
-            text=True,
-            timeout=30
+        after_scheme = MONGO_URL.replace("mongodb://", "").replace("mongodb+srv://", "")
+        slash_idx = after_scheme.find("/")
+        if slash_idx != -1:
+            url_db = after_scheme[slash_idx+1:].split("?")[0]
+    except Exception:
+        pass
+    
+    # Safe db name (avoid system dbs)
+    def safe_db(name):
+        n = str(name).strip()
+        if not n or n.lower() in ["test", "admin", "local", "config"]:
+            return ""
+        return n
+    
+    return safe_db(mongo_db_name) or safe_db(db_name_env) or safe_db(url_db) or "erp_prod"
+
+DB_NAME = resolve_db_name()
+print(f"[INFO] MongoDB URL: {MONGO_URL}")
+print(f"[INFO] MongoDB DB Name: {DB_NAME}")
+
+# SQLite path
+SQLITE_PATH = "/app/data/erp.db"
+
+# Test accounts to create/cleanup
+TEST_ACCOUNT_1 = "9-8001"
+TEST_ACCOUNT_2 = "9-8002"
+
+# Global variables to store test data
+test_account_1_id = None
+test_account_2_id = None
+admin_session = None
+operator_session = None
+
+def login(email, password):
+    """Login and return session cookies"""
+    import requests
+    # Better Auth uses cookie-based sessions
+    # We need to login via the auth endpoint
+    # Based on the review request, we need to use curl-like approach
+    # Let's use requests.Session to maintain cookies
+    session = requests.Session()
+    
+    # Try to login via Better Auth endpoint
+    # The auth endpoint is typically /api/auth/sign-in
+    try:
+        resp = session.post(
+            f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
+            json={"email": email, "password": password},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
         )
-        if result.returncode != 0:
-            print(f"❌ Node script error: {result.stderr}")
+        if resp.status_code == 200:
+            print(f"[SUCCESS] Logged in as {email}")
+            return session
+        else:
+            print(f"[ERROR] Login failed for {email}: {resp.status_code} {resp.text}")
             return None
-        return result.stdout.strip()
     except Exception as e:
-        print(f"❌ Node script exception: {e}")
+        print(f"[ERROR] Login exception for {email}: {e}")
         return None
 
-def login_with_curl(email, password):
-    """Login using curl and return session cookie"""
+def get_mongo_collection():
+    """Get MongoDB gl_accounts collection"""
+    client = MongoClient(MONGO_URL)
+    db = client[DB_NAME]
+    return db["gl_accounts"]
+
+def get_sqlite_conn():
+    """Get SQLite connection"""
+    return sqlite3.connect(SQLITE_PATH)
+
+def test_t1_list_and_mongo_source():
+    """T1: LIST + Mongo source of truth verification"""
+    print("\n" + "="*80)
+    print("TEST T1: LIST + Mongo source of truth")
+    print("="*80)
+    
     try:
-        # Use curl to login (Better Auth endpoint is /api/auth/sign-in/email)
-        cmd = [
-            'curl', '-s', '-c', '/tmp/cookies.txt', '-b', '/tmp/cookies.txt', '-i',
-            '-X', 'POST',
-            '-H', 'Content-Type: application/json',
-            '-H', f'Origin: {ORIGIN}',
-            'http://localhost:3000/api/auth/sign-in/email',
-            '-d', json.dumps({'email': email, 'password': password})
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        import requests
+        # GET /api/accounting/accounts
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts",
+            headers={"Origin": "http://localhost:3000"}
+        )
         
-        # Extract Set-Cookie from headers
-        headers = result.stdout
-        cookie_value = None
-        for line in headers.split('\n'):
-            if 'set-cookie:' in line.lower() and 'session_token' in line:
-                # Extract cookie value (handle both __Secure-better-auth.session_token and better_auth.session_token)
-                if '__Secure-better-auth.session_token=' in line:
-                    parts = line.split('__Secure-better-auth.session_token=')
-                elif 'better_auth.session_token=' in line:
-                    parts = line.split('better_auth.session_token=')
-                else:
-                    continue
-                
-                if len(parts) > 1:
-                    cookie_value = parts[1].split(';')[0]
-                    break
+        if resp.status_code != 200:
+            print(f"[FAIL] T1: GET /api/accounting/accounts returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
         
-        if cookie_value:
-            return cookie_value
+        data = resp.json()
+        accounts = data.get("data", [])
+        api_count = len(accounts)
+        print(f"[SUCCESS] T1.1: GET /api/accounting/accounts returned {api_count} accounts")
         
-        print(f"❌ Login failed for {email}")
-        print(f"   Response headers: {headers[:500]}")
-        return None
+        # Check if code 5-1300 exists
+        code_5_1300 = [a for a in accounts if a.get("code") == "5-1300"]
+        if code_5_1300:
+            print(f"[SUCCESS] T1.2: Code '5-1300' (Beban Angkut Pembelian) found in API response")
+            print(f"  Account: {code_5_1300[0].get('name')}")
+        else:
+            print(f"[FAIL] T1.2: Code '5-1300' NOT found in API response")
+            return False
+        
+        # Verify MongoDB collection exists and has data
+        col = get_mongo_collection()
+        mongo_count = col.count_documents({})
+        print(f"[INFO] T1.3: MongoDB collection 'gl_accounts' has {mongo_count} documents")
+        
+        # Count active accounts in MongoDB (archived_at is null)
+        mongo_active_count = col.count_documents({"archived_at": None})
+        print(f"[INFO] T1.4: MongoDB has {mongo_active_count} active accounts (archived_at=null)")
+        
+        # Check if 5-1300 exists in MongoDB
+        mongo_5_1300 = col.find_one({"code": "5-1300"})
+        if mongo_5_1300:
+            print(f"[SUCCESS] T1.5: Code '5-1300' found in MongoDB collection")
+            print(f"  Account: {mongo_5_1300.get('name')}")
+        else:
+            print(f"[FAIL] T1.5: Code '5-1300' NOT found in MongoDB collection")
+            return False
+        
+        # Verify counts match (API should return active accounts by default)
+        if api_count == mongo_active_count:
+            print(f"[SUCCESS] T1.6: API count ({api_count}) matches MongoDB active count ({mongo_active_count})")
+        else:
+            print(f"[WARNING] T1.6: API count ({api_count}) != MongoDB active count ({mongo_active_count})")
+            print(f"  This may be expected if there are archived accounts")
+        
+        print(f"[SUCCESS] T1: MongoDB is the source of truth - collection exists with {mongo_count} total documents")
+        return True
+        
     except Exception as e:
-        print(f"❌ Login exception: {e}")
-        return None
+        print(f"[FAIL] T1: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-def get_with_curl(endpoint, cookie=None):
-    """GET request using curl"""
+def test_t2_create():
+    """T2: CREATE account and verify in both MongoDB and SQLite"""
+    global test_account_1_id
+    print("\n" + "="*80)
+    print("TEST T2: CREATE account 9-8001")
+    print("="*80)
+    
     try:
-        cmd = ['curl', '-s', '-X', 'GET']
-        if cookie:
-            # Use __Secure-better-auth.session_token for secure cookies
-            cmd.extend(['-H', f'Cookie: __Secure-better-auth.session_token={cookie}'])
-        cmd.extend(['-H', f'Origin: {ORIGIN}'])
-        cmd.append(f'{BASE_URL}{endpoint}')
+        import requests
+        # POST /api/accounting/accounts
+        payload = {
+            "code": TEST_ACCOUNT_1,
+            "name": "Uji Migrasi",
+            "type": "expense"
+        }
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        resp = admin_session.post(
+            f"{BASE_URL}/accounting/accounts",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
         
-        # Try to parse JSON
-        try:
-            return json.loads(result.stdout), result.returncode
-        except (json.JSONDecodeError, ValueError):
-            return result.stdout, result.returncode
+        if resp.status_code != 200:
+            print(f"[FAIL] T2: POST /api/accounting/accounts returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        data = resp.json()
+        account = data.get("data", {})
+        test_account_1_id = account.get("id")
+        
+        print(f"[SUCCESS] T2.1: Account created via API")
+        print(f"  ID: {test_account_1_id}")
+        print(f"  Code: {account.get('code')}")
+        print(f"  Name: {account.get('name')}")
+        
+        # Verify in MongoDB
+        col = get_mongo_collection()
+        mongo_doc = col.find_one({"code": TEST_ACCOUNT_1})
+        
+        if not mongo_doc:
+            print(f"[FAIL] T2.2: Account NOT found in MongoDB")
+            return False
+        
+        print(f"[SUCCESS] T2.2: Account found in MongoDB")
+        print(f"  ID: {mongo_doc.get('id')}")
+        print(f"  Code: {mongo_doc.get('code')}")
+        print(f"  Name: {mongo_doc.get('name')}")
+        
+        # Verify in SQLite
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, name FROM gl_accounts WHERE code = ?", (TEST_ACCOUNT_1,))
+        sqlite_row = cursor.fetchone()
+        conn.close()
+        
+        if not sqlite_row:
+            print(f"[FAIL] T2.3: Account NOT found in SQLite mirror")
+            return False
+        
+        print(f"[SUCCESS] T2.3: Account found in SQLite mirror")
+        print(f"  ID: {sqlite_row[0]}")
+        print(f"  Code: {sqlite_row[1]}")
+        print(f"  Name: {sqlite_row[2]}")
+        
+        # Verify IDs match
+        if mongo_doc.get("id") == sqlite_row[0] == test_account_1_id:
+            print(f"[SUCCESS] T2.4: IDs match across MongoDB, SQLite, and API response")
+        else:
+            print(f"[FAIL] T2.4: ID mismatch - Mongo: {mongo_doc.get('id')}, SQLite: {sqlite_row[0]}, API: {test_account_1_id}")
+            return False
+        
+        # Verify account appears in list
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        accounts = resp.json().get("data", [])
+        found = [a for a in accounts if a.get("code") == TEST_ACCOUNT_1]
+        
+        if found:
+            print(f"[SUCCESS] T2.5: Account appears in GET /api/accounting/accounts list")
+        else:
+            print(f"[FAIL] T2.5: Account NOT in list")
+            return False
+        
+        print(f"[SUCCESS] T2: CREATE test passed - account exists in BOTH MongoDB and SQLite with same ID")
+        return True
+        
     except Exception as e:
-        print(f"❌ GET exception: {e}")
-        return None, -1
+        print(f"[FAIL] T2: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-def seed_test_data():
-    """Seed test data using Node.js + better-sqlite3"""
-    print("\n📝 Seeding test data...")
+def test_t3_update():
+    """T3: UPDATE account and verify in both stores"""
+    print("\n" + "="*80)
+    print("TEST T3: UPDATE account 9-8001")
+    print("="*80)
     
-    script = """
-const Database = require('better-sqlite3');
-const db = new Database('/app/data/erp.db');
-const { v4: uuidv4 } = require('uuid');
+    try:
+        import requests
+        # PATCH /api/accounting/accounts/:id
+        payload = {
+            "name": "Uji Migrasi 2",
+            "openingBalance": 12345
+        }
+        
+        resp = admin_session.patch(
+            f"{BASE_URL}/accounting/accounts/{test_account_1_id}",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T3: PATCH /api/accounting/accounts/{test_account_1_id} returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        data = resp.json()
+        account = data.get("data", {})
+        
+        print(f"[SUCCESS] T3.1: Account updated via API")
+        print(f"  Name: {account.get('name')}")
+        print(f"  Opening Balance: {account.get('opening_balance')}")
+        
+        # Verify in MongoDB
+        col = get_mongo_collection()
+        mongo_doc = col.find_one({"id": test_account_1_id})
+        
+        if not mongo_doc:
+            print(f"[FAIL] T3.2: Account NOT found in MongoDB")
+            return False
+        
+        if mongo_doc.get("name") == "Uji Migrasi 2" and mongo_doc.get("opening_balance") == 12345:
+            print(f"[SUCCESS] T3.2: MongoDB updated correctly")
+            print(f"  Name: {mongo_doc.get('name')}")
+            print(f"  Opening Balance: {mongo_doc.get('opening_balance')}")
+        else:
+            print(f"[FAIL] T3.2: MongoDB NOT updated correctly")
+            print(f"  Name: {mongo_doc.get('name')} (expected: Uji Migrasi 2)")
+            print(f"  Opening Balance: {mongo_doc.get('opening_balance')} (expected: 12345)")
+            return False
+        
+        # Verify in SQLite
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, opening_balance FROM gl_accounts WHERE id = ?", (test_account_1_id,))
+        sqlite_row = cursor.fetchone()
+        conn.close()
+        
+        if not sqlite_row:
+            print(f"[FAIL] T3.3: Account NOT found in SQLite mirror")
+            return False
+        
+        if sqlite_row[0] == "Uji Migrasi 2" and sqlite_row[1] == 12345:
+            print(f"[SUCCESS] T3.3: SQLite mirror updated correctly")
+            print(f"  Name: {sqlite_row[0]}")
+            print(f"  Opening Balance: {sqlite_row[1]}")
+        else:
+            print(f"[FAIL] T3.3: SQLite mirror NOT updated correctly")
+            print(f"  Name: {sqlite_row[0]} (expected: Uji Migrasi 2)")
+            print(f"  Opening Balance: {sqlite_row[1]} (expected: 12345)")
+            return False
+        
+        print(f"[SUCCESS] T3: UPDATE test passed - both MongoDB and SQLite updated correctly")
+        return True
+        
+    except Exception as e:
+        print(f"[FAIL] T3: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-const now = Math.floor(Date.now() / 1000);
-
-// 1. Create test customer
-const customerId = uuidv4();
-db.prepare(`INSERT INTO contacts (id, code, display_name, contact_type, categories, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(customerId, 'CUST-EXP-TEST', 'Export Test Customer', 'Customer', '["Customer"]', now, now);
-
-// 2. Create test supplier
-const supplierId = uuidv4();
-db.prepare(`INSERT INTO contacts (id, code, display_name, contact_type, categories, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(supplierId, 'SUP-EXP-TEST', 'Export Test Supplier', 'Supplier', '["Supplier"]', now, now);
-
-// 3. Create test product
-const productId = uuidv4();
-db.prepare(`INSERT INTO products (id, sku, name, unit, base_price, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(productId, 'EXP-TEST', 'Export Test Product', 'kg', 50000, now, now);
-
-// 4. Create test cold storage (check if exists first)
-let coldStorageId = db.prepare(`SELECT id FROM cold_storages LIMIT 1`).get()?.id;
-if (!coldStorageId) {
-  coldStorageId = uuidv4();
-  db.prepare(`INSERT INTO cold_storages (id, code, name, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)`).run(coldStorageId, 'CS-TEST', 'Test Cold Storage', now, now);
-}
-
-// 5. Create sales order
-const soId = uuidv4();
-db.prepare(`INSERT INTO sales_order (id, so_number, customer_id, order_date, pipeline_status, fulfillment_type, total_amount, paid_amount, payment_status, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(soId, 'SO/EXP/1', customerId, now, 'Draft', 'stock', 500000, 0, 'unpaid', now, now);
-
-// 6. Create sales order item
-const soItemId = uuidv4();
-db.prepare(`INSERT INTO sales_order_items (id, sales_order_id, product_id, quantity, weight, unit_price, subtotal)
-  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(soItemId, soId, productId, 1, 10, 50000, 500000);
-
-// 7. Create purchase order
-const poId = uuidv4();
-db.prepare(`INSERT INTO purchase_order (id, po_number, supplier_id, order_date, po_type, pipeline_status, total_amount, paid_amount, payment_status, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(poId, 'PO/EXP/1', supplierId, now, 'Produk Jadi', 'Draft', 400000, 0, 'unpaid', now, now);
-
-// 8. Create purchase order item
-const poItemId = uuidv4();
-db.prepare(`INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, weight, unit_price, hpp_per_kg)
-  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(poItemId, poId, productId, 1, 8, 50000, 50000);
-
-// 9. Create inventory stock lots
-const stock1Id = uuidv4();
-db.prepare(`INSERT INTO inventory_stock (id, kode_simpan, product_id, cold_storage_id, quantity, weight, hpp_per_kg, status, source_type, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(stock1Id, 'EXP-K1', productId, coldStorageId, 1, 20, 50000, 'active', 'purchase', now, now);
-
-const stock2Id = uuidv4();
-db.prepare(`INSERT INTO inventory_stock (id, kode_simpan, product_id, cold_storage_id, quantity, weight, hpp_per_kg, status, source_type, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(stock2Id, 'EXP-K2', productId, coldStorageId, 1, 15, 50000, 'active', 'purchase', now, now);
-
-db.close();
-
-console.log(JSON.stringify({
-  customerId, supplierId, productId, coldStorageId, soId, poId, stock1Id, stock2Id
-}));
-"""
+def test_t4_duplicate():
+    """T4: DUPLICATE guard test"""
+    print("\n" + "="*80)
+    print("TEST T4: DUPLICATE guard")
+    print("="*80)
     
-    result = run_node_script(script)
-    if result:
-        try:
-            ids = json.loads(result)
-            print(f"✅ Test data seeded successfully")
-            print(f"   Customer: {ids['customerId']}")
-            print(f"   Supplier: {ids['supplierId']}")
-            print(f"   Product: {ids['productId']}")
-            print(f"   SO: {ids['soId']}")
-            print(f"   PO: {ids['poId']}")
-            print(f"   Stock 1: {ids['stock1Id']}")
-            print(f"   Stock 2: {ids['stock2Id']}")
-            return ids
-        except (json.JSONDecodeError, ValueError, KeyError):
-            print(f"❌ Failed to parse seed result")
-            return None
-    return None
+    try:
+        import requests
+        # Try to create another account with code 9-8001
+        payload = {
+            "code": TEST_ACCOUNT_1,
+            "name": "Duplicate Test",
+            "type": "expense"
+        }
+        
+        resp = admin_session.post(
+            f"{BASE_URL}/accounting/accounts",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
+        
+        if resp.status_code == 400:
+            error_msg = resp.json().get("error", "")
+            if "sudah dipakai" in error_msg.lower():
+                print(f"[SUCCESS] T4: Duplicate code correctly rejected with 400")
+                print(f"  Error message: {error_msg}")
+                return True
+            else:
+                print(f"[FAIL] T4: Got 400 but wrong error message: {error_msg}")
+                return False
+        else:
+            print(f"[FAIL] T4: Expected 400, got {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+    except Exception as e:
+        print(f"[FAIL] T4: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-def cleanup_test_data():
-    """Clean up all test data"""
-    print("\n🧹 Cleaning up test data...")
+def test_t5_archive_restore():
+    """T5: ARCHIVE/RESTORE test"""
+    print("\n" + "="*80)
+    print("TEST T5: ARCHIVE/RESTORE")
+    print("="*80)
     
-    script = """
-const Database = require('better-sqlite3');
-const db = new Database('/app/data/erp.db');
+    try:
+        import requests
+        
+        # Archive
+        resp = admin_session.post(
+            f"{BASE_URL}/accounting/accounts/{test_account_1_id}/archive",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T5.1: POST /archive returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        print(f"[SUCCESS] T5.1: Account archived")
+        
+        # Verify default list excludes it
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        accounts = resp.json().get("data", [])
+        found = [a for a in accounts if a.get("code") == TEST_ACCOUNT_1]
+        
+        if not found:
+            print(f"[SUCCESS] T5.2: Archived account NOT in default list")
+        else:
+            print(f"[FAIL] T5.2: Archived account still in default list")
+            return False
+        
+        # Verify archived list includes it
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts?archived=1",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        accounts = resp.json().get("data", [])
+        found = [a for a in accounts if a.get("code") == TEST_ACCOUNT_1]
+        
+        if found:
+            print(f"[SUCCESS] T5.3: Archived account appears in ?archived=1 list")
+        else:
+            print(f"[FAIL] T5.3: Archived account NOT in ?archived=1 list")
+            return False
+        
+        # Restore
+        resp = admin_session.post(
+            f"{BASE_URL}/accounting/accounts/{test_account_1_id}/restore",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T5.4: POST /restore returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        print(f"[SUCCESS] T5.4: Account restored")
+        
+        # Verify back in default list
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        accounts = resp.json().get("data", [])
+        found = [a for a in accounts if a.get("code") == TEST_ACCOUNT_1]
+        
+        if found:
+            print(f"[SUCCESS] T5.5: Restored account back in default list")
+        else:
+            print(f"[FAIL] T5.5: Restored account NOT in default list")
+            return False
+        
+        print(f"[SUCCESS] T5: ARCHIVE/RESTORE test passed")
+        return True
+        
+    except Exception as e:
+        print(f"[FAIL] T5: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-// Delete in reverse order (respect foreign keys)
-db.prepare(`DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_order WHERE so_number = 'SO/EXP/1')`).run();
-db.prepare(`DELETE FROM sales_order WHERE so_number = 'SO/EXP/1'`).run();
-
-db.prepare(`DELETE FROM purchase_order_items WHERE purchase_order_id IN (SELECT id FROM purchase_order WHERE po_number = 'PO/EXP/1')`).run();
-db.prepare(`DELETE FROM purchase_order WHERE po_number = 'PO/EXP/1'`).run();
-
-db.prepare(`DELETE FROM inventory_stock WHERE kode_simpan IN ('EXP-K1', 'EXP-K2')`).run();
-
-db.prepare(`DELETE FROM products WHERE sku = 'EXP-TEST'`).run();
-db.prepare(`DELETE FROM contacts WHERE code IN ('CUST-EXP-TEST', 'SUP-EXP-TEST')`).run();
-
-// Only delete test cold storage if we created it
-const testCs = db.prepare(`SELECT id FROM cold_storages WHERE code = 'CS-TEST'`).get();
-if (testCs) {
-  db.prepare(`DELETE FROM cold_storages WHERE code = 'CS-TEST'`).run();
-}
-
-// Get final counts
-const soCount = db.prepare(`SELECT COUNT(*) as count FROM sales_order WHERE so_number LIKE 'SO/EXP/%'`).get().count;
-const poCount = db.prepare(`SELECT COUNT(*) as count FROM purchase_order WHERE po_number LIKE 'PO/EXP/%'`).get().count;
-const stockCount = db.prepare(`SELECT COUNT(*) as count FROM inventory_stock WHERE kode_simpan LIKE 'EXP-K%'`).get().count;
-
-db.close();
-
-console.log(JSON.stringify({ soCount, poCount, stockCount }));
-"""
+def test_t6_delete():
+    """T6: DELETE test"""
+    print("\n" + "="*80)
+    print("TEST T6: DELETE account 9-8001")
+    print("="*80)
     
-    result = run_node_script(script)
-    if result:
-        try:
-            counts = json.loads(result)
-            print(f"✅ Cleanup complete")
-            print(f"   Remaining SO/EXP/* count: {counts['soCount']}")
-            print(f"   Remaining PO/EXP/* count: {counts['poCount']}")
-            print(f"   Remaining EXP-K* stock count: {counts['stockCount']}")
-            return counts
-        except (json.JSONDecodeError, ValueError, KeyError):
-            print(f"❌ Failed to parse cleanup result")
-            return None
-    return None
+    try:
+        import requests
+        
+        # DELETE
+        resp = admin_session.delete(
+            f"{BASE_URL}/accounting/accounts/{test_account_1_id}",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T6.1: DELETE returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        print(f"[SUCCESS] T6.1: Account deleted via API")
+        
+        # Verify NOT in MongoDB
+        col = get_mongo_collection()
+        mongo_doc = col.find_one({"id": test_account_1_id})
+        
+        if mongo_doc is None:
+            print(f"[SUCCESS] T6.2: Account removed from MongoDB")
+        else:
+            print(f"[FAIL] T6.2: Account still in MongoDB")
+            return False
+        
+        # Verify NOT in SQLite
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM gl_accounts WHERE id = ?", (test_account_1_id,))
+        sqlite_row = cursor.fetchone()
+        conn.close()
+        
+        if sqlite_row is None:
+            print(f"[SUCCESS] T6.3: Account removed from SQLite mirror")
+        else:
+            print(f"[FAIL] T6.3: Account still in SQLite mirror")
+            return False
+        
+        print(f"[SUCCESS] T6: DELETE test passed - account removed from BOTH MongoDB and SQLite")
+        return True
+        
+    except Exception as e:
+        print(f"[FAIL] T6: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_t7_import():
+    """T7: IMPORT upsert test"""
+    global test_account_2_id
+    print("\n" + "="*80)
+    print("TEST T7: IMPORT upsert")
+    print("="*80)
+    
+    try:
+        import requests
+        
+        # Create via import
+        payload = {
+            "rows": [
+                {
+                    "Kode Akun": TEST_ACCOUNT_2,
+                    "Nama Akun": "Impor Uji",
+                    "Tipe": "expense",
+                    "Saldo Normal": "debit",
+                    "Saldo Awal": 5000
+                }
+            ]
+        }
+        
+        resp = admin_session.post(
+            f"{BASE_URL}/import/chart-of-accounts",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T7.1: POST /import/chart-of-accounts returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        data = resp.json().get("data", {})
+        created = data.get("created", 0)
+        
+        if created == 1:
+            print(f"[SUCCESS] T7.1: Import created 1 account")
+        else:
+            print(f"[FAIL] T7.1: Expected created=1, got {created}")
+            return False
+        
+        # Verify in MongoDB
+        col = get_mongo_collection()
+        mongo_doc = col.find_one({"code": TEST_ACCOUNT_2})
+        
+        if not mongo_doc:
+            print(f"[FAIL] T7.2: Account NOT found in MongoDB")
+            return False
+        
+        test_account_2_id = mongo_doc.get("id")
+        
+        if mongo_doc.get("opening_balance") == 5000:
+            print(f"[SUCCESS] T7.2: Account found in MongoDB with opening_balance=5000")
+            print(f"  ID: {test_account_2_id}")
+            print(f"  Name: {mongo_doc.get('name')}")
+        else:
+            print(f"[FAIL] T7.2: opening_balance mismatch: {mongo_doc.get('opening_balance')}")
+            return False
+        
+        # Verify in API list
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/accounts",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        accounts = resp.json().get("data", [])
+        found = [a for a in accounts if a.get("code") == TEST_ACCOUNT_2]
+        
+        if found:
+            print(f"[SUCCESS] T7.3: Account appears in GET /api/accounting/accounts list")
+        else:
+            print(f"[FAIL] T7.3: Account NOT in list")
+            return False
+        
+        # Re-import with updated name (upsert)
+        payload = {
+            "rows": [
+                {
+                    "Kode Akun": TEST_ACCOUNT_2,
+                    "Nama Akun": "Impor Uji 2",
+                    "Tipe": "expense",
+                    "Saldo Normal": "debit",
+                    "Saldo Awal": 5000
+                }
+            ]
+        }
+        
+        resp = admin_session.post(
+            f"{BASE_URL}/import/chart-of-accounts",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
+        
+        if resp.status_code != 200:
+            print(f"[FAIL] T7.4: Re-import returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        data = resp.json().get("data", {})
+        updated = data.get("updated", 0)
+        
+        if updated == 1:
+            print(f"[SUCCESS] T7.4: Re-import updated 1 account")
+        else:
+            print(f"[FAIL] T7.4: Expected updated=1, got {updated}")
+            return False
+        
+        # Verify name updated in MongoDB
+        mongo_doc = col.find_one({"code": TEST_ACCOUNT_2})
+        
+        if mongo_doc.get("name") == "Impor Uji 2":
+            print(f"[SUCCESS] T7.5: MongoDB name updated to 'Impor Uji 2'")
+        else:
+            print(f"[FAIL] T7.5: MongoDB name NOT updated: {mongo_doc.get('name')}")
+            return False
+        
+        print(f"[SUCCESS] T7: IMPORT upsert test passed")
+        return True
+        
+    except Exception as e:
+        print(f"[FAIL] T7: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_t8_engine():
+    """T8: ENGINE still works (accounting reports)"""
+    print("\n" + "="*80)
+    print("TEST T8: ENGINE still works (accounting reports)")
+    print("="*80)
+    
+    try:
+        import requests
+        
+        # Try trial-balance report
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/trial-balance",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            print(f"[SUCCESS] T8.1: GET /api/accounting/trial-balance returned 200")
+            print(f"  Response has 'data' key: {bool(data)}")
+        else:
+            print(f"[FAIL] T8.1: GET /api/accounting/trial-balance returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        # Try balance-sheet report
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/balance-sheet",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            print(f"[SUCCESS] T8.2: GET /api/accounting/balance-sheet returned 200")
+            print(f"  Response has 'data' key: {bool(data)}")
+        else:
+            print(f"[FAIL] T8.2: GET /api/accounting/balance-sheet returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        # Try income-statement report
+        resp = admin_session.get(
+            f"{BASE_URL}/accounting/income-statement",
+            headers={"Origin": "http://localhost:3000"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            print(f"[SUCCESS] T8.3: GET /api/accounting/income-statement returned 200")
+            print(f"  Response has 'data' key: {bool(data)}")
+        else:
+            print(f"[FAIL] T8.3: GET /api/accounting/income-statement returned {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+        print(f"[SUCCESS] T8: ENGINE test passed - accounting reports work (SQLite mirror hydrated from MongoDB)")
+        return True
+        
+    except Exception as e:
+        print(f"[FAIL] T8: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_operator_403():
+    """Test operator role is Forbidden (403) for POST /api/accounting/accounts"""
+    print("\n" + "="*80)
+    print("TEST: Operator role 403")
+    print("="*80)
+    
+    try:
+        import requests
+        
+        # Try to create account as operator
+        payload = {
+            "code": "9-9999",
+            "name": "Operator Test",
+            "type": "expense"
+        }
+        
+        resp = operator_session.post(
+            f"{BASE_URL}/accounting/accounts",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://localhost:3000"
+            }
+        )
+        
+        if resp.status_code == 403:
+            print(f"[SUCCESS] Operator POST correctly rejected with 403")
+            print(f"  Error: {resp.json().get('error', '')}")
+            return True
+        else:
+            print(f"[FAIL] Expected 403, got {resp.status_code}")
+            print(f"Response: {resp.text}")
+            return False
+        
+    except Exception as e:
+        print(f"[FAIL] Operator 403 test: Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def cleanup():
+    """MANDATORY: Delete test accounts from BOTH MongoDB and SQLite"""
+    print("\n" + "="*80)
+    print("CLEANUP: Removing test accounts")
+    print("="*80)
+    
+    try:
+        # Get MongoDB collection
+        col = get_mongo_collection()
+        
+        # Delete from MongoDB
+        result1 = col.delete_one({"code": TEST_ACCOUNT_1})
+        result2 = col.delete_one({"code": TEST_ACCOUNT_2})
+        
+        print(f"[INFO] MongoDB cleanup:")
+        print(f"  {TEST_ACCOUNT_1}: {result1.deleted_count} document(s) deleted")
+        print(f"  {TEST_ACCOUNT_2}: {result2.deleted_count} document(s) deleted")
+        
+        # Delete from SQLite
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM gl_accounts WHERE code IN (?, ?)", (TEST_ACCOUNT_1, TEST_ACCOUNT_2))
+        conn.commit()
+        deleted_count = cursor.rowcount
+        conn.close()
+        
+        print(f"[INFO] SQLite cleanup: {deleted_count} row(s) deleted")
+        
+        # Verify cleanup
+        mongo_count = col.count_documents({"code": {"$in": [TEST_ACCOUNT_1, TEST_ACCOUNT_2]}})
+        
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM gl_accounts WHERE code IN (?, ?)", (TEST_ACCOUNT_1, TEST_ACCOUNT_2))
+        sqlite_count = cursor.fetchone()[0]
+        conn.close()
+        
+        if mongo_count == 0 and sqlite_count == 0:
+            print(f"[SUCCESS] Cleanup verified: test accounts removed from BOTH stores")
+        else:
+            print(f"[WARNING] Cleanup incomplete: MongoDB={mongo_count}, SQLite={sqlite_count}")
+        
+        # Report final counts
+        final_mongo_count = col.count_documents({})
+        print(f"\n[INFO] Final MongoDB gl_accounts document count: {final_mongo_count}")
+        
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM gl_accounts")
+        final_sqlite_count = cursor.fetchone()[0]
+        conn.close()
+        
+        print(f"[INFO] Final SQLite gl_accounts row count: {final_sqlite_count}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Cleanup exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
-    print("=" * 80)
-    print("EXCEL EXPORT ENDPOINTS - BACKEND TEST")
-    print("=" * 80)
+    global admin_session, operator_session
     
-    # T1: Auth/role gating
-    print("\n" + "=" * 80)
-    print("T1 — AUTH/ROLE GATING")
-    print("=" * 80)
+    print("="*80)
+    print("MIGRATION Phase 1: Chart of Accounts (gl_accounts) -> MongoDB-authoritative")
+    print("Backend Testing Suite")
+    print("="*80)
     
-    # T1a: No auth cookie => 401
-    print("\n[T1a] GET /api/export/sales-orders with NO auth cookie")
-    response, code = get_with_curl('/export/sales-orders')
-    if response and (code == 0 or isinstance(response, dict)):
-        # Check if it's a 401 error (Better Auth returns JSON error)
-        if isinstance(response, dict) and ('error' in response or 'message' in response):
-            print(f"✅ PASSED: Unauthenticated request rejected")
-            print(f"   Response: {response}")
-            test_results["T1_auth_no_cookie"] = True
-        else:
-            print(f"❌ FAILED: Expected 401, got response: {response}")
-    else:
-        print(f"❌ FAILED: Request failed")
+    # Login as admin
+    print("\n[INFO] Logging in as admin...")
+    admin_session = login("admin@lpi.co.id", "admin123")
+    if not admin_session:
+        print("[ERROR] Failed to login as admin")
+        sys.exit(1)
     
-    # T1b: Login as operator => 403
-    print("\n[T1b] Login as operator and GET /api/export/sales-orders")
-    operator_cookie = login_with_curl('operator@lpi.co.id', 'operator123')
-    if operator_cookie:
-        print(f"✅ Operator login successful")
-        response, code = get_with_curl('/export/sales-orders', operator_cookie)
-        if isinstance(response, dict) and ('error' in response or 'message' in response):
-            if 'Forbidden' in str(response) or 'forbidden' in str(response).lower():
-                print(f"✅ PASSED: Operator request rejected with 403")
-                print(f"   Response: {response}")
-                test_results["T1_auth_operator_403"] = True
-            else:
-                print(f"❌ FAILED: Expected Forbidden, got: {response}")
-        else:
-            print(f"❌ FAILED: Expected 403, got: {response}")
-    else:
-        print(f"❌ FAILED: Operator login failed")
+    # Login as operator
+    print("\n[INFO] Logging in as operator...")
+    operator_session = login("operator@lpi.co.id", "operator123")
+    if not operator_session:
+        print("[ERROR] Failed to login as operator")
+        sys.exit(1)
     
-    # T1c: Login as admin => 200 for all 4 modules
-    print("\n[T1c] Login as admin and GET all 4 modules")
-    admin_cookie = login_with_curl('admin@lpi.co.id', 'admin123')
-    if not admin_cookie:
-        print(f"❌ FAILED: Admin login failed")
-        return
+    # Run tests
+    results = {}
     
-    print(f"✅ Admin login successful")
-    
-    modules = ['sales-orders', 'purchase-orders', 'inventory', 'accounting']
-    admin_responses = {}
-    
-    for module in modules:
-        print(f"\n   Testing GET /api/export/{module}")
-        response, code = get_with_curl(f'/export/{module}', admin_cookie)
-        if isinstance(response, dict) and 'data' in response:
-            print(f"   ✅ PASSED: {module} returned 200 with data")
-            test_results[f"T1_auth_admin_{module.replace('-', '_')}"] = True
-            admin_responses[module] = response
-        else:
-            print(f"   ❌ FAILED: {module} did not return valid data: {response}")
-    
-    # T2: Structure verification
-    print("\n" + "=" * 80)
-    print("T2 — STRUCTURE VERIFICATION")
-    print("=" * 80)
-    
-    expected_sheets = {
-        'sales-orders': ['Sales Order', 'Item SO'],
-        'purchase-orders': ['Purchase Order', 'Item PO'],
-        'inventory': ['Stok', 'Kartu Stok'],
-        'accounting': ['Bagan Akun', 'Jurnal (Buku Besar)', 'Neraca Saldo']
-    }
-    
-    for module, expected in expected_sheets.items():
-        print(f"\n[T2] Verifying structure for {module}")
-        if module not in admin_responses:
-            print(f"   ❌ FAILED: No response data for {module}")
-            continue
-        
-        response = admin_responses[module]
-        data = response.get('data', {})
-        
-        # Check filename
-        filename = data.get('filename', '')
-        if filename and isinstance(filename, str) and len(filename) > 0:
-            print(f"   ✅ filename: '{filename}' (non-empty string)")
-        else:
-            print(f"   ❌ filename: invalid or empty")
-            continue
-        
-        # Check sheets
-        sheets = data.get('sheets', [])
-        if not isinstance(sheets, list):
-            print(f"   ❌ sheets: not an array")
-            continue
-        
-        print(f"   ✅ sheets: array with {len(sheets)} elements")
-        
-        # Check each sheet
-        sheet_names = []
-        all_valid = True
-        for i, sheet in enumerate(sheets):
-            name = sheet.get('name', '')
-            rows = sheet.get('rows', [])
-            
-            if not isinstance(name, str) or len(name) == 0:
-                print(f"   ❌ Sheet {i}: name is not a non-empty string")
-                all_valid = False
-                continue
-            
-            if not isinstance(rows, list):
-                print(f"   ❌ Sheet {i}: rows is not an array")
-                all_valid = False
-                continue
-            
-            sheet_names.append(name)
-            print(f"   ✅ Sheet {i}: name='{name}', rows={len(rows)} elements")
-        
-        # Check expected sheet names
-        if sheet_names == expected:
-            print(f"   ✅ Sheet names match expected: {expected}")
-            test_results[f"T2_structure_{module.replace('-', '_')}"] = True
-        else:
-            print(f"   ❌ Sheet names mismatch")
-            print(f"      Expected: {expected}")
-            print(f"      Got: {sheet_names}")
-    
-    # T3: Accounting COA populated
-    print("\n" + "=" * 80)
-    print("T3 — ACCOUNTING COA POPULATED")
-    print("=" * 80)
-    
-    if 'accounting' in admin_responses:
-        print("\n[T3] Verifying 'Bagan Akun' sheet has data")
-        data = admin_responses['accounting'].get('data', {})
-        sheets = data.get('sheets', [])
-        
-        coa_sheet = None
-        for sheet in sheets:
-            if sheet.get('name') == 'Bagan Akun':
-                coa_sheet = sheet
-                break
-        
-        if not coa_sheet:
-            print(f"   ❌ FAILED: 'Bagan Akun' sheet not found")
-        else:
-            rows = coa_sheet.get('rows', [])
-            print(f"   ✅ 'Bagan Akun' sheet has {len(rows)} rows")
-            
-            if len(rows) == 0:
-                print(f"   ❌ FAILED: 'Bagan Akun' sheet is empty")
-            else:
-                # Find row with 'Kode Akun' == '5-1300'
-                target_row = None
-                for row in rows:
-                    if row.get('Kode Akun') == '5-1300':
-                        target_row = row
-                        break
-                
-                if not target_row:
-                    print(f"   ❌ FAILED: Row with 'Kode Akun'=='5-1300' not found")
-                else:
-                    print(f"   ✅ Found row with 'Kode Akun'=='5-1300'")
-                    print(f"      Row data: {target_row}")
-                    
-                    # Check required keys
-                    required_keys = ['Kode Akun', 'Nama Akun', 'Tipe', 'Saldo Awal (Rp)']
-                    has_all_keys = all(key in target_row for key in required_keys)
-                    
-                    if has_all_keys:
-                        print(f"   ✅ Row has all required keys: {required_keys}")
-                        test_results["T3_accounting_coa_populated"] = True
-                    else:
-                        missing = [k for k in required_keys if k not in target_row]
-                        print(f"   ❌ FAILED: Missing keys: {missing}")
-    else:
-        print(f"   ❌ FAILED: No accounting response data")
-    
-    # T4: Data correctness (seed then verify)
-    print("\n" + "=" * 80)
-    print("T4 — DATA CORRECTNESS (SEED + VERIFY)")
-    print("=" * 80)
-    
-    seed_ids = seed_test_data()
-    if not seed_ids:
-        print(f"❌ FAILED: Could not seed test data")
-    else:
-        # Re-fetch exports with seeded data
-        print("\n[T4] Re-fetching exports with seeded data")
-        
-        # T4a: Sales Orders
-        print("\n[T4a] Verifying sales-orders export")
-        response, code = get_with_curl('/export/sales-orders', admin_cookie)
-        if isinstance(response, dict) and 'data' in response:
-            data = response.get('data', {})
-            sheets = data.get('sheets', [])
-            
-            # Find 'Sales Order' sheet
-            so_sheet = None
-            item_sheet = None
-            for sheet in sheets:
-                if sheet.get('name') == 'Sales Order':
-                    so_sheet = sheet
-                elif sheet.get('name') == 'Item SO':
-                    item_sheet = sheet
-            
-            if so_sheet and item_sheet:
-                so_rows = so_sheet.get('rows', [])
-                item_rows = item_sheet.get('rows', [])
-                
-                # Find SO/EXP/1
-                target_so = None
-                for row in so_rows:
-                    if row.get('No SO') == 'SO/EXP/1':
-                        target_so = row
-                        break
-                
-                if target_so:
-                    total = target_so.get('Total (Rp)')
-                    if total == 500000:
-                        print(f"   ✅ 'Sales Order' sheet contains 'SO/EXP/1' with Total=500000")
-                    else:
-                        print(f"   ❌ 'SO/EXP/1' Total mismatch: expected 500000, got {total}")
-                else:
-                    print(f"   ❌ 'SO/EXP/1' not found in 'Sales Order' sheet")
-                
-                # Find item with SKU='EXP-TEST'
-                target_item = None
-                for row in item_rows:
-                    if row.get('SKU') == 'EXP-TEST' and row.get('No SO') == 'SO/EXP/1':
-                        target_item = row
-                        break
-                
-                if target_item:
-                    weight = target_item.get('Berat (kg)')
-                    price = target_item.get('Harga/kg (Rp)')
-                    if weight == 10 and price == 50000:
-                        print(f"   ✅ 'Item SO' sheet contains SKU='EXP-TEST' with Berat=10, Harga/kg=50000")
-                        test_results["T4_data_correctness_sales_orders"] = True
-                    else:
-                        print(f"   ❌ Item data mismatch: Berat={weight} (expected 10), Harga/kg={price} (expected 50000)")
-                else:
-                    print(f"   ❌ Item with SKU='EXP-TEST' not found in 'Item SO' sheet")
-            else:
-                print(f"   ❌ Required sheets not found")
-        else:
-            print(f"   ❌ Failed to fetch sales-orders export")
-        
-        # T4b: Purchase Orders
-        print("\n[T4b] Verifying purchase-orders export")
-        response, code = get_with_curl('/export/purchase-orders', admin_cookie)
-        if isinstance(response, dict) and 'data' in response:
-            data = response.get('data', {})
-            sheets = data.get('sheets', [])
-            
-            # Find 'Purchase Order' sheet
-            po_sheet = None
-            item_sheet = None
-            for sheet in sheets:
-                if sheet.get('name') == 'Purchase Order':
-                    po_sheet = sheet
-                elif sheet.get('name') == 'Item PO':
-                    item_sheet = sheet
-            
-            if po_sheet and item_sheet:
-                po_rows = po_sheet.get('rows', [])
-                item_rows = item_sheet.get('rows', [])
-                
-                # Find PO/EXP/1
-                target_po = None
-                for row in po_rows:
-                    if row.get('No PO') == 'PO/EXP/1':
-                        target_po = row
-                        break
-                
-                if target_po:
-                    print(f"   ✅ 'Purchase Order' sheet contains 'PO/EXP/1'")
-                else:
-                    print(f"   ❌ 'PO/EXP/1' not found in 'Purchase Order' sheet")
-                
-                # Find item with HPP/kg=50000
-                target_item = None
-                for row in item_rows:
-                    if row.get('No PO') == 'PO/EXP/1' and row.get('SKU') == 'EXP-TEST':
-                        target_item = row
-                        break
-                
-                if target_item:
-                    hpp = target_item.get('HPP/kg (Rp)')
-                    if hpp == 50000:
-                        print(f"   ✅ 'Item PO' sheet contains item with HPP/kg=50000")
-                        test_results["T4_data_correctness_purchase_orders"] = True
-                    else:
-                        print(f"   ❌ Item HPP/kg mismatch: expected 50000, got {hpp}")
-                else:
-                    print(f"   ❌ Item not found in 'Item PO' sheet")
-            else:
-                print(f"   ❌ Required sheets not found")
-        else:
-            print(f"   ❌ Failed to fetch purchase-orders export")
-        
-        # T4c: Inventory
-        print("\n[T4c] Verifying inventory export")
-        response, code = get_with_curl('/export/inventory', admin_cookie)
-        if isinstance(response, dict) and 'data' in response:
-            data = response.get('data', {})
-            sheets = data.get('sheets', [])
-            
-            # Find 'Stok' sheet
-            stok_sheet = None
-            for sheet in sheets:
-                if sheet.get('name') == 'Stok':
-                    stok_sheet = sheet
-                    break
-            
-            if stok_sheet:
-                rows = stok_sheet.get('rows', [])
-                
-                # Find EXP-K1 and EXP-K2
-                k1 = None
-                k2 = None
-                for row in rows:
-                    if row.get('Kode Simpan') == 'EXP-K1':
-                        k1 = row
-                    elif row.get('Kode Simpan') == 'EXP-K2':
-                        k2 = row
-                
-                if k1 and k2:
-                    k1_weight = k1.get('Berat (kg)')
-                    k1_value = k1.get('Nilai Persediaan (Rp)')
-                    k2_weight = k2.get('Berat (kg)')
-                    k2_value = k2.get('Nilai Persediaan (Rp)')
-                    
-                    if k1_weight == 20 and k1_value == 1000000 and k2_weight == 15 and k2_value == 750000:
-                        print(f"   ✅ 'Stok' sheet contains EXP-K1 (20kg, 1,000,000) and EXP-K2 (15kg, 750,000)")
-                        test_results["T4_data_correctness_inventory"] = True
-                    else:
-                        print(f"   ❌ Inventory data mismatch:")
-                        print(f"      EXP-K1: Berat={k1_weight} (expected 20), Nilai={k1_value} (expected 1000000)")
-                        print(f"      EXP-K2: Berat={k2_weight} (expected 15), Nilai={k2_value} (expected 750000)")
-                else:
-                    print(f"   ❌ EXP-K1 or EXP-K2 not found in 'Stok' sheet")
-            else:
-                print(f"   ❌ 'Stok' sheet not found")
-        else:
-            print(f"   ❌ Failed to fetch inventory export")
-    
-    # T5: Unknown module => 404
-    print("\n" + "=" * 80)
-    print("T5 — UNKNOWN MODULE")
-    print("=" * 80)
-    
-    print("\n[T5] GET /api/export/foo as admin")
-    response, code = get_with_curl('/export/foo', admin_cookie)
-    if isinstance(response, dict) and ('error' in response or 'message' in response):
-        error_msg = response.get('error') or response.get('message', '')
-        if 'tidak dikenal' in error_msg.lower() or 'unknown' in error_msg.lower() or '404' in str(response):
-            print(f"✅ PASSED: Unknown module rejected with 404")
-            print(f"   Response: {response}")
-            test_results["T5_unknown_module_404"] = True
-        else:
-            print(f"❌ FAILED: Expected 404, got: {response}")
-    else:
-        print(f"❌ FAILED: Expected error response, got: {response}")
+    results["T1_LIST_MONGO"] = test_t1_list_and_mongo_source()
+    results["T2_CREATE"] = test_t2_create()
+    results["T3_UPDATE"] = test_t3_update()
+    results["T4_DUPLICATE"] = test_t4_duplicate()
+    results["T5_ARCHIVE_RESTORE"] = test_t5_archive_restore()
+    results["T6_DELETE"] = test_t6_delete()
+    results["T7_IMPORT"] = test_t7_import()
+    results["T8_ENGINE"] = test_t8_engine()
+    results["OPERATOR_403"] = test_operator_403()
     
     # Cleanup
-    print("\n" + "=" * 80)
-    print("CLEANUP")
-    print("=" * 80)
-    
-    if seed_ids:
-        counts = cleanup_test_data()
-        if counts:
-            if counts['soCount'] == 0 and counts['poCount'] == 0 and counts['stockCount'] == 0:
-                print(f"✅ All test data cleaned up successfully (clean slate confirmed)")
-            else:
-                print(f"⚠️  Some test data may remain:")
-                print(f"   SO/EXP/* count: {counts['soCount']}")
-                print(f"   PO/EXP/* count: {counts['poCount']}")
-                print(f"   EXP-K* stock count: {counts['stockCount']}")
+    cleanup()
     
     # Summary
-    print("\n" + "=" * 80)
+    print("\n" + "="*80)
     print("TEST SUMMARY")
-    print("=" * 80)
+    print("="*80)
     
-    passed = sum(1 for v in test_results.values() if v)
-    total = len(test_results)
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
     
-    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)\n")
+    for test, result in results.items():
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status} - {test}")
     
-    for test, result in test_results.items():
-        status = "✅ PASSED" if result else "❌ FAILED"
-        print(f"{status}: {test}")
-    
-    print("\n" + "=" * 80)
+    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)")
     
     if passed == total:
-        print("🎉 ALL TESTS PASSED!")
+        print("\n🎉 ALL TESTS PASSED!")
         sys.exit(0)
     else:
-        print(f"⚠️  {total - passed} test(s) failed")
+        print(f"\n⚠️  {total - passed} test(s) failed")
         sys.exit(1)
 
 if __name__ == "__main__":

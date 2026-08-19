@@ -13,6 +13,7 @@ import * as acct from '@/lib/accounting/engine';
 import * as md from '@/lib/db/masterdata';
 import { buildExportSheets } from '@/lib/export/queries';
 import { importMasterData, IMPORT_TEMPLATES } from '@/lib/export/import';
+import * as coaMongo from '@/lib/accounting/coa-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -260,6 +261,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const raw = getRawSqlite();
+      if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); } catch (e) { /* best-effort */ } }
       const out = buildExportSheets(raw, path[1]);
       if (!out) return err('Modul ekspor tidak dikenal', 404);
       return json({ data: out });
@@ -302,6 +304,9 @@ async function handleRoute(request, { params }) {
       const WRITE = ['admin', 'supervisor'];
       if (!requireRole(session, READ)) return err('Forbidden', 403);
       const raw = getRawSqlite();
+      // COA is MongoDB-authoritative (multi-replica safe). Refresh the local SQLite mirror from Mongo
+      // before any accounting read/report/sync so the engine joins use the shared, up-to-date COA.
+      await coaMongo.ensureCoaReady(raw);
       const uid = session.user.id;
       const sub = path[1] || '';
       const parseRange = (url) => ({
@@ -312,16 +317,15 @@ async function handleRoute(request, { params }) {
       // Auto-post (regenerate auto journals) before reads, if enabled
       const autoSync = () => { try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('autoSync', e?.message); } };
 
-      // ---- Chart of Accounts ----
+      // ---- Chart of Accounts (MongoDB-authoritative) ----
       if (sub === 'accounts') {
         // list
         if (path.length === 2 && method === 'GET') {
           const url = new URL(request.url);
           const a = url.searchParams.get('archived');
-          let where = '1=1';
-          if (a === '1' || a === 'true') where = 'archived_at IS NOT NULL';
-          else if (a !== 'all') where = 'archived_at IS NULL';
-          const rows = raw.prepare(`SELECT * FROM gl_accounts WHERE ${where} ORDER BY code`).all();
+          let rows = await coaMongo.coaList({ includeArchived: true });
+          if (a === '1' || a === 'true') rows = rows.filter(r => r.archived_at != null);
+          else if (a !== 'all') rows = rows.filter(r => r.archived_at == null);
           return json({ data: rows });
         }
         // create
@@ -333,28 +337,28 @@ async function handleRoute(request, { params }) {
           if (!code || !name) return err('Kode dan nama akun wajib diisi', 400);
           const type = b.type || 'asset';
           const nb = b.normalBalance || (['liability', 'equity', 'revenue', 'other_income'].includes(type) ? 'credit' : 'debit');
-          const exists = raw.prepare('SELECT 1 FROM gl_accounts WHERE code=?').get(code);
-          if (exists) return err('Kode akun sudah dipakai', 400);
-          const id = uuidv4();
+          if (await coaMongo.coaGetByCode(code)) return err('Kode akun sudah dipakai', 400);
           try {
-            raw.prepare(`INSERT INTO gl_accounts (id, code, name, type, normal_balance, category, parent_code, cash_flow_category, is_postable, is_system, opening_balance, description, status)
-              VALUES (?,?,?,?,?,?,?,?,?,0,?,?, 'active')`).run(
-              id, code, name, type, nb, b.category || null, b.parentCode || null, b.cashFlowCategory || 'operating',
-              b.isPostable === false ? 0 : 1, Number(b.openingBalance || 0), b.description || null);
-            return json({ data: raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id) });
+            const doc = await coaMongo.coaInsert({
+              code, name, type, normal_balance: nb, category: b.category || null, parent_code: b.parentCode || null,
+              cash_flow_category: b.cashFlowCategory || 'operating', is_postable: b.isPostable === false ? 0 : 1,
+              is_system: 0, opening_balance: Number(b.openingBalance || 0), description: b.description || null,
+            });
+            await coaMongo.hydrateCoaToSqlite(raw);
+            return json({ data: doc });
           } catch (e) { return err('Gagal membuat akun: ' + (e?.message || e), 400); }
         }
         // update / archive / restore / delete
         const id = path[2];
         if (id && path.length === 3 && method === 'PATCH') {
           if (!requireRole(session, WRITE)) return err('Forbidden', 403);
-          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           const b = await request.json().catch(() => ({}));
           if (b.code && b.code !== cur.code) {
             if (cur.is_system) return err('Kode akun sistem tidak dapat diubah', 400);
-            const dup = raw.prepare('SELECT 1 FROM gl_accounts WHERE code=? AND id<>?').get(b.code, id);
-            if (dup) return err('Kode akun sudah dipakai', 400);
+            const dup = await coaMongo.coaGetByCode(b.code);
+            if (dup && dup.id !== id) return err('Kode akun sudah dipakai', 400);
           }
           const fields = {
             code: cur.is_system ? cur.code : (b.code ?? cur.code),
@@ -369,27 +373,29 @@ async function handleRoute(request, { params }) {
             description: b.description ?? cur.description,
           };
           try {
-            raw.prepare(`UPDATE gl_accounts SET code=?, name=?, type=?, normal_balance=?, category=?, parent_code=?, cash_flow_category=?, is_postable=?, opening_balance=?, description=?, updated_at=unixepoch() WHERE id=?`)
-              .run(fields.code, fields.name, fields.type, fields.normal_balance, fields.category, fields.parent_code, fields.cash_flow_category, fields.is_postable, fields.opening_balance, fields.description, id);
-            return json({ data: raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id) });
+            const doc = await coaMongo.coaUpdate(id, fields);
+            await coaMongo.hydrateCoaToSqlite(raw);
+            return json({ data: doc });
           } catch (e) { return err('Gagal memperbarui akun: ' + (e?.message || e), 400); }
         }
         if (id && path.length === 4 && (path[3] === 'archive' || path[3] === 'restore') && method === 'POST') {
           if (!requireRole(session, WRITE)) return err('Forbidden', 403);
-          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           if (cur.is_system && path[3] === 'archive') return err('Akun sistem tidak dapat diarsipkan', 400);
-          raw.prepare('UPDATE gl_accounts SET archived_at=?, updated_at=unixepoch() WHERE id=?').run(path[3] === 'archive' ? Math.floor(Date.now() / 1000) : null, id);
+          await coaMongo.coaSetArchived(id, path[3] === 'archive' ? Math.floor(Date.now() / 1000) : null);
+          await coaMongo.hydrateCoaToSqlite(raw);
           return json({ ok: true });
         }
         if (id && path.length === 3 && method === 'DELETE') {
           if (!requireRole(session, WRITE)) return err('Forbidden', 403);
-          const cur = raw.prepare('SELECT * FROM gl_accounts WHERE id=?').get(id);
+          const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           if (cur.is_system) return err('Akun sistem tidak dapat dihapus (arsipkan saja)', 400);
           const used = raw.prepare('SELECT 1 FROM journal_lines WHERE account_id=? LIMIT 1').get(id);
           if (used) return err('Akun sudah dipakai di jurnal, tidak dapat dihapus. Arsipkan saja.', 400);
-          raw.prepare('DELETE FROM gl_accounts WHERE id=?').run(id);
+          await coaMongo.coaDelete(id);
+          try { raw.prepare('DELETE FROM gl_accounts WHERE id=?').run(id); } catch (e) { /* mirror */ }
           return json({ ok: true });
         }
       }
