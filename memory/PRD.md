@@ -142,3 +142,18 @@ Nama+Tipe (Tipe->categories, auto code if blank), chart-of-accounts upsert by Ko
 contacts DUAL-WRITE Mongo(authoritative)+SQLite mirror; COA -> SQLite (GridFS backup). UI: import-panel.js (template
 download + upload + report). Backend tested 20/20. Cutoff Saldo Awal disepakati 31 Jan 2026.
 FASE 3 PENDING: Saldo Awal (opening balance) — stok awal + saldo akun + AR/AP outstanding per 31 Jan 2026 (belum dibuat).
+
+## MIGRATION SQLite -> MongoDB (multi-replica safety) — Phase 1 done 2026-02
+REASON: Emergent Launch tier runs >=2 replicas (cannot lock to 1). Per-pod SQLite diverged -> COA inconsistent on F5.
+Decision (user): migrate transactions + accounting to MongoDB as shared source of truth, INCREMENTALLY per module,
+starting with COA/Accounting, testing each phase.
+PHASE 1 (DONE, tested 9/9): Chart of Accounts is MongoDB-authoritative. New module /app/lib/accounting/coa-mongo.js
+(collection 'gl_accounts' in db erp_prod). All /api/accounting/accounts CRUD + /api/import/chart-of-accounts now
+read/write MongoDB; the accounting engine still reads a per-pod SQLite gl_accounts MIRROR which is hydrated from Mongo
+(coaMongo.ensureCoaReady/hydrateCoaToSqlite) before every accounting read/report/sync and after each COA write. Ids
+preserved so journal_lines.account_id joins still resolve. Requires REDEPLOY to take effect in production.
+REMAINING PHASES (still per-pod SQLite, TODO): journal_entries + journal_lines (posting engine syncLedger), sales_order
+(+items,+item_stocks,+payments,+returns), purchase_order (+items,+GRN), inventory_stock + stock_ledger, work_orders,
+cashbook, etc. Accounting REPORTS remain per-pod until source docs are shared, because syncLedger derives journals from
+source docs. Engine relational queries are the hardest part. Pattern to reuse: Mongo = source of truth; keep a
+per-pod SQLite mirror hydrated from Mongo for the sync relational engine, OR convert engine reads to Mongo directly.
