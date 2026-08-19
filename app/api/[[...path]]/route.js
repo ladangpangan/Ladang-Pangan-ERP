@@ -19,6 +19,7 @@ import * as salesMongo from '@/lib/db/sales-mongo';
 import * as invMongo from '@/lib/db/inventory-mongo';
 import * as potxMongo from '@/lib/db/potx-mongo';
 import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
+import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -253,6 +254,17 @@ const POTX_PATHS = new Set([
 // reports/engine read both (depreciation + shrinkage auto journals). Diff-persist, concurrency-safe.
 const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports']);
 
+// Phase 7: path[0] prefixes that READ or WRITE Work Order (produksi) tables + approvals.
+// WO writers: work-orders, wo-stages, inventory (wo_outputs). Approvals are created via the
+// createApproval() helper from purchase-orders / sales-orders / opnames, and approved/rejected under
+// /approvals. The accounting engine reads work_order (finalized) for production journals; WO/approvals are
+// also read on report/dashboard paths. Diff-persist, concurrency-safe.
+const WO_APPROVAL_PATHS = new Set([
+  'work-orders', 'wo-stages', 'inventory', 'sales-reports', 'production-reports',
+  'accounting', 'dashboard', 'reports',
+  'approvals', 'purchase-orders', 'sales-orders', 'opnames',
+]);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -300,6 +312,16 @@ async function handleRoute(request, { params }) {
       const rawAo = getRawSqlite();
       await assetsOpnameMongo.ensureReady(rawAo);
       if (method !== 'GET' && method !== 'HEAD') assetsOpnameMongo.captureSnapshot(request, rawAo);
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 7 (MongoDB): Work Order (produksi) + approvals are MongoDB-authoritative. Hydrate the per-pod
+  // SQLite mirror for these paths and, on mutations, snapshot so we diff-persist only changed rows.
+  if (WO_APPROVAL_PATHS.has(path[0])) {
+    try {
+      const rawWa = getRawSqlite();
+      await woApprovalMongo.ensureReady(rawWa);
+      if (method !== 'GET' && method !== 'HEAD') woApprovalMongo.captureSnapshot(request, rawWa);
     } catch (e) { /* best-effort */ }
   }
 
@@ -5939,6 +5961,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await potxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 6: diff-persist any fixed_assets / stock_opname rows this request changed (concurrency-safe).
       try { await assetsOpnameMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 7: diff-persist any Work Order / approvals rows this request changed (concurrency-safe).
+      try { await woApprovalMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
