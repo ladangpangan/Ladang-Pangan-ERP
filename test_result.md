@@ -24078,3 +24078,221 @@ agent_communication:
       
       No critical issues found. Ready for production use.
 
+
+frontend:
+  - task: "Import/Export page UI: download Excel, download template, upload import"
+    implemented: true
+    working: true
+    file: "/app/app/dashboard/import-export/page.js, /app/app/dashboard/import-export/import-panel.js, /app/lib/export/xlsx-client.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          User requested frontend verification of the new /dashboard/import-export page (menu "Impor & Ekspor").
+          EXPORT tab: 4 module cards (Sales Order, Purchase Order, Inventory, Akuntansi) each with "Unduh Excel", plus
+          "Unduh Semua". Clicking triggers a client-side .xlsx download (SheetJS) + a success toast.
+          IMPORT tab: 3 cards (Produk, Kontak, Bagan Akun) each with "Unduh Template" (downloads blank template .xlsx)
+          and "Upload & Impor" (parses uploaded .xlsx client-side, POSTs rows, shows a report with created/updated/
+          skipped/errors badges).
+        
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ ALL IMPORT/EXPORT UI TESTS PASSED (100%)
+          
+          Comprehensive browser testing completed for the Import/Export page UI.
+          All export, template download, and import upload features working correctly.
+          
+          === TEST ENVIRONMENT ===
+          - URL: http://localhost:3000/dashboard/import-export
+          - Auth: admin@lpi.co.id / admin123
+          - Browser: Playwright automation with download capture
+          - Language: Indonesian
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — EXPORT TAB (5/5 tests passed):
+          
+          1.1) Export Akuntansi / Keuangan (has data - chart of accounts):
+             - Clicked "Unduh Excel" button ✓
+             - Download triggered: Ekspor_Akuntansi_2026-08-19.xlsx ✓
+             - Filename ends with .xlsx ✓
+             - Success toast displayed: "Berhasil mengunduh Excel" ✓
+             - Screenshot captured ✓
+          
+          1.2) Export Sales Order:
+             - Clicked "Unduh Excel" button ✓
+             - Download triggered: Ekspor_Sales_Order_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          1.3) Export Purchase Order:
+             - Clicked "Unduh Excel" button ✓
+             - Download triggered: Ekspor_Purchase_Order_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          1.4) Export Inventory:
+             - Clicked "Unduh Excel" button ✓
+             - Download triggered: Ekspor_Inventory_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          1.5) Export All (Unduh Semua):
+             - Clicked "Unduh Semua" button ✓
+             - Multiple downloads triggered: 4 files ✓
+               * Ekspor_Sales_Order_2026-08-19.xlsx
+               * Ekspor_Purchase_Order_2026-08-19.xlsx
+               * Ekspor_Inventory_2026-08-19.xlsx
+               * Ekspor_Akuntansi_2026-08-19.xlsx
+             - All filenames end with .xlsx ✓
+             - No browser console errors ✓
+          
+          ✅ TEST 2 — IMPORT TAB (Templates) (3/3 tests passed):
+          
+          2.1) Download Produk template:
+             - Clicked "Unduh Template" button ✓
+             - Download triggered: Template_Produk_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          2.2) Download Kontak template:
+             - Clicked "Unduh Template" button ✓
+             - Download triggered: Template_Kontak_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          2.3) Download Bagan Akun template:
+             - Clicked "Unduh Template" button ✓
+             - Download triggered: Template_Bagan_Akun_2026-08-19.xlsx ✓
+             - Filename correct and ends with .xlsx ✓
+          
+          ✅ TEST 3 — IMPORT UPLOAD (Produk) (2/2 tests passed):
+          
+          3.1) Upload test file (first time):
+             - Created test .xlsx file with openpyxl ✓
+             - File structure: Produk sheet with headers + 1 data row ✓
+             - Test data: SKU="UITEST-IMPORT-1", Nama="Produk UITest", Satuan="kg", Harga Jual=27000 ✓
+             - File uploaded to Produk card ✓
+             - Result badges displayed: "1 baru" (1 created) ✓
+             - Success toast displayed: "Impor selesai: 1 baru, 0 diperbarui" ✓
+             - Screenshot captured ✓
+          
+          3.2) Upload same file again (dedupe check):
+             - File uploaded again ✓
+             - Result badges displayed: "0 baru, 0 diperbarui" (no duplicate created) ✓
+             - Upsert logic working correctly (SKU-based deduplication) ✓
+             - Screenshot captured ✓
+          
+          ✅ CLEANUP:
+             - Test product verified in database: SKU=UITEST-IMPORT-1, ID=837dd612-3e57-49ae-b2cf-f8300ace5a72 ✓
+             - Test product deleted via DELETE /api/products/{id} ✓
+             - Deletion verified: product no longer exists ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Export Functionality**:
+          - All 4 module export buttons working correctly
+          - "Unduh Semua" (Export All) button triggers 4 sequential downloads
+          - Client-side .xlsx generation using SheetJS working correctly
+          - Download filenames follow pattern: Ekspor_{Module}_YYYY-MM-DD.xlsx
+          - Success toasts displayed correctly in Indonesian
+          - No browser console errors during export operations
+          
+          ✅ **Template Download Functionality**:
+          - All 3 template download buttons working correctly
+          - Template filenames follow pattern: Template_{Module}_YYYY-MM-DD.xlsx
+          - Client-side template generation working correctly
+          
+          ✅ **Import Upload Functionality**:
+          - File upload via hidden input working correctly
+          - Client-side .xlsx parsing using SheetJS working correctly
+          - POST /api/import/products endpoint working correctly
+          - Result badges displayed with correct counts (created/updated)
+          - Success toasts displayed in Indonesian
+          - Upsert logic working correctly (SKU-based deduplication)
+          - No duplicate products created on re-upload
+          
+          ✅ **UI/UX**:
+          - Page loads correctly at /dashboard/import-export
+          - Two tabs: "Ekspor" and "Impor Master Data"
+          - Export tab: 4 module cards with "Unduh Excel" buttons + "Unduh Semua" button
+          - Import tab: 3 module cards with "Unduh Template" and "Upload & Impor" buttons
+          - All buttons responsive and working correctly
+          - Toast notifications displayed correctly
+          - Result badges displayed with correct styling (green for created, blue for updated)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Export Downloads (8 total):
+          - Ekspor_Akuntansi_2026-08-19.xlsx (has data - chart of accounts)
+          - Ekspor_Sales_Order_2026-08-19.xlsx (may be empty/template)
+          - Ekspor_Purchase_Order_2026-08-19.xlsx (may be empty/template)
+          - Ekspor_Inventory_2026-08-19.xlsx (may be empty/template)
+          - (4 files from "Unduh Semua" test)
+          
+          Template Downloads (3 total):
+          - Template_Produk_2026-08-19.xlsx
+          - Template_Kontak_2026-08-19.xlsx
+          - Template_Bagan_Akun_2026-08-19.xlsx
+          
+          Import Test Data:
+          - SKU: UITEST-IMPORT-1
+          - Name: Produk UITest
+          - Unit: kg
+          - Base Price: 27000
+          - Product ID: 837dd612-3e57-49ae-b2cf-f8300ace5a72
+          - Status: Created on first upload, not duplicated on second upload, successfully deleted
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All Import/Export page UI features working correctly.
+          Export functionality working for all 4 modules.
+          Template download working for all 3 modules.
+          Import upload working with correct upsert logic.
+          No browser console errors.
+          All downloads triggered successfully.
+          All toasts displayed correctly in Indonesian.
+          
+          Test Coverage: 10/10 tests passed (100%)
+          - TEST 1: Export tab (5/5) ✓
+          - TEST 2: Import tab templates (3/3) ✓
+          - TEST 3: Import upload (2/2) ✓
+
+metadata:
+  created_by: "main_agent"
+  version: "3.2"
+  test_sequence: 13
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      FRONTEND test (user approved) for /dashboard/import-export. Login admin@lpi.co.id/admin123. App is Indonesian.
+      Capture Playwright downloads via page.on('download'). Clean up any imported test record afterwards.
+    
+    -agent: "testing"
+    -message: |
+      ✅ ALL FRONTEND TESTS PASSED (10/10, 100%)
+      
+      Completed comprehensive UI testing of the Import/Export page.
+      All features working correctly:
+      - Export tab: All 4 module exports working (Akuntansi, Sales Order, Purchase Order, Inventory) ✓
+      - "Unduh Semua" button: Triggers 4 sequential downloads ✓
+      - Import tab: All 3 template downloads working (Produk, Kontak, Bagan Akun) ✓
+      - Import upload: File upload, parsing, and upsert logic working correctly ✓
+      - Dedupe check: SKU-based upsert prevents duplicates ✓
+      - All downloads captured with correct filenames (*.xlsx) ✓
+      - All success toasts displayed correctly in Indonesian ✓
+      - No browser console errors ✓
+      - Test data cleaned up successfully ✓
+      
+      Test approach: Playwright browser automation with download capture.
+      Test product created (SKU: UITEST-IMPORT-1) and successfully deleted.
+      
+      No critical issues found. Ready for production use.
+
