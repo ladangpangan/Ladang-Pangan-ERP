@@ -14,6 +14,7 @@ import * as md from '@/lib/db/masterdata';
 import { buildExportSheets } from '@/lib/export/queries';
 import { importMasterData, IMPORT_TEMPLATES } from '@/lib/export/import';
 import * as coaMongo from '@/lib/accounting/coa-mongo';
+import * as jmongo from '@/lib/accounting/journal-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -50,32 +51,63 @@ function requireRole(session, allowed) {
 // failure never breaks the primary operation.
 // -----------------------
 function recordLedger(db, entry) {
+  const id = uuidv4();
+  const ledgerDate = entry.ledgerDate || new Date();
+  const createdAt = new Date();
+  const vals = {
+    id,
+    ledgerDate,
+    productId: entry.productId,
+    coldStorageId: entry.coldStorageId || null,
+    zoneId: entry.zoneId || null,
+    movementType: entry.movementType,
+    referenceType: entry.referenceType || null,
+    referenceId: entry.referenceId || null,
+    referenceNumber: entry.referenceNumber || null,
+    qtyIn: Number(entry.qtyIn || 0),
+    weightIn: Number(entry.weightIn || 0),
+    qtyOut: Number(entry.qtyOut || 0),
+    weightOut: Number(entry.weightOut || 0),
+    hppPerKg: Number(entry.hppPerKg || 0),
+    kodeSimpan: entry.kodeSimpan || null,
+    transactionId: entry.transactionId || null,
+    stockId: entry.stockId || null,
+    notes: entry.notes || null,
+    createdBy: entry.createdBy || null,
+    createdAt,
+  };
   try {
-    db.insert(s.stockLedger).values({
-      id: uuidv4(),
-      ledgerDate: entry.ledgerDate || new Date(),
-      productId: entry.productId,
-      coldStorageId: entry.coldStorageId || null,
-      zoneId: entry.zoneId || null,
-      movementType: entry.movementType,
-      referenceType: entry.referenceType || null,
-      referenceId: entry.referenceId || null,
-      referenceNumber: entry.referenceNumber || null,
-      qtyIn: Number(entry.qtyIn || 0),
-      weightIn: Number(entry.weightIn || 0),
-      qtyOut: Number(entry.qtyOut || 0),
-      weightOut: Number(entry.weightOut || 0),
-      hppPerKg: Number(entry.hppPerKg || 0),
-      kodeSimpan: entry.kodeSimpan || null,
-      transactionId: entry.transactionId || null,
-      stockId: entry.stockId || null,
-      notes: entry.notes || null,
-      createdBy: entry.createdBy || null,
-      createdAt: new Date(),
-    }).run();
+    db.insert(s.stockLedger).values(vals).run();
   } catch (e) {
     console.error('[stock_ledger] record failed:', e?.message || e);
   }
+  // Mirror to MongoDB (shared Kartu Stok across replicas). Fire-and-forget;
+  // stored in seconds to match the raw SQLite integer(timestamp) column.
+  try {
+    const toSec = (d) => Math.floor((d instanceof Date ? d.getTime() : new Date(d).getTime()) / 1000);
+    jmongo.recordStockLedgerMongo({
+      id,
+      ledger_date: toSec(ledgerDate),
+      product_id: vals.productId,
+      cold_storage_id: vals.coldStorageId,
+      zone_id: vals.zoneId,
+      movement_type: vals.movementType,
+      reference_type: vals.referenceType,
+      reference_id: vals.referenceId,
+      reference_number: vals.referenceNumber,
+      qty_in: vals.qtyIn,
+      weight_in: vals.weightIn,
+      qty_out: vals.qtyOut,
+      weight_out: vals.weightOut,
+      hpp_per_kg: vals.hppPerKg,
+      kode_simpan: vals.kodeSimpan,
+      transaction_id: vals.transactionId,
+      stock_id: vals.stockId,
+      notes: vals.notes,
+      created_by: vals.createdBy,
+      created_at: toSec(createdAt),
+    });
+  } catch (e) { /* best-effort */ }
 }
 
 // -----------------------
@@ -261,7 +293,8 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
       const raw = getRawSqlite();
-      if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); } catch (e) { /* best-effort */ } }
       const out = buildExportSheets(raw, path[1]);
       if (!out) return err('Modul ekspor tidak dikenal', 404);
       return json({ data: out });
@@ -307,6 +340,10 @@ async function handleRoute(request, { params }) {
       // COA is MongoDB-authoritative (multi-replica safe). Refresh the local SQLite mirror from Mongo
       // before any accounting read/report/sync so the engine joins use the shared, up-to-date COA.
       await coaMongo.ensureCoaReady(raw);
+      // Journals & ledger are ALSO MongoDB-authoritative for user-entered data (manual journals,
+      // Cashbook, opening balances, period closings). Hydrate the per-pod SQLite mirror from Mongo
+      // before any read/sync so every replica sees the same shared financial data.
+      await jmongo.ensureJournalsReady(raw);
       const uid = session.user.id;
       const sub = path[1] || '';
       const parseRange = (url) => ({
@@ -440,6 +477,7 @@ async function handleRoute(request, { params }) {
           const b = await request.json().catch(() => ({}));
           const r = acct.createManualJournal(raw, { date: b.date, description: b.description, lines: b.lines || [], createdBy: uid });
           if (r.error) return err(r.error, 400);
+          await jmongo.persistJournalToMongo(raw, r.id);
           return json({ ok: true, ...r });
         }
         const jid = path[2];
@@ -454,6 +492,7 @@ async function handleRoute(request, { params }) {
           if (!j) return err('Jurnal tidak ditemukan', 404);
           if (j.is_auto) return err('Jurnal otomatis tidak dapat dihapus manual (ubah dokumen sumbernya)', 400);
           raw.prepare('DELETE FROM journal_entries WHERE id=?').run(jid);
+          await jmongo.deleteJournalFromMongo(jid);
           return json({ ok: true });
         }
       }
@@ -538,13 +577,18 @@ async function handleRoute(request, { params }) {
           try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('closing sync', e?.message); }
           const r = acct.createClosing(raw, { period: b.period, createdBy: uid });
           if (r.error) return err(r.error, 400);
+          await jmongo.persistJournalToMongo(raw, r.journalId);
+          await jmongo.persistClosingToMongo(raw, r.id);
           return json({ ok: true, ...r });
         }
         const id = path[2];
         if (id && path.length === 3 && method === 'DELETE') {
           if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          const clRow = raw.prepare('SELECT * FROM period_closings WHERE id=?').get(id);
           const r = acct.deleteClosing(raw, id);
           if (r.error) return err(r.error, 400);
+          if (clRow?.journal_id) await jmongo.deleteJournalFromMongo(clRow.journal_id);
+          await jmongo.deleteClosingFromMongo(id);
           return json({ ok: true });
         }
       }
@@ -569,6 +613,7 @@ async function handleRoute(request, { params }) {
           const b = await request.json().catch(() => ({}));
           const r = acct.createQuickEntry(raw, { ...b, createdBy: uid });
           if (r.error) return err(r.error, 400);
+          await jmongo.persistJournalToMongo(raw, r.id);
           return json({ ok: true, ...r });
         }
         const id = path[2];
@@ -577,6 +622,8 @@ async function handleRoute(request, { params }) {
           const b = await request.json().catch(() => ({}));
           const r = acct.updateQuickEntry(raw, id, { ...b, createdBy: uid });
           if (r.error) return err(r.error, 400);
+          await jmongo.deleteJournalFromMongo(id);
+          await jmongo.persistJournalToMongo(raw, r.id);
           return json({ ok: true, ...r });
         }
         if (id && path.length === 3 && method === 'DELETE') {
@@ -585,6 +632,7 @@ async function handleRoute(request, { params }) {
           if (!j) return err('Transaksi tidak ditemukan', 404);
           if (j.is_auto) return err('Transaksi otomatis tidak dapat dihapus di sini', 400);
           raw.prepare('DELETE FROM journal_entries WHERE id=?').run(id);
+          await jmongo.deleteJournalFromMongo(id);
           return json({ ok: true });
         }
         if (id && path.length === 4 && path[3] === 'attachment' && method === 'GET') {
@@ -5687,6 +5735,7 @@ async function handleRoute(request, { params }) {
     if (route === '/inventory-reports/stock-card' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      await jmongo.ensureStockLedgerReady(getRawSqlite());
       const url = new URL(request.url);
       const productId = url.searchParams.get('productId');
       if (!productId) return err('productId required');
@@ -5748,6 +5797,7 @@ async function handleRoute(request, { params }) {
     if (route === '/stock-ledger' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      await jmongo.ensureStockLedgerReady(getRawSqlite());
       const url = new URL(request.url);
       const productId = url.searchParams.get('productId') || null;
       const csId = url.searchParams.get('coldStorageId') || null;
