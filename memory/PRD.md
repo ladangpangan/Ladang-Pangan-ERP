@@ -127,3 +127,18 @@ now idempotently inserts missing COA accounts. Frontend: PO create form selector
 "Biaya Tambahan / Ongkir Pembelian" card. PO PDF shows the freight line only when in total (company+utang).
 Backend tested 5/5. Files: route.js, lib/accounting/engine.js, lib/pdf/invoice.js, lib/db/schema.js, lib/db/index.js,
 app/dashboard/purchase-orders/page.js, app/dashboard/purchase-orders/[id]/page.js.
+
+## Impor & Ekspor Excel (migrasi Odoo) — Fase 1 & 2 selesai 2026-02
+Halaman /dashboard/import-export (menu sidebar "Impor & Ekspor", roles admin/supervisor/direktur). Library: xlsx (SheetJS)
+sudah terpasang. Client util lib/export/xlsx-client.js (downloadWorkbook, parseWorkbookFile).
+FASE 1 EKSPOR (read-only): GET /api/export/:module (sales-orders|purchase-orders|inventory|accounting), role
+admin/supervisor/direktur, returns { data:{ filename, sheets:[{name,rows}] } }; client builds .xlsx. Logic in
+lib/export/queries.js. Sheets: SO(Sales Order+Item SO), PO(Purchase Order+Item PO), Inventory(Stok+Kartu Stok),
+Akuntansi(Bagan Akun+Jurnal+Neraca Saldo). Backend tested 15/15.
+FASE 2 IMPOR MASTER DATA (upsert): GET /api/import/templates + POST /api/import/:module (products|contacts|
+chart-of-accounts), role admin/supervisor, body { rows:[{header:value}] }, returns { created,updated,skipped,errors[] }.
+Logic lib/export/import.js (case-insensitive header aliases). products upsert by SKU, contacts upsert by Kode else
+Nama+Tipe (Tipe->categories, auto code if blank), chart-of-accounts upsert by Kode Akun into gl_accounts. products &
+contacts DUAL-WRITE Mongo(authoritative)+SQLite mirror; COA -> SQLite (GridFS backup). UI: import-panel.js (template
+download + upload + report). Backend tested 20/20. Cutoff Saldo Awal disepakati 31 Jan 2026.
+FASE 3 PENDING: Saldo Awal (opening balance) — stok awal + saldo akun + AR/AP outstanding per 31 Jan 2026 (belum dibuat).

@@ -1,720 +1,661 @@
 #!/usr/bin/env python3
 """
-Backend test for Shipping Cost (Biaya Kirim) on Sales Orders
-Tests buyer-borne vs seller-borne shipping cost handling
+Backend test for Excel Export endpoints (GET /api/export/:module)
+Tests: Auth, Structure, Accounting COA, Data correctness, Unknown module
 """
 
 import requests
-import sqlite3
 import json
-from uuid import uuid4
+import subprocess
+import sys
+import time
 from datetime import datetime
 
 BASE_URL = "http://localhost:3000/api"
 ORIGIN = "http://localhost:3000"
-DB_PATH = "/app/data/erp.db"
 
-# Test data IDs (will be generated)
-test_customer_id = None
-test_product_id = None
-test_so_id = None
-test_so_item_id = None
-test_so_number = None
+# Test results tracking
+test_results = {
+    "T1_auth_no_cookie": False,
+    "T1_auth_operator_403": False,
+    "T1_auth_admin_sales_orders": False,
+    "T1_auth_admin_purchase_orders": False,
+    "T1_auth_admin_inventory": False,
+    "T1_auth_admin_accounting": False,
+    "T2_structure_sales_orders": False,
+    "T2_structure_purchase_orders": False,
+    "T2_structure_inventory": False,
+    "T2_structure_accounting": False,
+    "T3_accounting_coa_populated": False,
+    "T4_data_correctness_sales_orders": False,
+    "T4_data_correctness_purchase_orders": False,
+    "T4_data_correctness_inventory": False,
+    "T5_unknown_module_404": False,
+}
 
-def login_admin():
-    """Login as admin and return session"""
-    session = requests.Session()
-    
-    # Login using Better Auth email/password endpoint
-    response = session.post(
-        f"{BASE_URL}/auth/sign-in/email",
-        json={
-            "email": "admin@lpi.co.id",
-            "password": "admin123"
-        },
-        headers={"Origin": ORIGIN}
-    )
-    
-    if response.status_code != 200:
-        print(f"❌ Login failed: {response.status_code} {response.text}")
-        print(f"   Response headers: {response.headers}")
-        print(f"   Cookies: {session.cookies.get_dict()}")
+def run_node_script(script):
+    """Run a Node.js script and return output"""
+    try:
+        result = subprocess.run(
+            ['node', '-e', script],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode != 0:
+            print(f"❌ Node script error: {result.stderr}")
+            return None
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"❌ Node script exception: {e}")
         return None
-    
-    print("✅ Login successful")
-    print(f"   Cookies: {session.cookies.get_dict()}")
-    return session
+
+def login_with_curl(email, password):
+    """Login using curl and return session cookie"""
+    try:
+        # Use curl to login (Better Auth endpoint is /api/auth/sign-in/email)
+        cmd = [
+            'curl', '-s', '-c', '/tmp/cookies.txt', '-b', '/tmp/cookies.txt', '-i',
+            '-X', 'POST',
+            '-H', 'Content-Type: application/json',
+            '-H', f'Origin: {ORIGIN}',
+            'http://localhost:3000/api/auth/sign-in/email',
+            '-d', json.dumps({'email': email, 'password': password})
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        
+        # Extract Set-Cookie from headers
+        headers = result.stdout
+        cookie_value = None
+        for line in headers.split('\n'):
+            if 'set-cookie:' in line.lower() and 'session_token' in line:
+                # Extract cookie value (handle both __Secure-better-auth.session_token and better_auth.session_token)
+                if '__Secure-better-auth.session_token=' in line:
+                    parts = line.split('__Secure-better-auth.session_token=')
+                elif 'better_auth.session_token=' in line:
+                    parts = line.split('better_auth.session_token=')
+                else:
+                    continue
+                
+                if len(parts) > 1:
+                    cookie_value = parts[1].split(';')[0]
+                    break
+        
+        if cookie_value:
+            return cookie_value
+        
+        print(f"❌ Login failed for {email}")
+        print(f"   Response headers: {headers[:500]}")
+        return None
+    except Exception as e:
+        print(f"❌ Login exception: {e}")
+        return None
+
+def get_with_curl(endpoint, cookie=None):
+    """GET request using curl"""
+    try:
+        cmd = ['curl', '-s', '-X', 'GET']
+        if cookie:
+            # Use __Secure-better-auth.session_token for secure cookies
+            cmd.extend(['-H', f'Cookie: __Secure-better-auth.session_token={cookie}'])
+        cmd.extend(['-H', f'Origin: {ORIGIN}'])
+        cmd.append(f'{BASE_URL}{endpoint}')
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        # Try to parse JSON
+        try:
+            return json.loads(result.stdout), result.returncode
+        except (json.JSONDecodeError, ValueError):
+            return result.stdout, result.returncode
+    except Exception as e:
+        print(f"❌ GET exception: {e}")
+        return None, -1
 
 def seed_test_data():
-    """Seed test data directly in SQLite"""
-    global test_customer_id, test_product_id, test_so_id, test_so_item_id, test_so_number
+    """Seed test data using Node.js + better-sqlite3"""
+    print("\n📝 Seeding test data...")
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    script = """
+const Database = require('better-sqlite3');
+const db = new Database('/app/data/erp.db');
+const { v4: uuidv4 } = require('uuid');
+
+const now = Math.floor(Date.now() / 1000);
+
+// 1. Create test customer
+const customerId = uuidv4();
+db.prepare(`INSERT INTO contacts (id, code, display_name, contact_type, categories, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(customerId, 'CUST-EXP-TEST', 'Export Test Customer', 'Customer', '["Customer"]', now, now);
+
+// 2. Create test supplier
+const supplierId = uuidv4();
+db.prepare(`INSERT INTO contacts (id, code, display_name, contact_type, categories, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(supplierId, 'SUP-EXP-TEST', 'Export Test Supplier', 'Supplier', '["Supplier"]', now, now);
+
+// 3. Create test product
+const productId = uuidv4();
+db.prepare(`INSERT INTO products (id, sku, name, unit, base_price, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(productId, 'EXP-TEST', 'Export Test Product', 'kg', 50000, now, now);
+
+// 4. Create test cold storage (check if exists first)
+let coldStorageId = db.prepare(`SELECT id FROM cold_storages LIMIT 1`).get()?.id;
+if (!coldStorageId) {
+  coldStorageId = uuidv4();
+  db.prepare(`INSERT INTO cold_storages (id, code, name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)`).run(coldStorageId, 'CS-TEST', 'Test Cold Storage', now, now);
+}
+
+// 5. Create sales order
+const soId = uuidv4();
+db.prepare(`INSERT INTO sales_order (id, so_number, customer_id, order_date, pipeline_status, fulfillment_type, total_amount, paid_amount, payment_status, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(soId, 'SO/EXP/1', customerId, now, 'Draft', 'stock', 500000, 0, 'unpaid', now, now);
+
+// 6. Create sales order item
+const soItemId = uuidv4();
+db.prepare(`INSERT INTO sales_order_items (id, sales_order_id, product_id, quantity, weight, unit_price, subtotal)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(soItemId, soId, productId, 1, 10, 50000, 500000);
+
+// 7. Create purchase order
+const poId = uuidv4();
+db.prepare(`INSERT INTO purchase_order (id, po_number, supplier_id, order_date, po_type, pipeline_status, total_amount, paid_amount, payment_status, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(poId, 'PO/EXP/1', supplierId, now, 'Produk Jadi', 'Draft', 400000, 0, 'unpaid', now, now);
+
+// 8. Create purchase order item
+const poItemId = uuidv4();
+db.prepare(`INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, weight, unit_price, hpp_per_kg)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(poItemId, poId, productId, 1, 8, 50000, 50000);
+
+// 9. Create inventory stock lots
+const stock1Id = uuidv4();
+db.prepare(`INSERT INTO inventory_stock (id, kode_simpan, product_id, cold_storage_id, quantity, weight, hpp_per_kg, status, source_type, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(stock1Id, 'EXP-K1', productId, coldStorageId, 1, 20, 50000, 'active', 'purchase', now, now);
+
+const stock2Id = uuidv4();
+db.prepare(`INSERT INTO inventory_stock (id, kode_simpan, product_id, cold_storage_id, quantity, weight, hpp_per_kg, status, source_type, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(stock2Id, 'EXP-K2', productId, coldStorageId, 1, 15, 50000, 'active', 'purchase', now, now);
+
+db.close();
+
+console.log(JSON.stringify({
+  customerId, supplierId, productId, coldStorageId, soId, poId, stock1Id, stock2Id
+}));
+"""
     
-    try:
-        # Generate UUIDs
-        test_customer_id = str(uuid4())
-        test_product_id = str(uuid4())
-        test_so_id = str(uuid4())
-        test_so_item_id = str(uuid4())
-        test_so_number = f"SO/TEST/{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        
-        # Create test customer
-        cursor.execute("""
-            INSERT INTO contacts (id, contact_type, code, display_name, categories, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_customer_id,
-            "Customer",
-            f"CUST-TEST-{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            "Test Customer for Shipping",
-            json.dumps(["Customer"]),
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-        
-        # Create test product
-        cursor.execute("""
-            INSERT INTO products (id, sku, name, unit, base_price, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_product_id,
-            f"SHIP-TEST-{datetime.now().strftime('%H%M%S')}",
-            "Test Product for Shipping",
-            "kg",
-            40000.0,
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-        
-        # Create test SO (Draft, fulfillment_type='stock')
-        cursor.execute("""
-            INSERT INTO sales_order (
-                id, so_number, customer_id, pipeline_status, fulfillment_type,
-                order_date, total_amount, shipping_cost, shipping_bearer, shipping_pay_method,
-                created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_so_id,
-            test_so_number,
-            test_customer_id,
-            "Draft",
-            "stock",
-            datetime.now().isoformat(),
-            400000.0,  # Initial total (10kg * 40000)
-            0.0,
-            "seller",
-            "transfer",
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-        
-        # Create test SO item (10kg * 40000 = 400000)
-        cursor.execute("""
-            INSERT INTO sales_order_items (
-                id, sales_order_id, product_id, quantity, weight, unit_price, subtotal
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_so_item_id,
-            test_so_id,
-            test_product_id,
-            1,
-            10.0,
-            40000.0,
-            400000.0
-        ))
-        
-        conn.commit()
-        print(f"✅ Test data seeded successfully")
-        print(f"   Customer ID: {test_customer_id}")
-        print(f"   Product ID: {test_product_id}")
-        print(f"   SO ID: {test_so_id}")
-        print(f"   SO Number: {test_so_number}")
-        print(f"   SO Item ID: {test_so_item_id}")
-        
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ Failed to seed test data: {e}")
-        raise
-    finally:
-        conn.close()
+    result = run_node_script(script)
+    if result:
+        try:
+            ids = json.loads(result)
+            print(f"✅ Test data seeded successfully")
+            print(f"   Customer: {ids['customerId']}")
+            print(f"   Supplier: {ids['supplierId']}")
+            print(f"   Product: {ids['productId']}")
+            print(f"   SO: {ids['soId']}")
+            print(f"   PO: {ids['poId']}")
+            print(f"   Stock 1: {ids['stock1Id']}")
+            print(f"   Stock 2: {ids['stock2Id']}")
+            return ids
+        except (json.JSONDecodeError, ValueError, KeyError):
+            print(f"❌ Failed to parse seed result")
+            return None
+    return None
 
 def cleanup_test_data():
     """Clean up all test data"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    print("\n🧹 Cleaning up test data...")
     
-    try:
-        # Delete in reverse order of dependencies
-        cursor.execute("DELETE FROM journal_lines WHERE journal_id IN (SELECT id FROM journal_entries WHERE source_id = ?)", (test_so_id,))
-        cursor.execute("DELETE FROM journal_entries WHERE source_id = ?", (test_so_id,))
-        cursor.execute("DELETE FROM sales_order_items WHERE sales_order_id = ?", (test_so_id,))
-        cursor.execute("DELETE FROM sales_order WHERE id = ?", (test_so_id,))
-        cursor.execute("DELETE FROM products WHERE id = ?", (test_product_id,))
-        cursor.execute("DELETE FROM contacts WHERE id = ?", (test_customer_id,))
-        
-        conn.commit()
-        
-        # Verify cleanup
-        cursor.execute("SELECT COUNT(*) FROM sales_order WHERE id = ?", (test_so_id,))
-        so_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM journal_entries WHERE source_type IN ('SO_INV', 'SO_SHIP') AND source_id = ?", (test_so_id,))
-        journal_count = cursor.fetchone()[0]
-        
-        print(f"✅ Cleanup complete")
-        print(f"   Remaining SO count: {so_count}")
-        print(f"   Remaining journal count: {journal_count}")
-        
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ Failed to cleanup test data: {e}")
-    finally:
-        conn.close()
+    script = """
+const Database = require('better-sqlite3');
+const db = new Database('/app/data/erp.db');
 
-def test_a_buyer_borne_shipping(session):
-    """TEST A: BUYER-BORNE adds to invoice"""
-    print("\n" + "="*80)
-    print("TEST A: BUYER-BORNE SHIPPING (adds to invoice total)")
-    print("="*80)
-    
-    try:
-        # PATCH SO with buyer-borne shipping
-        response = session.patch(
-            f"{BASE_URL}/sales-orders/{test_so_id}",
-            json={
-                "shippingCost": 50000,
-                "shippingBearer": "buyer",
-                "shippingPayMethod": "transfer"
-            },
-            headers={"Origin": ORIGIN}
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ PATCH failed: {response.status_code} {response.text}")
-            return False
-        
-        print(f"✅ PATCH successful: {response.status_code}")
-        
-        # GET SO to verify
-        response = session.get(f"{BASE_URL}/sales-orders/{test_so_id}")
-        
-        if response.status_code != 200:
-            print(f"❌ GET failed: {response.status_code} {response.text}")
-            return False
-        
-        data = response.json()["data"]
-        
-        # Verify values
-        goods_subtotal = 400000  # 10kg * 40000
-        expected_total = goods_subtotal + 50000  # 450000
-        
-        print(f"\n📊 ACTUAL VALUES:")
-        print(f"   total_amount: Rp {data.get('totalAmount', 0):,.0f}")
-        print(f"   buyerShipping: Rp {data.get('buyerShipping', 0):,.0f}")
-        print(f"   sellerShipping: Rp {data.get('sellerShipping', 0):,.0f}")
-        print(f"   goodsRevenue: Rp {data.get('goodsRevenue', 0):,.0f}")
-        print(f"   grossProfit: Rp {data.get('grossProfit', 0):,.0f}")
-        print(f"   shipping_pay_method: {data.get('shippingPayMethod', 'N/A')}")
-        
-        print(f"\n🎯 EXPECTED VALUES:")
-        print(f"   total_amount: Rp {expected_total:,.0f} (goods {goods_subtotal:,.0f} + shipping 50,000)")
-        print(f"   buyerShipping: Rp 50,000")
-        print(f"   sellerShipping: Rp 0")
-        print(f"   goodsRevenue: Rp {goods_subtotal:,.0f}")
-        print(f"   shipping_pay_method: transfer")
-        
-        # Verify in DB
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT shipping_pay_method FROM sales_order WHERE id = ?", (test_so_id,))
-        db_pay_method = cursor.fetchone()[0]
-        conn.close()
-        
-        print(f"\n🔍 DB VERIFICATION:")
-        print(f"   shipping_pay_method in DB: {db_pay_method}")
-        
-        # Assertions
-        assert data.get('totalAmount') == expected_total, f"total_amount should be {expected_total}, got {data.get('totalAmount')}"
-        assert data.get('buyerShipping') == 50000, f"buyerShipping should be 50000, got {data.get('buyerShipping')}"
-        assert data.get('sellerShipping') == 0, f"sellerShipping should be 0, got {data.get('sellerShipping')}"
-        assert data.get('goodsRevenue') == goods_subtotal, f"goodsRevenue should be {goods_subtotal}, got {data.get('goodsRevenue')}"
-        assert data.get('shippingPayMethod') == 'transfer', f"shippingPayMethod should be 'transfer', got {data.get('shippingPayMethod')}"
-        assert db_pay_method == 'transfer', f"DB shipping_pay_method should be 'transfer', got {db_pay_method}"
-        
-        print(f"\n✅ TEST A PASSED: Buyer-borne shipping adds to invoice total")
-        return True
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST A FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ TEST A ERROR: {e}")
-        return False
+// Delete in reverse order (respect foreign keys)
+db.prepare(`DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_order WHERE so_number = 'SO/EXP/1')`).run();
+db.prepare(`DELETE FROM sales_order WHERE so_number = 'SO/EXP/1'`).run();
 
-def test_b_seller_borne_shipping(session):
-    """TEST B: SELLER-BORNE reduces margin, not in invoice"""
-    print("\n" + "="*80)
-    print("TEST B: SELLER-BORNE SHIPPING (reduces margin, NOT in invoice)")
-    print("="*80)
-    
-    try:
-        # PATCH SO with seller-borne shipping
-        response = session.patch(
-            f"{BASE_URL}/sales-orders/{test_so_id}",
-            json={
-                "shippingCost": 50000,
-                "shippingBearer": "seller"
-            },
-            headers={"Origin": ORIGIN}
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ PATCH failed: {response.status_code} {response.text}")
-            return False
-        
-        print(f"✅ PATCH successful: {response.status_code}")
-        
-        # GET SO to verify
-        response = session.get(f"{BASE_URL}/sales-orders/{test_so_id}")
-        
-        if response.status_code != 200:
-            print(f"❌ GET failed: {response.status_code} {response.text}")
-            return False
-        
-        data = response.json()["data"]
-        
-        # Verify values
-        goods_subtotal = 400000  # 10kg * 40000
-        expected_total = goods_subtotal  # NO shipping added
-        
-        print(f"\n📊 ACTUAL VALUES:")
-        print(f"   total_amount: Rp {data.get('totalAmount', 0):,.0f}")
-        print(f"   buyerShipping: Rp {data.get('buyerShipping', 0):,.0f}")
-        print(f"   sellerShipping: Rp {data.get('sellerShipping', 0):,.0f}")
-        print(f"   goodsRevenue: Rp {data.get('goodsRevenue', 0):,.0f}")
-        print(f"   grossProfit: Rp {data.get('grossProfit', 0):,.0f}")
-        
-        print(f"\n🎯 EXPECTED VALUES:")
-        print(f"   total_amount: Rp {expected_total:,.0f} (goods only, NO shipping)")
-        print(f"   buyerShipping: Rp 0")
-        print(f"   sellerShipping: Rp 50,000")
-        print(f"   goodsRevenue: Rp {goods_subtotal:,.0f}")
-        print(f"   grossProfit: reduced by 50,000 vs Test A")
-        
-        # Assertions
-        assert data.get('totalAmount') == expected_total, f"total_amount should be {expected_total}, got {data.get('totalAmount')}"
-        assert data.get('buyerShipping') == 0, f"buyerShipping should be 0, got {data.get('buyerShipping')}"
-        assert data.get('sellerShipping') == 50000, f"sellerShipping should be 50000, got {data.get('sellerShipping')}"
-        assert data.get('goodsRevenue') == goods_subtotal, f"goodsRevenue should be {goods_subtotal}, got {data.get('goodsRevenue')}"
-        
-        print(f"\n✅ TEST B PASSED: Seller-borne shipping NOT in invoice, reduces margin")
-        return True
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST B FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ TEST B ERROR: {e}")
-        return False
+db.prepare(`DELETE FROM purchase_order_items WHERE purchase_order_id IN (SELECT id FROM purchase_order WHERE po_number = 'PO/EXP/1')`).run();
+db.prepare(`DELETE FROM purchase_order WHERE po_number = 'PO/EXP/1'`).run();
 
-def test_c_accounting_journal(session):
-    """TEST C: Accounting journal (Beban Ongkir)"""
-    print("\n" + "="*80)
-    print("TEST C: ACCOUNTING JOURNAL (SO_SHIP with Beban Ongkir)")
-    print("="*80)
-    
-    try:
-        # First, set SO to Invoiced status with invoice_number to make it eligible for journals
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE sales_order 
-            SET pipeline_status = 'Invoiced', 
-                invoice_number = ?,
-                invoice_date = ?
-            WHERE id = ?
-        """, (f"INV/TEST/{datetime.now().strftime('%Y%m%d%H%M%S')}", datetime.now().isoformat(), test_so_id))
-        conn.commit()
-        conn.close()
-        
-        print(f"✅ SO set to Invoiced status")
-        
-        # Trigger manual accounting sync
-        response = session.post(
-            f"{BASE_URL}/accounting/sync",
-            headers={"Origin": ORIGIN}
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ Accounting sync failed: {response.status_code} {response.text}")
-            return False
-        
-        print(f"✅ Accounting sync successful: {response.status_code}")
-        sync_result = response.json()
-        print(f"   Sync result: {json.dumps(sync_result, indent=2)}")
-        
-        # Query journals directly from DB
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Find SO_SHIP journal
-        cursor.execute("""
-            SELECT id, source_type, source_id, source_number, description, total_debit, total_credit
-            FROM journal_entries
-            WHERE source_type = 'SO_SHIP' AND source_id = ?
-        """, (test_so_id,))
-        
-        so_ship_journal = cursor.fetchone()
-        
-        if not so_ship_journal:
-            print(f"❌ SO_SHIP journal not found for SO {test_so_id}")
-            conn.close()
-            return False
-        
-        journal_id = so_ship_journal[0]
-        print(f"\n✅ SO_SHIP journal found:")
-        print(f"   Journal ID: {journal_id}")
-        print(f"   Source Type: {so_ship_journal[1]}")
-        print(f"   Source Number: {so_ship_journal[3]}")
-        print(f"   Description: {so_ship_journal[4]}")
-        print(f"   Total Debit: Rp {so_ship_journal[5]:,.0f}")
-        print(f"   Total Credit: Rp {so_ship_journal[6]:,.0f}")
-        
-        # Get journal lines
-        cursor.execute("""
-            SELECT account_code, debit, credit, description
-            FROM journal_entry_lines
-            WHERE entry_id = ?
-            ORDER BY debit DESC
-        """, (journal_id,))
-        
-        lines = cursor.fetchall()
-        
-        print(f"\n📊 JOURNAL LINES:")
-        for line in lines:
-            print(f"   Account: {line[0]}, Dr: Rp {line[1]:,.0f}, Cr: Rp {line[2]:,.0f}, Desc: {line[3]}")
-        
-        # Verify journal structure
-        # Should have: Dr 6-1300 (Beban Ongkir) 50000 / Cr Bank 50000 (since shipping_pay_method='transfer')
-        debit_line = [l for l in lines if l[1] > 0][0]  # Debit line
-        credit_line = [l for l in lines if l[2] > 0][0]  # Credit line
-        
-        print(f"\n🔍 VERIFICATION:")
-        print(f"   Debit account: {debit_line[0]} (expected: 6-1300 Beban Ongkir)")
-        print(f"   Debit amount: Rp {debit_line[1]:,.0f} (expected: 50,000)")
-        print(f"   Credit account: {credit_line[0]} (expected: Bank account)")
-        print(f"   Credit amount: Rp {credit_line[2]:,.0f} (expected: 50,000)")
-        
-        # Assertions
-        assert debit_line[0] == '6-1300', f"Debit account should be 6-1300, got {debit_line[0]}"
-        assert debit_line[1] == 50000, f"Debit amount should be 50000, got {debit_line[1]}"
-        assert credit_line[2] == 50000, f"Credit amount should be 50000, got {credit_line[2]}"
-        
-        # Test with tunai (cash) payment method
-        print(f"\n🔄 Testing with shipping_pay_method='tunai' (cash)...")
-        
-        cursor.execute("""
-            UPDATE sales_order 
-            SET shipping_pay_method = 'tunai'
-            WHERE id = ?
-        """, (test_so_id,))
-        conn.commit()
-        conn.close()
-        
-        # Re-sync
-        response = session.post(
-            f"{BASE_URL}/accounting/sync",
-            headers={"Origin": ORIGIN}
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ Re-sync failed: {response.status_code} {response.text}")
-            return False
-        
-        print(f"✅ Re-sync successful")
-        
-        # Query again
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id FROM journal_entries
-            WHERE source_type = 'SO_SHIP' AND source_id = ?
-        """, (test_so_id,))
-        
-        journal_id = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT account_code, debit, credit
-            FROM journal_entry_lines
-            WHERE entry_id = ?
-            ORDER BY debit DESC
-        """, (journal_id,))
-        
-        lines = cursor.fetchall()
-        credit_line = [l for l in lines if l[2] > 0][0]
-        
-        print(f"\n🔍 VERIFICATION (after tunai):")
-        print(f"   Credit account: {credit_line[0]} (expected: Kas account, NOT Bank)")
-        
-        # The credit should now be Kas (cash) account, not Bank
-        # We don't know the exact Kas account code, but it should NOT be the same as before
-        
-        conn.close()
-        
-        print(f"\n✅ TEST C PASSED: SO_SHIP journal created with correct accounts")
-        return True
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST C FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ TEST C ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+db.prepare(`DELETE FROM inventory_stock WHERE kode_simpan IN ('EXP-K1', 'EXP-K2')`).run();
 
-def test_d_sales_profit_report(session):
-    """TEST D: Sales Profit report"""
-    print("\n" + "="*80)
-    print("TEST D: SALES PROFIT REPORT")
-    print("="*80)
-    
-    try:
-        # Get sales profit report
-        response = session.get(
-            f"{BASE_URL}/accounting/sales-profit",
-            params={
-                "from": "2020-01-01",
-                "to": "2030-12-31"
-            }
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ Sales profit report failed: {response.status_code} {response.text}")
-            return False
-        
-        print(f"✅ Sales profit report retrieved: {response.status_code}")
-        
-        data = response.json()["data"]
-        
-        # Find our test SO in the report
-        test_order = None
-        if "orders" in data:
-            for order in data["orders"]:
-                if order.get("soId") == test_so_id or order.get("soNumber") == test_so_number:
-                    test_order = order
-                    break
-        
-        if not test_order:
-            print(f"⚠️  Test SO not found in sales profit report (may be filtered out)")
-            print(f"   Report data: {json.dumps(data, indent=2)}")
-            # This is not necessarily a failure - the report may filter by date or status
-            return True
-        
-        print(f"\n📊 TEST ORDER IN REPORT:")
-        print(f"   SO Number: {test_order.get('soNumber')}")
-        print(f"   Revenue: Rp {test_order.get('revenue', 0):,.0f}")
-        print(f"   COGS: Rp {test_order.get('cogs', 0):,.0f}")
-        print(f"   Gross Profit: Rp {test_order.get('grossProfit', 0):,.0f}")
-        print(f"   Shipping: Rp {test_order.get('shipping', 0):,.0f}")
-        
-        print(f"\n🎯 EXPECTED (seller-borne):")
-        print(f"   Revenue: Rp 400,000 (goods only, excludes shipping)")
-        print(f"   Shipping: Rp 50,000 (seller-borne, reduces profit)")
-        print(f"   Gross Profit: reduced by 50,000")
-        
-        # For seller-borne, revenue should exclude shipping
-        assert test_order.get('revenue') == 400000, f"Revenue should be 400000 (goods only), got {test_order.get('revenue')}"
-        
-        print(f"\n✅ TEST D PASSED: Sales profit report shows correct values")
-        return True
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST D FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ TEST D ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+db.prepare(`DELETE FROM products WHERE sku = 'EXP-TEST'`).run();
+db.prepare(`DELETE FROM contacts WHERE code IN ('CUST-EXP-TEST', 'SUP-EXP-TEST')`).run();
 
-def test_e_regression_no_shipping(session):
-    """TEST E: Regression - SO with NO shipping"""
-    print("\n" + "="*80)
-    print("TEST E: REGRESSION - SO WITH NO SHIPPING")
-    print("="*80)
+// Only delete test cold storage if we created it
+const testCs = db.prepare(`SELECT id FROM cold_storages WHERE code = 'CS-TEST'`).get();
+if (testCs) {
+  db.prepare(`DELETE FROM cold_storages WHERE code = 'CS-TEST'`).run();
+}
+
+// Get final counts
+const soCount = db.prepare(`SELECT COUNT(*) as count FROM sales_order WHERE so_number LIKE 'SO/EXP/%'`).get().count;
+const poCount = db.prepare(`SELECT COUNT(*) as count FROM purchase_order WHERE po_number LIKE 'PO/EXP/%'`).get().count;
+const stockCount = db.prepare(`SELECT COUNT(*) as count FROM inventory_stock WHERE kode_simpan LIKE 'EXP-K%'`).get().count;
+
+db.close();
+
+console.log(JSON.stringify({ soCount, poCount, stockCount }));
+"""
     
-    try:
-        # Create a second SO without shipping
-        test_so_id_2 = str(uuid4())
-        test_so_item_id_2 = str(uuid4())
-        test_so_number_2 = f"SO/TEST2/{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Create SO without shipping
-        cursor.execute("""
-            INSERT INTO sales_order (
-                id, so_number, customer_id, pipeline_status, fulfillment_type,
-                order_date, total_amount, shipping_cost, shipping_bearer, shipping_pay_method,
-                created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_so_id_2,
-            test_so_number_2,
-            test_customer_id,
-            "Draft",
-            "stock",
-            datetime.now().isoformat(),
-            400000.0,
-            0.0,  # NO shipping
-            "seller",
-            "transfer",
-            datetime.now().isoformat(),
-            datetime.now().isoformat()
-        ))
-        
-        # Create SO item
-        cursor.execute("""
-            INSERT INTO sales_order_items (
-                id, sales_order_id, product_id, quantity, weight, unit_price, subtotal
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_so_item_id_2,
-            test_so_id_2,
-            test_product_id,
-            1,
-            10.0,
-            40000.0,
-            400000.0
-        ))
-        
-        conn.commit()
-        conn.close()
-        
-        print(f"✅ Second SO created: {test_so_number_2}")
-        
-        # GET SO to verify
-        response = session.get(f"{BASE_URL}/sales-orders/{test_so_id_2}")
-        
-        if response.status_code != 200:
-            print(f"❌ GET failed: {response.status_code} {response.text}")
-            # Cleanup
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sales_order_items WHERE sales_order_id = ?", (test_so_id_2,))
-            cursor.execute("DELETE FROM sales_order WHERE id = ?", (test_so_id_2,))
-            conn.commit()
-            conn.close()
-            return False
-        
-        data = response.json()["data"]
-        
-        print(f"\n📊 ACTUAL VALUES:")
-        print(f"   total_amount: Rp {data.get('totalAmount', 0):,.0f}")
-        print(f"   buyerShipping: Rp {data.get('buyerShipping', 0):,.0f}")
-        print(f"   sellerShipping: Rp {data.get('sellerShipping', 0):,.0f}")
-        print(f"   goodsRevenue: Rp {data.get('goodsRevenue', 0):,.0f}")
-        
-        print(f"\n🎯 EXPECTED VALUES:")
-        print(f"   total_amount: Rp 400,000 (goods subtotal only)")
-        print(f"   buyerShipping: Rp 0")
-        print(f"   sellerShipping: Rp 0")
-        print(f"   goodsRevenue: Rp 400,000")
-        
-        # Assertions
-        assert data.get('totalAmount') == 400000, f"total_amount should be 400000, got {data.get('totalAmount')}"
-        assert data.get('buyerShipping') == 0, f"buyerShipping should be 0, got {data.get('buyerShipping')}"
-        assert data.get('sellerShipping') == 0, f"sellerShipping should be 0, got {data.get('sellerShipping')}"
-        assert data.get('goodsRevenue') == 400000, f"goodsRevenue should be 400000, got {data.get('goodsRevenue')}"
-        
-        # Cleanup second SO
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM sales_order_items WHERE sales_order_id = ?", (test_so_id_2,))
-        cursor.execute("DELETE FROM sales_order WHERE id = ?", (test_so_id_2,))
-        conn.commit()
-        conn.close()
-        
-        print(f"\n✅ TEST E PASSED: SO without shipping works correctly")
-        return True
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST E FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ TEST E ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    result = run_node_script(script)
+    if result:
+        try:
+            counts = json.loads(result)
+            print(f"✅ Cleanup complete")
+            print(f"   Remaining SO/EXP/* count: {counts['soCount']}")
+            print(f"   Remaining PO/EXP/* count: {counts['poCount']}")
+            print(f"   Remaining EXP-K* stock count: {counts['stockCount']}")
+            return counts
+        except (json.JSONDecodeError, ValueError, KeyError):
+            print(f"❌ Failed to parse cleanup result")
+            return None
+    return None
 
 def main():
-    """Main test runner"""
-    print("="*80)
-    print("SHIPPING COST (BIAYA KIRIM) BACKEND TEST")
-    print("="*80)
+    print("=" * 80)
+    print("EXCEL EXPORT ENDPOINTS - BACKEND TEST")
+    print("=" * 80)
     
-    # Login
-    session = login_admin()
-    if not session:
-        print("❌ Cannot proceed without login")
+    # T1: Auth/role gating
+    print("\n" + "=" * 80)
+    print("T1 — AUTH/ROLE GATING")
+    print("=" * 80)
+    
+    # T1a: No auth cookie => 401
+    print("\n[T1a] GET /api/export/sales-orders with NO auth cookie")
+    response, code = get_with_curl('/export/sales-orders')
+    if response and (code == 0 or isinstance(response, dict)):
+        # Check if it's a 401 error (Better Auth returns JSON error)
+        if isinstance(response, dict) and ('error' in response or 'message' in response):
+            print(f"✅ PASSED: Unauthenticated request rejected")
+            print(f"   Response: {response}")
+            test_results["T1_auth_no_cookie"] = True
+        else:
+            print(f"❌ FAILED: Expected 401, got response: {response}")
+    else:
+        print(f"❌ FAILED: Request failed")
+    
+    # T1b: Login as operator => 403
+    print("\n[T1b] Login as operator and GET /api/export/sales-orders")
+    operator_cookie = login_with_curl('operator@lpi.co.id', 'operator123')
+    if operator_cookie:
+        print(f"✅ Operator login successful")
+        response, code = get_with_curl('/export/sales-orders', operator_cookie)
+        if isinstance(response, dict) and ('error' in response or 'message' in response):
+            if 'Forbidden' in str(response) or 'forbidden' in str(response).lower():
+                print(f"✅ PASSED: Operator request rejected with 403")
+                print(f"   Response: {response}")
+                test_results["T1_auth_operator_403"] = True
+            else:
+                print(f"❌ FAILED: Expected Forbidden, got: {response}")
+        else:
+            print(f"❌ FAILED: Expected 403, got: {response}")
+    else:
+        print(f"❌ FAILED: Operator login failed")
+    
+    # T1c: Login as admin => 200 for all 4 modules
+    print("\n[T1c] Login as admin and GET all 4 modules")
+    admin_cookie = login_with_curl('admin@lpi.co.id', 'admin123')
+    if not admin_cookie:
+        print(f"❌ FAILED: Admin login failed")
         return
     
-    # Seed test data
-    try:
-        seed_test_data()
-    except Exception as e:
-        print(f"❌ Failed to seed test data: {e}")
-        return
+    print(f"✅ Admin login successful")
     
-    # Run tests
-    results = {
-        "TEST A (Buyer-borne)": False,
-        "TEST B (Seller-borne)": False,
-        "TEST C (Accounting journal)": False,
-        "TEST D (Sales profit report)": False,
-        "TEST E (Regression)": False
+    modules = ['sales-orders', 'purchase-orders', 'inventory', 'accounting']
+    admin_responses = {}
+    
+    for module in modules:
+        print(f"\n   Testing GET /api/export/{module}")
+        response, code = get_with_curl(f'/export/{module}', admin_cookie)
+        if isinstance(response, dict) and 'data' in response:
+            print(f"   ✅ PASSED: {module} returned 200 with data")
+            test_results[f"T1_auth_admin_{module.replace('-', '_')}"] = True
+            admin_responses[module] = response
+        else:
+            print(f"   ❌ FAILED: {module} did not return valid data: {response}")
+    
+    # T2: Structure verification
+    print("\n" + "=" * 80)
+    print("T2 — STRUCTURE VERIFICATION")
+    print("=" * 80)
+    
+    expected_sheets = {
+        'sales-orders': ['Sales Order', 'Item SO'],
+        'purchase-orders': ['Purchase Order', 'Item PO'],
+        'inventory': ['Stok', 'Kartu Stok'],
+        'accounting': ['Bagan Akun', 'Jurnal (Buku Besar)', 'Neraca Saldo']
     }
     
-    try:
-        results["TEST A (Buyer-borne)"] = test_a_buyer_borne_shipping(session)
-        results["TEST B (Seller-borne)"] = test_b_seller_borne_shipping(session)
-        results["TEST C (Accounting journal)"] = test_c_accounting_journal(session)
-        results["TEST D (Sales profit report)"] = test_d_sales_profit_report(session)
-        results["TEST E (Regression)"] = test_e_regression_no_shipping(session)
-    finally:
-        # Always cleanup
-        print("\n" + "="*80)
-        print("CLEANUP")
-        print("="*80)
-        cleanup_test_data()
+    for module, expected in expected_sheets.items():
+        print(f"\n[T2] Verifying structure for {module}")
+        if module not in admin_responses:
+            print(f"   ❌ FAILED: No response data for {module}")
+            continue
+        
+        response = admin_responses[module]
+        data = response.get('data', {})
+        
+        # Check filename
+        filename = data.get('filename', '')
+        if filename and isinstance(filename, str) and len(filename) > 0:
+            print(f"   ✅ filename: '{filename}' (non-empty string)")
+        else:
+            print(f"   ❌ filename: invalid or empty")
+            continue
+        
+        # Check sheets
+        sheets = data.get('sheets', [])
+        if not isinstance(sheets, list):
+            print(f"   ❌ sheets: not an array")
+            continue
+        
+        print(f"   ✅ sheets: array with {len(sheets)} elements")
+        
+        # Check each sheet
+        sheet_names = []
+        all_valid = True
+        for i, sheet in enumerate(sheets):
+            name = sheet.get('name', '')
+            rows = sheet.get('rows', [])
+            
+            if not isinstance(name, str) or len(name) == 0:
+                print(f"   ❌ Sheet {i}: name is not a non-empty string")
+                all_valid = False
+                continue
+            
+            if not isinstance(rows, list):
+                print(f"   ❌ Sheet {i}: rows is not an array")
+                all_valid = False
+                continue
+            
+            sheet_names.append(name)
+            print(f"   ✅ Sheet {i}: name='{name}', rows={len(rows)} elements")
+        
+        # Check expected sheet names
+        if sheet_names == expected:
+            print(f"   ✅ Sheet names match expected: {expected}")
+            test_results[f"T2_structure_{module.replace('-', '_')}"] = True
+        else:
+            print(f"   ❌ Sheet names mismatch")
+            print(f"      Expected: {expected}")
+            print(f"      Got: {sheet_names}")
+    
+    # T3: Accounting COA populated
+    print("\n" + "=" * 80)
+    print("T3 — ACCOUNTING COA POPULATED")
+    print("=" * 80)
+    
+    if 'accounting' in admin_responses:
+        print("\n[T3] Verifying 'Bagan Akun' sheet has data")
+        data = admin_responses['accounting'].get('data', {})
+        sheets = data.get('sheets', [])
+        
+        coa_sheet = None
+        for sheet in sheets:
+            if sheet.get('name') == 'Bagan Akun':
+                coa_sheet = sheet
+                break
+        
+        if not coa_sheet:
+            print(f"   ❌ FAILED: 'Bagan Akun' sheet not found")
+        else:
+            rows = coa_sheet.get('rows', [])
+            print(f"   ✅ 'Bagan Akun' sheet has {len(rows)} rows")
+            
+            if len(rows) == 0:
+                print(f"   ❌ FAILED: 'Bagan Akun' sheet is empty")
+            else:
+                # Find row with 'Kode Akun' == '5-1300'
+                target_row = None
+                for row in rows:
+                    if row.get('Kode Akun') == '5-1300':
+                        target_row = row
+                        break
+                
+                if not target_row:
+                    print(f"   ❌ FAILED: Row with 'Kode Akun'=='5-1300' not found")
+                else:
+                    print(f"   ✅ Found row with 'Kode Akun'=='5-1300'")
+                    print(f"      Row data: {target_row}")
+                    
+                    # Check required keys
+                    required_keys = ['Kode Akun', 'Nama Akun', 'Tipe', 'Saldo Awal (Rp)']
+                    has_all_keys = all(key in target_row for key in required_keys)
+                    
+                    if has_all_keys:
+                        print(f"   ✅ Row has all required keys: {required_keys}")
+                        test_results["T3_accounting_coa_populated"] = True
+                    else:
+                        missing = [k for k in required_keys if k not in target_row]
+                        print(f"   ❌ FAILED: Missing keys: {missing}")
+    else:
+        print(f"   ❌ FAILED: No accounting response data")
+    
+    # T4: Data correctness (seed then verify)
+    print("\n" + "=" * 80)
+    print("T4 — DATA CORRECTNESS (SEED + VERIFY)")
+    print("=" * 80)
+    
+    seed_ids = seed_test_data()
+    if not seed_ids:
+        print(f"❌ FAILED: Could not seed test data")
+    else:
+        # Re-fetch exports with seeded data
+        print("\n[T4] Re-fetching exports with seeded data")
+        
+        # T4a: Sales Orders
+        print("\n[T4a] Verifying sales-orders export")
+        response, code = get_with_curl('/export/sales-orders', admin_cookie)
+        if isinstance(response, dict) and 'data' in response:
+            data = response.get('data', {})
+            sheets = data.get('sheets', [])
+            
+            # Find 'Sales Order' sheet
+            so_sheet = None
+            item_sheet = None
+            for sheet in sheets:
+                if sheet.get('name') == 'Sales Order':
+                    so_sheet = sheet
+                elif sheet.get('name') == 'Item SO':
+                    item_sheet = sheet
+            
+            if so_sheet and item_sheet:
+                so_rows = so_sheet.get('rows', [])
+                item_rows = item_sheet.get('rows', [])
+                
+                # Find SO/EXP/1
+                target_so = None
+                for row in so_rows:
+                    if row.get('No SO') == 'SO/EXP/1':
+                        target_so = row
+                        break
+                
+                if target_so:
+                    total = target_so.get('Total (Rp)')
+                    if total == 500000:
+                        print(f"   ✅ 'Sales Order' sheet contains 'SO/EXP/1' with Total=500000")
+                    else:
+                        print(f"   ❌ 'SO/EXP/1' Total mismatch: expected 500000, got {total}")
+                else:
+                    print(f"   ❌ 'SO/EXP/1' not found in 'Sales Order' sheet")
+                
+                # Find item with SKU='EXP-TEST'
+                target_item = None
+                for row in item_rows:
+                    if row.get('SKU') == 'EXP-TEST' and row.get('No SO') == 'SO/EXP/1':
+                        target_item = row
+                        break
+                
+                if target_item:
+                    weight = target_item.get('Berat (kg)')
+                    price = target_item.get('Harga/kg (Rp)')
+                    if weight == 10 and price == 50000:
+                        print(f"   ✅ 'Item SO' sheet contains SKU='EXP-TEST' with Berat=10, Harga/kg=50000")
+                        test_results["T4_data_correctness_sales_orders"] = True
+                    else:
+                        print(f"   ❌ Item data mismatch: Berat={weight} (expected 10), Harga/kg={price} (expected 50000)")
+                else:
+                    print(f"   ❌ Item with SKU='EXP-TEST' not found in 'Item SO' sheet")
+            else:
+                print(f"   ❌ Required sheets not found")
+        else:
+            print(f"   ❌ Failed to fetch sales-orders export")
+        
+        # T4b: Purchase Orders
+        print("\n[T4b] Verifying purchase-orders export")
+        response, code = get_with_curl('/export/purchase-orders', admin_cookie)
+        if isinstance(response, dict) and 'data' in response:
+            data = response.get('data', {})
+            sheets = data.get('sheets', [])
+            
+            # Find 'Purchase Order' sheet
+            po_sheet = None
+            item_sheet = None
+            for sheet in sheets:
+                if sheet.get('name') == 'Purchase Order':
+                    po_sheet = sheet
+                elif sheet.get('name') == 'Item PO':
+                    item_sheet = sheet
+            
+            if po_sheet and item_sheet:
+                po_rows = po_sheet.get('rows', [])
+                item_rows = item_sheet.get('rows', [])
+                
+                # Find PO/EXP/1
+                target_po = None
+                for row in po_rows:
+                    if row.get('No PO') == 'PO/EXP/1':
+                        target_po = row
+                        break
+                
+                if target_po:
+                    print(f"   ✅ 'Purchase Order' sheet contains 'PO/EXP/1'")
+                else:
+                    print(f"   ❌ 'PO/EXP/1' not found in 'Purchase Order' sheet")
+                
+                # Find item with HPP/kg=50000
+                target_item = None
+                for row in item_rows:
+                    if row.get('No PO') == 'PO/EXP/1' and row.get('SKU') == 'EXP-TEST':
+                        target_item = row
+                        break
+                
+                if target_item:
+                    hpp = target_item.get('HPP/kg (Rp)')
+                    if hpp == 50000:
+                        print(f"   ✅ 'Item PO' sheet contains item with HPP/kg=50000")
+                        test_results["T4_data_correctness_purchase_orders"] = True
+                    else:
+                        print(f"   ❌ Item HPP/kg mismatch: expected 50000, got {hpp}")
+                else:
+                    print(f"   ❌ Item not found in 'Item PO' sheet")
+            else:
+                print(f"   ❌ Required sheets not found")
+        else:
+            print(f"   ❌ Failed to fetch purchase-orders export")
+        
+        # T4c: Inventory
+        print("\n[T4c] Verifying inventory export")
+        response, code = get_with_curl('/export/inventory', admin_cookie)
+        if isinstance(response, dict) and 'data' in response:
+            data = response.get('data', {})
+            sheets = data.get('sheets', [])
+            
+            # Find 'Stok' sheet
+            stok_sheet = None
+            for sheet in sheets:
+                if sheet.get('name') == 'Stok':
+                    stok_sheet = sheet
+                    break
+            
+            if stok_sheet:
+                rows = stok_sheet.get('rows', [])
+                
+                # Find EXP-K1 and EXP-K2
+                k1 = None
+                k2 = None
+                for row in rows:
+                    if row.get('Kode Simpan') == 'EXP-K1':
+                        k1 = row
+                    elif row.get('Kode Simpan') == 'EXP-K2':
+                        k2 = row
+                
+                if k1 and k2:
+                    k1_weight = k1.get('Berat (kg)')
+                    k1_value = k1.get('Nilai Persediaan (Rp)')
+                    k2_weight = k2.get('Berat (kg)')
+                    k2_value = k2.get('Nilai Persediaan (Rp)')
+                    
+                    if k1_weight == 20 and k1_value == 1000000 and k2_weight == 15 and k2_value == 750000:
+                        print(f"   ✅ 'Stok' sheet contains EXP-K1 (20kg, 1,000,000) and EXP-K2 (15kg, 750,000)")
+                        test_results["T4_data_correctness_inventory"] = True
+                    else:
+                        print(f"   ❌ Inventory data mismatch:")
+                        print(f"      EXP-K1: Berat={k1_weight} (expected 20), Nilai={k1_value} (expected 1000000)")
+                        print(f"      EXP-K2: Berat={k2_weight} (expected 15), Nilai={k2_value} (expected 750000)")
+                else:
+                    print(f"   ❌ EXP-K1 or EXP-K2 not found in 'Stok' sheet")
+            else:
+                print(f"   ❌ 'Stok' sheet not found")
+        else:
+            print(f"   ❌ Failed to fetch inventory export")
+    
+    # T5: Unknown module => 404
+    print("\n" + "=" * 80)
+    print("T5 — UNKNOWN MODULE")
+    print("=" * 80)
+    
+    print("\n[T5] GET /api/export/foo as admin")
+    response, code = get_with_curl('/export/foo', admin_cookie)
+    if isinstance(response, dict) and ('error' in response or 'message' in response):
+        error_msg = response.get('error') or response.get('message', '')
+        if 'tidak dikenal' in error_msg.lower() or 'unknown' in error_msg.lower() or '404' in str(response):
+            print(f"✅ PASSED: Unknown module rejected with 404")
+            print(f"   Response: {response}")
+            test_results["T5_unknown_module_404"] = True
+        else:
+            print(f"❌ FAILED: Expected 404, got: {response}")
+    else:
+        print(f"❌ FAILED: Expected error response, got: {response}")
+    
+    # Cleanup
+    print("\n" + "=" * 80)
+    print("CLEANUP")
+    print("=" * 80)
+    
+    if seed_ids:
+        counts = cleanup_test_data()
+        if counts:
+            if counts['soCount'] == 0 and counts['poCount'] == 0 and counts['stockCount'] == 0:
+                print(f"✅ All test data cleaned up successfully (clean slate confirmed)")
+            else:
+                print(f"⚠️  Some test data may remain:")
+                print(f"   SO/EXP/* count: {counts['soCount']}")
+                print(f"   PO/EXP/* count: {counts['poCount']}")
+                print(f"   EXP-K* stock count: {counts['stockCount']}")
     
     # Summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST SUMMARY")
-    print("="*80)
+    print("=" * 80)
     
-    for test_name, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        print(f"{status}: {test_name}")
+    passed = sum(1 for v in test_results.values() if v)
+    total = len(test_results)
     
-    total = len(results)
-    passed = sum(1 for v in results.values() if v)
+    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)\n")
     
-    print(f"\nTotal: {passed}/{total} tests passed ({passed*100//total}%)")
+    for test, result in test_results.items():
+        status = "✅ PASSED" if result else "❌ FAILED"
+        print(f"{status}: {test}")
+    
+    print("\n" + "=" * 80)
     
     if passed == total:
-        print("\n🎉 ALL TESTS PASSED!")
+        print("🎉 ALL TESTS PASSED!")
+        sys.exit(0)
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed")
+        print(f"⚠️  {total - passed} test(s) failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

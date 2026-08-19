@@ -11,7 +11,8 @@ import { headers } from 'next/headers';
 import { runAgent, executeAction, canWrite } from '@/lib/ai/erp-agent';
 import * as acct from '@/lib/accounting/engine';
 import * as md from '@/lib/db/masterdata';
-
+import { buildExportSheets } from '@/lib/export/queries';
+import { importMasterData, IMPORT_TEMPLATES } from '@/lib/export/import';
 // -----------------------
 // Helpers
 // -----------------------
@@ -252,6 +253,46 @@ async function handleRoute(request, { params }) {
       } catch (e) {
         return err('Gagal ' + (isArchive ? 'mengarsipkan' : 'memulihkan') + ': ' + String(e?.message || e), 400);
       }
+    }
+
+    // ================= EXPORT (Excel) — ekspor per modul untuk migrasi/backup =================
+    if (path[0] === 'export' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      const raw = getRawSqlite();
+      const out = buildExportSheets(raw, path[1]);
+      if (!out) return err('Modul ekspor tidak dikenal', 404);
+      return json({ data: out });
+    }
+
+    // ================= IMPORT (Master Data) — templates & upload =================
+    // GET /api/import/templates -> daftar kolom template
+    if (route === '/import/templates' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      return json({ data: IMPORT_TEMPLATES });
+    }
+    // POST /api/import/:module  body: { rows: [ {header:value} ] }
+    if (path[0] === 'import' && path.length === 2 && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const module = path[1];
+      const body = await request.json().catch(() => ({}));
+      const rows = Array.isArray(body.rows) ? body.rows : [];
+      if (rows.length === 0) return err('Tidak ada baris data untuk diimpor');
+      if (rows.length > 5000) return err('Maksimal 5000 baris per impor');
+      const deps = {
+        db, s, md, uuidv4, raw: getRawSqlite(),
+        genContactCode: (cat) => generateContactCodeMongo(cat),
+        insertSqlite: (table, doc) => { try { db.insert(table === 'products' ? s.products : s.contacts).values(doc).run(); } catch (e) { throw e; } },
+        updateSqlite: (table, id, patch) => { const t = table === 'products' ? s.products : s.contacts; try { db.update(t).set(patch).where(eq(t.id, id)).run(); } catch (e) { /* row may not exist in mirror */ } },
+      };
+      const rep = await importMasterData(deps, module, rows);
+      if (rep === null) return err('Modul impor tidak dikenal (products | contacts | chart-of-accounts)', 404);
+      if (rep.error) return err(rep.error);
+      // Jadwalkan backup SQLite -> Mongo GridFS (COA & mirror) bila tersedia
+      try { const { scheduleBackup } = await import('@/lib/db/persistence'); scheduleBackup?.(); } catch (e) { /* optional */ }
+      return json({ data: rep });
     }
 
     // ================= ACCOUNTING MODULE (SAK EP) =================
