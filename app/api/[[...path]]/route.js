@@ -17,6 +17,7 @@ import * as coaMongo from '@/lib/accounting/coa-mongo';
 import * as jmongo from '@/lib/accounting/journal-mongo';
 import * as salesMongo from '@/lib/db/sales-mongo';
 import * as invMongo from '@/lib/db/inventory-mongo';
+import * as potxMongo from '@/lib/db/potx-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -235,6 +236,17 @@ const INVENTORY_PATHS = new Set([
   'accounting', 'dashboard', 'reports',
 ]);
 
+// Phase 5: path[0] prefixes whose handlers READ or WRITE the PO aggregate / commission /
+// SO-extra tables (surat jalan, retur, penerimaan). We hydrate the per-pod SQLite mirror from
+// MongoDB and, on mutations, diff-persist only the changed rows (concurrency-safe). All writers to
+// these tables live under these prefixes (verified: purchase-orders, grns, commissions, approvals,
+// sales-orders dropship, tally-sessions, /inventory inbound-with-PO).
+const POTX_PATHS = new Set([
+  'purchase-orders', 'purchase-reports', 'grns', 'commissions',
+  'sales-orders', 'tally-outbound', 'tally-sessions', 'inventory', 'inventory-reports',
+  'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports',
+]);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -260,6 +272,17 @@ async function handleRoute(request, { params }) {
       const rawInv = getRawSqlite();
       await invMongo.ensureInventoryReady(rawInv);
       if (method !== 'GET' && method !== 'HEAD') invMongo.captureSnapshot(request, rawInv);
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 5 (MongoDB): Purchase Order aggregate + commission + SO-extra (surat jalan / retur /
+  // penerimaan) are MongoDB-authoritative. Hydrate the per-pod SQLite mirror for these paths and,
+  // on mutations, snapshot so we diff-persist only the changed rows (concurrency-safe).
+  if (POTX_PATHS.has(path[0])) {
+    try {
+      const rawTx = getRawSqlite();
+      await potxMongo.ensureReady(rawTx);
+      if (method !== 'GET' && method !== 'HEAD') potxMongo.captureSnapshot(request, rawTx);
     } catch (e) { /* best-effort */ }
   }
 
@@ -324,7 +347,8 @@ async function handleRoute(request, { params }) {
       const raw = getRawSqlite();
       if (path[1] === 'accounting') { try { await coaMongo.ensureCoaReady(raw); await jmongo.ensureJournalsReady(raw); } catch (e) { /* best-effort */ } }
       if (path[1] === 'inventory') { try { await jmongo.ensureStockLedgerReady(raw); await invMongo.ensureInventoryReady(raw); } catch (e) { /* best-effort */ } }
-      if (path[1] === 'sales-orders') { try { await salesMongo.ensureSalesReady(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'sales-orders') { try { await salesMongo.ensureSalesReady(raw); await potxMongo.hydrateToSqlite(raw); } catch (e) { /* best-effort */ } }
+      if (path[1] === 'purchase-orders') { try { await potxMongo.ensureReady(raw); } catch (e) { /* best-effort */ } }
       const out = buildExportSheets(raw, path[1]);
       if (!out) return err('Modul ekspor tidak dikenal', 404);
       return json({ data: out });
@@ -5894,6 +5918,8 @@ async function handleRouteWithBackup(request, ctx) {
       await persistSalesAfterMutation(request, res);
       // Phase 4: diff-persist any inventory_stock rows this request added/changed/removed (concurrency-safe).
       try { await invMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 5: diff-persist any PO / commission / SO-extra rows this request changed (concurrency-safe).
+      try { await potxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
