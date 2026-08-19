@@ -34,8 +34,7 @@ export default function DashboardHome() {
       {!s ? <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin inline" /></div> : (
         <>
           {/* Top KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <KPI icon={TrendingUp} color="from-emerald-500 to-emerald-600" label="Penjualan Hari Ini" value={`Rp ${Number(s.todaySales.total).toLocaleString('id-ID')}`} sub={`${s.todaySales.count} SO · Terbayar: Rp ${Number(s.todaySales.paidToday).toLocaleString('id-ID')}`} href="/dashboard/sales-orders" />
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             <KPI icon={Factory} color="from-purple-500 to-purple-600" label="Produksi Hari Ini" value={`${s.todayProduction.count} WO`} sub={`${Number(s.todayProduction.rendemenWeight).toFixed(1)} kg · Efisiensi ${s.todayProduction.efficiency.toFixed(1)}%`} href="/dashboard/work-orders" />
             <KPI icon={Wallet} color="from-blue-500 to-blue-600" label="Piutang (AR)" value={`Rp ${Number(s.finance.totalAR).toLocaleString('id-ID')}`} sub={`Utang: Rp ${Number(s.finance.totalAP).toLocaleString('id-ID')}`} href="/dashboard/sales-reports" />
             <KPI icon={Package} color="from-cyan-500 to-cyan-600" label="Nilai Inventory" value={`Rp ${Number(s.inventoryValue).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} sub={`Aktif dalam stok`} href="/dashboard/inventory" />
