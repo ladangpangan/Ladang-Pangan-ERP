@@ -21,6 +21,7 @@ import * as potxMongo from '@/lib/db/potx-mongo';
 import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
+import { getMongoDb } from '@/lib/db/mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -354,6 +355,60 @@ async function handleRoute(request, { params }) {
   try {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
+
+    // ===================================================================================
+    // TEMPORARY MAINTENANCE ROUTE — one-time production Inventory data reset.
+    // Added on user request to wipe Inventory-domain data on the deployed (Atlas) DB, which
+    // cannot be reached directly from the preview sandbox. Admin-only + secret token gated,
+    // NOT exposed in any UI. TO BE REMOVED after the one-time cleanup (with a follow-up deploy).
+    // POST /api/maintenance/reset-inventory  body: { token, confirm:"HAPUS-INVENTORY" }
+    // Wipes: inventory_stock, stock_ledger (Kartu Stok), inventory_transaction, tally_session(+items),
+    // stock_opname(+items) — from MongoDB (authoritative) + local SQLite mirror, then refreshes the
+    // durable GridFS backup so pod restarts restore the CLEANED snapshot. Master data is untouched.
+    // ===================================================================================
+    if (route === '/maintenance/reset-inventory' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden - admin only', 403);
+      const MAINT_TOKEN = 'LPI-RESET-INV-2026-9f3a7c1e5b8d42a6';
+      const body = await request.json().catch(() => ({}));
+      const token = body?.token || request.headers.get('x-maintenance-token');
+      if (token !== MAINT_TOKEN) return err('Invalid maintenance token', 403);
+      if (body?.confirm !== 'HAPUS-INVENTORY') return err('Confirmation mismatch — body.confirm must equal "HAPUS-INVENTORY"', 400);
+
+      const MONGO_COLLECTIONS = ['inventory_stock', 'stock_ledger', 'inventory_transaction', 'tally_session', 'tally_session_items', 'stock_opname', 'stock_opname_items'];
+      // children before parents (FK is disabled anyway during the wipe).
+      const SQLITE_TABLES = ['stock_opname_items', 'stock_opname', 'tally_session_items', 'tally_session', 'inventory_transaction', 'stock_ledger', 'inventory_stock'];
+      const raw = getRawSqlite();
+      const before = {}; const after = {};
+      for (const t of SQLITE_TABLES) { try { before[t] = raw.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c; } catch { before[t] = 'n/a'; } }
+
+      // 1) Wipe MongoDB (authoritative source of truth).
+      const mongoDeleted = {};
+      try {
+        const mdb = getMongoDb();
+        for (const c of MONGO_COLLECTIONS) {
+          try { const r = await mdb.collection(c).deleteMany({}); mongoDeleted[c] = r?.deletedCount ?? 0; }
+          catch (e) { mongoDeleted[c] = 'err:' + String(e?.message || e); }
+        }
+      } catch (e) { return err('Mongo unavailable: ' + String(e?.message || e), 500); }
+
+      // 2) Wipe the local SQLite mirror (FK OFF so unrelated child tables are not cascaded).
+      const fkWasOn = Number(raw.pragma('foreign_keys', { simple: true })) === 1;
+      if (fkWasOn) raw.pragma('foreign_keys = OFF');
+      try {
+        const tx = raw.transaction(() => { for (const t of SQLITE_TABLES) { try { raw.prepare(`DELETE FROM ${t}`).run(); } catch (e) { /* skip */ } } });
+        tx();
+      } finally { if (fkWasOn) raw.pragma('foreign_keys = ON'); }
+      for (const t of SQLITE_TABLES) { try { after[t] = raw.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c; } catch { after[t] = 'n/a'; } }
+
+      // 3) Refresh the durable full-DB backup so future pod restarts restore the CLEANED state.
+      let durableBackup = 'skipped';
+      try { const { backupDbToMongo } = await import('@/lib/db/persistence'); const b = await backupDbToMongo(); durableBackup = b?.ok ? ('ok:' + Math.round((b.size || 0) / 1024) + 'KB') : (b?.reason || 'failed'); }
+      catch (e) { durableBackup = 'err:' + String(e?.message || e); }
+
+      console.log('[maintenance] reset-inventory by', session.user.email, '| mongoDeleted=', JSON.stringify(mongoDeleted), '| backup=', durableBackup);
+      return json({ ok: true, wiped: true, by: session.user.email, mongoDeleted, sqliteBefore: before, sqliteAfter: after, durableBackup, note: 'Data Inventory dihapus (stok, kartu stok, mutasi, tally, opname). Master data tetap.' });
+    }
 
     // ---------- ARCHIVE (soft-archive) generic handlers ----------
     // Resource map: URL segment -> { table, roles allowed to archive/restore }

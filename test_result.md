@@ -27240,3 +27240,525 @@ agent_communication:
       return data?) so I can pinpoint the frontend bug. Report the finalized kodeSimpan / any session id shown
       so I can clean up test data afterwards.
 
+
+#====================================================================================================
+# MAINTENANCE: one-time Inventory data reset route + stock_ledger reconcile-hydrate (deletion propagation)
+#====================================================================================================
+
+backend:
+  - task: "TEMP maintenance route POST /api/maintenance/reset-inventory (admin+token gated)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          TEMPORARY admin-only, token-gated route to wipe Inventory-domain data on the deployed (Atlas)
+          production DB (which cannot be reached from the preview sandbox). Will be REMOVED after the one-time
+          cleanup. Guards: requireAuth + requireRole(['admin']) + body.token must equal the embedded MAINT_TOKEN
+          + body.confirm must equal "HAPUS-INVENTORY". Wipes MongoDB collections [inventory_stock, stock_ledger,
+          inventory_transaction, tally_session, tally_session_items, stock_opname, stock_opname_items] AND the
+          local SQLite mirror (FK OFF), then calls persistence.backupDbToMongo() to refresh the durable GridFS
+          snapshot. Master data untouched.
+          MANUAL TEST (preview, localhost) PASSED: wrong token -> 403; wrong confirm -> 400; operator -> 403
+          "Forbidden - admin only"; admin+token+confirm -> wiped all collections (Mongo -> 0, SQLite -> 0);
+          durableBackup='no-mongo-url' in preview (expected; runs in prod where MONGO_URL is set). GET
+          /inventory/stocks -> 0 and GET /stock-ledger total -> 0 afterwards. DB left clean.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ MAINTENANCE RESET ROUTE - ALL TESTS PASSED (3/3, 100%)
+          
+          Comprehensive backend testing completed for the TEMP maintenance route POST /api/maintenance/reset-inventory.
+          All guards working correctly, reset functionality verified, and cleanup successful.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123, operator@lpi.co.id / operator123)
+          - MongoDB: mongodb://localhost:27017/erp_prod
+          - Collections: inventory_stock, stock_ledger, inventory_transaction, tally_session, tally_session_items, stock_opname, stock_opname_items
+          - Token: LPI-RESET-INV-2026-9f3a7c1e5b8d42a6
+          - Confirm: HAPUS-INVENTORY
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Wrong token -> 403 (PASSED):
+             Request:
+             - Method: POST /api/maintenance/reset-inventory
+             - Auth: admin session
+             - Body: {"token":"WRONG-TOKEN","confirm":"HAPUS-INVENTORY"}
+             
+             Response: 403 Forbidden
+             - Error: "Invalid maintenance token" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Wrong token correctly rejected with 403
+             ✅ Error message: "Invalid maintenance token"
+             ✅ No data wiped
+          
+          ✅ TEST 2 — Wrong confirm -> 400 (PASSED):
+             Request:
+             - Method: POST /api/maintenance/reset-inventory
+             - Auth: admin session
+             - Body: {"token":"LPI-RESET-INV-2026-9f3a7c1e5b8d42a6","confirm":"WRONG"}
+             
+             Response: 400 Bad Request
+             - Error: "Confirmation mismatch — body.confirm must equal \"HAPUS-INVENTORY\"" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Wrong confirm correctly rejected with 400
+             ✅ Error message: "Confirmation mismatch"
+             ✅ No data wiped
+          
+          ✅ TEST 3 — Operator -> 403 (PASSED):
+             Request:
+             - Method: POST /api/maintenance/reset-inventory
+             - Auth: operator@lpi.co.id session
+             - Body: {"token":"LPI-RESET-INV-2026-9f3a7c1e5b8d42a6","confirm":"HAPUS-INVENTORY"}
+             
+             Response: 403 Forbidden
+             - Error: "Forbidden - admin only" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Operator correctly rejected with 403
+             ✅ Error message: "Forbidden - admin only"
+             ✅ requireRole(['admin']) guard working
+             ✅ No data wiped
+          
+          ✅ TEST 4 — Admin with correct token+confirm -> 200 (PASSED):
+             Request:
+             - Method: POST /api/maintenance/reset-inventory
+             - Auth: admin@lpi.co.id session
+             - Body: {"token":"LPI-RESET-INV-2026-9f3a7c1e5b8d42a6","confirm":"HAPUS-INVENTORY"}
+             
+             Response: 200 OK
+             - ok: true ✓
+             - wiped: true ✓
+             - by: "admin@lpi.co.id" ✓
+             - mongoDeleted: {inventory_stock:3, stock_ledger:3, inventory_transaction:3, tally_session:3, tally_session_items:3, stock_opname:0, stock_opname_items:0} ✓
+             - sqliteBefore: {inventory_stock:3, stock_ledger:3, inventory_transaction:3, tally_session:3, tally_session_items:3, stock_opname:0, stock_opname_items:0} ✓
+             - sqliteAfter: {inventory_stock:0, stock_ledger:0, inventory_transaction:0, tally_session:0, tally_session_items:0, stock_opname:0, stock_opname_items:0} ✓
+             - durableBackup: "no-mongo-url" ✓ (EXPECTED in preview without MONGO_URL)
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Reset executed successfully
+             ✅ All 7 collections wiped from MongoDB (3+3+3+3+3+0+0 = 15 docs deleted)
+             ✅ All 7 tables wiped from SQLite (FK OFF)
+             ✅ durableBackup='no-mongo-url' is EXPECTED (not a bug)
+          
+          === MONGODB COUNTS VERIFICATION ===
+          
+          BEFORE reset:
+          - inventory_stock: 3
+          - stock_ledger: 3
+          - inventory_transaction: 3
+          - tally_session: 3
+          - tally_session_items: 3
+          - stock_opname: 0
+          - stock_opname_items: 0
+          
+          AFTER reset:
+          - inventory_stock: 0 ✓
+          - stock_ledger: 0 ✓
+          - inventory_transaction: 0 ✓
+          - tally_session: 0 ✓
+          - tally_session_items: 0 ✓
+          - stock_opname: 0 ✓
+          - stock_opname_items: 0 ✓
+          
+          === API VERIFICATION ===
+          
+          ✅ GET /api/inventory/stocks after reset:
+          - Response: 200 OK
+          - data: [] (empty array) ✓
+          - 0 rows returned ✓
+          
+          ✅ GET /api/stock-ledger after reset:
+          - Response: 200 OK
+          - total: 0 ✓
+          - movements: [] (empty array) ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **All Guards Working (lines 370-376 in route.js)**:
+          - requireAuth() enforced ✓
+          - requireRole(['admin']) enforced ✓
+          - Token validation: body.token === 'LPI-RESET-INV-2026-9f3a7c1e5b8d42a6' ✓
+          - Confirm validation: body.confirm === 'HAPUS-INVENTORY' ✓
+          - Wrong token -> 403 "Invalid maintenance token" ✓
+          - Wrong confirm -> 400 "Confirmation mismatch" ✓
+          - Operator role -> 403 "Forbidden - admin only" ✓
+          
+          ✅ **Reset Functionality (lines 378-410 in route.js)**:
+          - MongoDB collections wiped: deleteMany({}) on all 7 collections ✓
+          - SQLite tables wiped: DELETE FROM with FK OFF ✓
+          - Counts tracked: before/after for both Mongo and SQLite ✓
+          - durableBackup called (returns 'no-mongo-url' in preview, expected) ✓
+          - Response includes full audit trail (by, mongoDeleted, sqliteBefore, sqliteAfter) ✓
+          
+          ✅ **Data Integrity**:
+          - All inventory-domain data wiped (stocks, ledger, transactions, tally, opname) ✓
+          - Master data untouched (products, cold storages, contacts, etc.) ✓
+          - No orphaned data in MongoDB or SQLite ✓
+          - API endpoints return empty results after reset ✓
+          
+          ✅ **Cleanup Successful**:
+          - All test data removed from MongoDB (0 docs in all 7 collections) ✓
+          - All test data removed from SQLite (0 rows in all 7 tables) ✓
+          - Database left in clean state for fresh re-input ✓
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All maintenance reset route features working correctly.
+          All guards enforced (auth, role, token, confirm).
+          Reset functionality verified (Mongo + SQLite wiped).
+          API endpoints return empty results after reset.
+          durableBackup='no-mongo-url' is EXPECTED (not a bug).
+          
+          Test Coverage: 4/4 tests passed (100%)
+          - TEST 1: Wrong token -> 403 ✓
+          - TEST 2: Wrong confirm -> 400 ✓
+          - TEST 3: Operator -> 403 ✓
+          - TEST 4: Admin with correct token+confirm -> 200 ✓
+  - task: "stock_ledger reconcile-hydrate (propagate deletions across replicas, grace window)"
+    implemented: true
+    working: true
+    file: "/app/lib/accounting/journal-mongo.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          hydrateStockLedgerToSqlite() was merge-only (upsert, never delete) so a Mongo-side deletion/wipe of
+          Kartu Stok never propagated to other replicas' SQLite mirrors. Changed to also RECONCILE deletions:
+          after upserting all Mongo rows, delete local rows whose id is NOT in Mongo AND whose created_at is
+          older than a 300s grace window (created_at stored in SECONDS, matching recordLedger). The grace window
+          preserves a just-written local row whose fire-and-forget Mongo insert may not have landed yet.
+          MANUAL TEST (preview) PASSED: inserted an OLD local ledger row (created_at now-400s, not in Mongo) and a
+          FRESH one (now-10s, not in Mongo); after a GET /stock-ledger hydrate the OLD row was DELETED and the
+          FRESH row was KEPT. Normal tally inbound still records + shows ledger correctly.
+          NEEDS BACKEND TESTING: confirm no regression to normal Kartu Stok / inventory flows — multiple
+          sequential tally inbounds must all remain visible in GET /stock-ledger (reconcile must NOT drop valid
+          rows that ARE in Mongo), and inventory stocks list stays correct.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ STOCK_LEDGER RECONCILE-HYDRATE - REGRESSION TEST PASSED (100%)
+          
+          Comprehensive backend testing completed for the stock_ledger reconcile-hydrate deletion propagation.
+          The MOST IMPORTANT test: confirm NO REGRESSION to normal Kartu Stok / inventory flows.
+          Multiple sequential tally inbounds ALL remain visible (reconcile does NOT delete valid rows that ARE in Mongo).
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - MongoDB: mongodb://localhost:27017/erp_prod
+          - Collections: stock_ledger, inventory_stock, inventory_transaction, tally_session, tally_session_items
+          - Implementation: /app/lib/accounting/journal-mongo.js lines 198-215 (hydrateStockLedgerToSqlite)
+          
+          === TEST SCENARIO: REGRESSION - Normal Kartu Stok NOT Broken ===
+          
+          **Test Design:**
+          Create THREE separate tally inbounds (finalize each one).
+          After each finalize, GET /api/stock-ledger and verify:
+          1. Movement count GROWS: 1 -> 2 -> 3
+          2. Previously-created rows REMAIN VISIBLE (not deleted by reconcile)
+          3. GET /api/inventory/stocks shows all finalized stocks
+          
+          === TEST RESULTS ===
+          
+          ✅ TALLY INBOUND 1/3:
+             - POST /api/tally-sessions: coldStorageId, referenceType='MANUAL', items:[{productId, weight:21, quantity:1, packagingType:'colly'}]
+             - Session created: 5794ed84-0b09-4361-b06c-6100abd0e385 ✓
+             - POST /api/tally-sessions/{id}/finalize: 201 Created ✓
+             - GET /api/stock-ledger: total=1 ✓
+             - **Movement count: 1** ✓
+          
+          ✅ TALLY INBOUND 2/3:
+             - POST /api/tally-sessions: coldStorageId, referenceType='MANUAL', items:[{productId, weight:22, quantity:2, packagingType:'colly'}]
+             - Session created: 5cb9ef23-b61b-4f3f-b786-4f20a416d0a4 ✓
+             - POST /api/tally-sessions/{id}/finalize: 201 Created ✓
+             - GET /api/stock-ledger: total=2 ✓
+             - **Movement count: 2** ✓
+             - **CRITICAL: Movement 1 still visible** ✓
+          
+          ✅ TALLY INBOUND 3/3:
+             - POST /api/tally-sessions: coldStorageId, referenceType='MANUAL', items:[{productId, weight:23, quantity:3, packagingType:'colly'}]
+             - Session created: 8253d495-0c94-4e92-9e96-cc4159f7c3e5 ✓
+             - POST /api/tally-sessions/{id}/finalize: 201 Created ✓
+             - GET /api/stock-ledger: total=3 ✓
+             - **Movement count: 3** ✓
+             - **CRITICAL: Movements 1 and 2 still visible** ✓
+          
+          === FINAL VERIFICATION ===
+          
+          ✅ GET /api/inventory/stocks?status=active&sort=FEFO:
+             - Response: 200 OK
+             - Active stocks: 3 ✓
+             - All 3 finalized stocks present in inventory ✓
+          
+          ✅ GET /api/stock-ledger:
+             - Response: 200 OK
+             - total: 3 ✓
+             - All 3 movements present ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **NO REGRESSION (MOST IMPORTANT)**:
+          - Movement count grew correctly: 1 -> 2 -> 3 ✓
+          - Previously-created rows REMAIN VISIBLE (not deleted) ✓
+          - All 3 tally inbounds created stocks and ledger entries ✓
+          - Normal Kartu Stok / inventory flows NOT BROKEN ✓
+          
+          ✅ **Reconcile Logic Verified (lines 198-215 in journal-mongo.js)**:
+          - Line 200: `const rows = await slCol().find({}, { projection: { _id: 0 } }).toArray();`
+            * Fetches all stock_ledger docs from MongoDB ✓
+          - Line 201: `const mongoIds = new Set(rows.map((r) => r.id));`
+            * Builds set of IDs that ARE in Mongo ✓
+          - Line 204: `const graceCutoff = Math.floor(Date.now() / 1000) - 300;`
+            * Grace window: 300 seconds (5 minutes) ✓
+          - Lines 206-210: Transaction logic
+            * Line 206: Upsert all Mongo rows to SQLite ✓
+            * Line 207: Get all local rows (id, created_at) ✓
+            * Line 209: Delete local rows NOT in Mongo AND older than grace cutoff ✓
+            * `if (!mongoIds.has(l.id) && Number(l.created_at || 0) < graceCutoff)`
+          
+          ✅ **Grace Window Working**:
+          - Rows that ARE in Mongo: NEVER deleted (regardless of age) ✓
+          - Rows NOT in Mongo but FRESH (< 300s old): KEPT (grace window) ✓
+          - Rows NOT in Mongo and OLD (> 300s old): DELETED (reconcile) ✓
+          - This prevents deleting valid rows that ARE in Mongo ✓
+          
+          ✅ **Data Integrity**:
+          - All 3 tally sessions finalized successfully ✓
+          - All 3 inventory_transaction docs created in Mongo ✓
+          - All 3 inventory_stock docs created in Mongo ✓
+          - All 3 stock_ledger docs created in Mongo ✓
+          - All 3 movements visible in GET /api/stock-ledger ✓
+          - No valid rows deleted by reconcile ✓
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Cold Storage: f68026af-1fe6-4d44-b6dc-1e363bec04e8
+          Product: 8c287cc8-c548-4beb-bf76-2ebefc8d75d2
+          
+          Tally Inbound 1:
+          - Session: 5794ed84-0b09-4361-b06c-6100abd0e385
+          - Weight: 21 kg, Quantity: 1
+          - Stock ledger total after: 1
+          
+          Tally Inbound 2:
+          - Session: 5cb9ef23-b61b-4f3f-b786-4f20a416d0a4
+          - Weight: 22 kg, Quantity: 2
+          - Stock ledger total after: 2
+          
+          Tally Inbound 3:
+          - Session: 8253d495-0c94-4e92-9e96-cc4159f7c3e5
+          - Weight: 23 kg, Quantity: 3
+          - Stock ledger total after: 3
+          
+          Final Verification:
+          - Active stocks: 3
+          - Stock ledger total: 3
+          - All movements visible
+          
+          === CLEANUP ===
+          ✅ All test data cleaned up successfully:
+          - 3 inventory_stock docs deleted from MongoDB
+          - 3 stock_ledger docs deleted from MongoDB
+          - 3 inventory_transaction docs deleted from MongoDB
+          - 3 tally_session docs deleted from MongoDB
+          - 3 tally_session_items docs deleted from MongoDB
+          - Database restored to clean state (all counts = 0)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All stock_ledger reconcile-hydrate features working correctly.
+          NO REGRESSION to normal Kartu Stok / inventory flows.
+          Movement count grows correctly (1 -> 2 -> 3).
+          Previously-created rows remain visible (not deleted).
+          Grace window working (300s).
+          Reconcile logic only deletes rows NOT in Mongo AND older than grace cutoff.
+          
+          Test Coverage: 1/1 regression test passed (100%)
+          - REGRESSION: Normal Kartu Stok NOT broken ✓
+  - task: "Better Auth rate-limiting behind proxy (advanced.ipAddress.trustedProxies)"
+    implemented: true
+    working: true
+    file: "/app/lib/auth/auth.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Deploy logs showed "Rate limiting could not determine a client IP ... shared per-path bucket". Behind
+          the k8s ingress/LB, x-forwarded-for is a chain of IPs; better-auth only trusts a single-value header
+          unless trustedProxies is set. Added advanced.ipAddress.ipAddressHeaders=['x-forwarded-for','x-real-ip']
+          and trustedProxies=[private CIDRs] so the real client IP resolves -> per-client rate-limit buckets
+          (avoids spurious 429s). Verify login/auth still works (no regression).
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BETTER AUTH RATE-LIMIT CONFIG - NO REGRESSION (100%)
+          
+          Backend testing completed for the Better Auth rate-limiting config change.
+          Verified NO REGRESSION: login and protected endpoints still work correctly.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based
+          - Implementation: /app/lib/auth/auth.js lines 34-51 (advanced.ipAddress config)
+          
+          === TEST RESULTS ===
+          
+          ✅ LOGIN WORKS:
+             - POST /api/auth/sign-in/email with admin@lpi.co.id / admin123
+             - Response: 200 OK ✓
+             - Session token received in Set-Cookie header ✓
+             - Cookie: __Secure-better-auth.session_token ✓
+          
+          ✅ PROTECTED ENDPOINT WORKS:
+             - GET /api/inventory/stocks with session cookie
+             - Response: 200 OK ✓
+             - Data returned (not 401 Unauthorized) ✓
+             - Auth middleware working correctly ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Config Change Verified (lines 34-51 in auth.js)**:
+          - Line 42: `ipAddressHeaders: ['x-forwarded-for', 'x-real-ip']` ✓
+          - Lines 43-50: `trustedProxies: [private CIDRs]` ✓
+            * 10.0.0.0/8 (private class A)
+            * 172.16.0.0/12 (private class B)
+            * 192.168.0.0/16 (private class C)
+            * 127.0.0.0/8 (localhost)
+            * ::1/128 (IPv6 localhost)
+            * fc00::/7 (IPv6 private)
+          
+          ✅ **NO REGRESSION**:
+          - Login still works (no 401, no 429) ✓
+          - Session cookie still set correctly ✓
+          - Protected endpoints still accessible with session ✓
+          - No breaking changes to auth flow ✓
+          
+          ✅ **Purpose of Change**:
+          - Behind k8s ingress/LB, x-forwarded-for is a CHAIN of IPs (client, ingress, lb, ...)
+          - Without trustedProxies, better-auth only trusts single-value header
+          - Cannot resolve client IP -> falls back to ONE shared rate-limit bucket for all clients
+          - This causes spurious 429s (rate limit exceeded) during deploy/health probes
+          - With trustedProxies, better-auth strips internal proxy hops and resolves real client IP
+          - Result: per-client rate-limit buckets (avoids spurious 429s)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          Better Auth rate-limiting config change working correctly.
+          NO REGRESSION to login or protected endpoints.
+          Auth flow unchanged.
+          Session cookies still work.
+          
+          Test Coverage: 1/1 regression test passed (100%)
+          - AUTH REGRESSION: Login and protected endpoints work ✓
+
+metadata:
+  created_by: "main_agent"
+  version: "3.10"
+  test_sequence: 21
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "stock_ledger reconcile-hydrate (propagate deletions across replicas, grace window)"
+    - "TEMP maintenance route POST /api/maintenance/reset-inventory (admin+token gated)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Backend-test the LAST appended block "MAINTENANCE" in /app/test_result.md. Login admin@lpi.co.id/admin123
+      (Better Auth needs an Origin header on raw state-changing requests). Master data: 1 cold storage, ~52
+      products (GET /api/cold-storages, /api/products?limit=1). Mongo DB 'erp_prod' (fallback localhost:27017).
+      NOTE: durableBackup returning 'no-mongo-url' in preview is EXPECTED (persistence is a no-op without
+      MONGO_URL) — do NOT flag it. snake_case Mongo field names are the intended design — do NOT flag.
+
+      SCENARIOS:
+      1) REGRESSION — normal Kartu Stok not broken by reconcile-hydrate: do THREE separate tally inbounds
+         (create /api/tally-sessions then /api/tally-sessions/:id/finalize) for a product. After each, GET
+         /api/stock-ledger and confirm the movement count GROWS (1, then 2, then 3) and all rows remain visible
+         (the new reconcile logic must NOT delete rows that ARE in Mongo). GET /api/inventory/stocks shows the
+         finalized stocks.
+      2) reconcile grace window: (optional, code-inspection ok) confirm hydrateStockLedgerToSqlite deletes local
+         rows absent from Mongo only when created_at < now-300s; recent rows are preserved.
+      3) MAINTENANCE guards: POST /api/maintenance/reset-inventory with wrong token -> 403 "Invalid maintenance
+         token"; correct token but confirm!='HAPUS-INVENTORY' -> 400; as operator@lpi.co.id/operator123 -> 403
+         "Forbidden - admin only".
+      4) MAINTENANCE reset: as admin with body {token:"LPI-RESET-INV-2026-9f3a7c1e5b8d42a6",
+         confirm:"HAPUS-INVENTORY"} -> 200 ok:true. Verify Mongo collections [inventory_stock, stock_ledger,
+         inventory_transaction, tally_session, tally_session_items, stock_opname, stock_opname_items] are all 0
+         AND GET /api/inventory/stocks -> 0 rows AND GET /api/stock-ledger total -> 0.
+      5) auth still works after the rate-limit config change (login succeeds; a protected GET works).
+
+      CRITICAL CLEANUP: the reset in (4) already wipes inventory data; ensure NO test data remains in Mongo or
+      SQLite for these collections at the end (the user deliberately keeps the DB clean for a fresh re-input).
+      Report Mongo counts before/after.
+    
+    -agent: "testing"
+    -message: |
+      ✅ ALL MAINTENANCE TESTS PASSED (4/4 scenarios, 100%)
+      
+      Completed comprehensive backend testing of the MAINTENANCE block (3 tasks):
+      1. stock_ledger reconcile-hydrate (REGRESSION test) ✓
+      2. TEMP maintenance route POST /api/maintenance/reset-inventory ✓
+      3. Better Auth rate-limiting config change ✓
+      
+      === SUMMARY ===
+      
+      ✅ SCENARIO 1 - REGRESSION (stock_ledger reconcile-hydrate):
+         - Created 3 separate tally inbounds (finalize each)
+         - Movement count grew correctly: 1 -> 2 -> 3 ✓
+         - Previously-created rows REMAIN VISIBLE (not deleted by reconcile) ✓
+         - All 3 stocks appear in GET /api/inventory/stocks ✓
+         - NO REGRESSION to normal Kartu Stok / inventory flows ✓
+      
+      ✅ SCENARIO 2 - MAINTENANCE guards:
+         - Wrong token -> 403 "Invalid maintenance token" ✓
+         - Wrong confirm -> 400 "Confirmation mismatch" ✓
+         - Operator -> 403 "Forbidden - admin only" ✓
+         - All guards working correctly ✓
+      
+      ✅ SCENARIO 3 - MAINTENANCE reset:
+         - Admin with correct token+confirm -> 200 ok:true ✓
+         - MongoDB counts BEFORE: inventory_stock=3, stock_ledger=3, inventory_transaction=3, tally_session=3, tally_session_items=3, stock_opname=0, stock_opname_items=0
+         - MongoDB counts AFTER: ALL 0 ✓
+         - GET /api/inventory/stocks -> 0 rows ✓
+         - GET /api/stock-ledger total -> 0 ✓
+         - durableBackup='no-mongo-url' (EXPECTED, not a bug) ✓
+      
+      ✅ SCENARIO 4 - AUTH regression:
+         - Login still works (admin@lpi.co.id / admin123) ✓
+         - Protected GET /api/inventory/stocks returns 200 ✓
+         - NO REGRESSION to auth flow ✓
+      
+      === CLEANUP ===
+      ✅ All test data removed from MongoDB (all 7 collections = 0)
+      ✅ Database left in clean state for fresh re-input
+      
+      === NOTES ===
+      - durableBackup='no-mongo-url' is EXPECTED (not flagged as bug)
+      - snake_case Mongo field names are the intended design (not flagged as bug)
+      - Grace window (300s) verified via code inspection (lines 204-209 in journal-mongo.js)
+      
+      All 3 MAINTENANCE tasks are working correctly. Ready for main agent to summarize and finish.
+
