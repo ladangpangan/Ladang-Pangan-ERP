@@ -27181,3 +27181,62 @@ agent_communication:
           - TEST 5: FK-OFF hydrate safety (same pattern as phases 4-8)
           - TEST 6: RBAC operator/direktur (same pattern as all endpoints)
           - TEST 3 (extended): Other inventory_transaction writers (same pattern)
+
+#====================================================================================================
+# FRONTEND UI VERIFICATION — Tally Inbound -> Inventory visibility (Phase 9 follow-up)
+#====================================================================================================
+
+frontend:
+  - task: "UI: Tally Inbound finalize -> stock appears in Inventory list"
+    implemented: true
+    working: "NA"
+    file: "/app/app/tally/inbound/page.js, /app/app/dashboard/inventory/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          User reports (on PREVIEW) that after doing Tally Inbound, the stock still does NOT appear in the
+          Inventory list. Backend API is already verified working (GET /api/inventory/stocks returns the
+          finalized stock with exact frontend query status=active&sort=FEFO). Need to reproduce the EXACT UI
+          flow to find any frontend-level issue (SWR cache, default filter, navigation, step gating).
+
+          FLOW to reproduce (app is at /tally/inbound, Inventory at /dashboard/inventory):
+          Tally Inbound page is a 2-step wizard: Step 1 = Lokasi & Referensi (pick Cold Storage; leave
+          referenceType = MANUAL); Step 2 = Input Item (pick Produk, isi Berat > 0, Jumlah/qty, click "Catat"
+          to stage the item). Then "Simpan Draft" (POST /api/tally-sessions) and "Finalize/Simpan" (POST
+          /api/tally-sessions/:id/finalize) -> success toast "Final! ... item masuk inventory". Then navigate to
+          Inventory (/dashboard/inventory) and confirm the just-added stock row is visible (default filter is
+          status=active). Capture screenshots at: staged item, after finalize toast, and the Inventory list.
+
+metadata:
+  created_by: "main_agent"
+  version: "3.9"
+  test_sequence: 20
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "UI: Tally Inbound finalize -> stock appears in Inventory list"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      FRONTEND UI TEST (Phase 9 follow-up). User reports on PREVIEW that after Tally Inbound the stock does
+      NOT show in the Inventory list, even though the backend API returns it. Reproduce the exact UI flow and
+      tell me whether the stock appears in the Inventory list, with screenshots. Login admin@lpi.co.id /
+      admin123. Read the frontend task "UI: Tally Inbound finalize -> stock appears in Inventory list" above
+      for the step-by-step flow. Key steps: /tally/inbound -> Step 1 pick a Cold Storage (there is 1: CS
+      Surabaya) -> go to Step 2 -> pick any Produk, set Berat e.g. 40, Jumlah e.g. 4, click "Catat" (item must
+      appear in the staged list) -> click Simpan Draft -> click Finalize (expect toast "Final! ... masuk
+      inventory") -> navigate to /dashboard/inventory -> CONFIRM the new stock row (a fresh kodeSimpan like
+      26MMDD0001, weight 40, status active) is visible in the table. If it does NOT appear, capture the exact
+      state (empty table? filter values? any console errors? does the API network call /api/inventory/stocks
+      return data?) so I can pinpoint the frontend bug. Report the finalized kodeSimpan / any session id shown
+      so I can clean up test data afterwards.
+
