@@ -20,6 +20,7 @@ import * as invMongo from '@/lib/db/inventory-mongo';
 import * as potxMongo from '@/lib/db/potx-mongo';
 import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
+import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -234,7 +235,7 @@ function recommendStockCombo(lots, targetKg) {
 // diff-persist the changed stock rows back to Mongo (Phase 4, multi-replica safe).
 const INVENTORY_PATHS = new Set([
   'inventory', 'inventory-stocks', 'inventory-reports',
-  'sales-orders', 'tally-outbound', 'opnames',
+  'sales-orders', 'tally-outbound', 'tally-sessions', 'opnames',
   'accounting', 'dashboard', 'reports',
 ]);
 
@@ -263,6 +264,19 @@ const WO_APPROVAL_PATHS = new Set([
   'work-orders', 'wo-stages', 'inventory', 'sales-reports', 'production-reports',
   'accounting', 'dashboard', 'reports',
   'approvals', 'purchase-orders', 'sales-orders', 'opnames',
+]);
+
+// Phase 9: path[0] prefixes that READ or WRITE tally_session(+items) and/or inventory_transaction.
+// inventory_transaction is the operation record written by every inbound (/inventory/inbound &
+// /tally-sessions/:id/finalize via performInbound), outbound, transfer-cs/zone, opname approve, and
+// SO status/returns; it is READ by PO detail (tally weight), inventory reports (damage recap, stock
+// card) and dashboard. tally_session(+items) are created/edited/finalized under /tally-sessions.
+// Migrating these to Mongo prevents cross-replica "Sesi tally tidak ditemukan" on finalize and makes
+// inbound tally stock consistent across pods. Diff-persist, concurrency-safe.
+const TALLY_TX_PATHS = new Set([
+  'inventory', 'inventory-stocks', 'inventory-reports',
+  'tally-sessions', 'tally-outbound', 'sales-orders', 'opnames',
+  'purchase-orders', 'accounting', 'dashboard', 'reports',
 ]);
 
 async function handleRoute(request, { params }) {
@@ -322,6 +336,18 @@ async function handleRoute(request, { params }) {
       const rawWa = getRawSqlite();
       await woApprovalMongo.ensureReady(rawWa);
       if (method !== 'GET' && method !== 'HEAD') woApprovalMongo.captureSnapshot(request, rawWa);
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 9 (MongoDB): tally_session(+items) + inventory_transaction are MongoDB-authoritative so a
+  // tally draft created on one replica can be finalized on another, and inbound/outbound/transfer/opname
+  // operation records + tally weight reads are consistent across pods. Hydrate before any request that
+  // reads/writes these tables; on mutations, snapshot for concurrency-safe diff-persist.
+  if (TALLY_TX_PATHS.has(path[0])) {
+    try {
+      const rawTt = getRawSqlite();
+      await tallyTxMongo.ensureReady(rawTt);
+      if (method !== 'GET' && method !== 'HEAD') tallyTxMongo.captureSnapshot(request, rawTt);
     } catch (e) { /* best-effort */ }
   }
 
@@ -5963,6 +5989,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await assetsOpnameMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 7: diff-persist any Work Order / approvals rows this request changed (concurrency-safe).
       try { await woApprovalMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 9: diff-persist any tally_session(+items) / inventory_transaction rows this request changed.
+      try { await tallyTxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
