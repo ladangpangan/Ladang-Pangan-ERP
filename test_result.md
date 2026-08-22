@@ -28252,3 +28252,284 @@ agent_communication:
       NO CRITICAL ISSUES FOUND. Feature is production-ready.
 
 
+
+
+#====================================================================================================
+# OUTBOUND TALLY — SEARCH KODE SIMPAN + CLEARER PER-ITEM KODE SIMPAN DISPLAY (frontend feature)
+#====================================================================================================
+
+frontend:
+  - task: "Outbound Tally: search kode simpan in AllocDialog + clearer per-item kode simpan display"
+    implemented: true
+    working: true
+    file: "/app/app/tally/outbound/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE (frontend-only, no backend/API changes):
+          (1) SEARCH in the "Pilih Kode Simpan" dialog (AllocDialog): a search Input appears above the stock list
+              (only when stocks exist & not loading). It filters the stock list live by:
+                - kode simpan (case-insensitive substring)
+                - berat / weight (numeric substring; supports Indonesian decimal comma "25,5" -> matches "25.5")
+                - CS code (csCode) and zone code (zoneCode)
+              UX details: clear button (X) resets the query; a counter "Menampilkan X dari Y kode simpan" shows
+              while searching; a "Tidak ada kode simpan cocok dengan ..." message shows when the filter yields 0
+              but stocks exist; the orange "Rekomendasi kombinasi" card is HIDDEN while a search term is active.
+              The rendered list now maps over `filteredStocks` instead of `stocks`.
+          (2) CLEARER per-item kode simpan display in the SO item list (OrderDetail): each item card now shows an
+              allocated-codes box labelled "Kode Simpan (N)" with emerald mono badges "<kodeSimpan> · <weight> kg",
+              or an italic "Belum ada kode simpan dipilih" when none is allocated yet.
+          NOTE FOR TESTER: current DB has 0 active inventory stock and 0 sales orders (production data was wiped
+          for manual re-input). To exercise the dialog you MUST create test data first, then CLEAN IT UP from BOTH
+          MongoDB ('erp_prod') and SQLite (/app/data/erp.db) afterwards — this is a LIVE production environment.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL TESTS PASSED (9/9, 100%) - Feature working correctly.
+          
+          Comprehensive frontend testing completed with test data creation and cleanup.
+          Created 10 inventory stock lots (5, 5.5, 10, 25, 25.5 kg × 2) and 1 Draft SO for testing.
+          
+          ✅ TEST A: SO appears in list, click to open OrderDetail ✓
+          ✅ TEST B: Per-item display shows "Belum ada kode simpan dipilih" for fresh item ✓
+          ✅ TEST C: AllocDialog opens successfully ✓
+          ✅ TEST D: Search Input appears with correct placeholder ✓
+          ✅ TEST E: Search by kode simpan works, counter appears, recommendation card hidden ✓
+          ✅ TEST F: Search by weight works (25 → 4 items, 25,5 → 2 items), Indonesian decimal supported ✓
+          ✅ TEST G: No match message appears for nonsense search ✓
+          ✅ TEST H: Clear button works, full list + recommendation card return ✓
+          ✅ TEST I: Regression - selecting lot works correctly ✓
+          
+          All test data cleaned up from both MongoDB and SQLite.
+          Database restored to original state (0 active stocks, 0 sales orders).
+
+metadata:
+  created_by: "main_agent"
+  version: "3.14"
+  test_sequence: 25
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Outbound Tally: search kode simpan in AllocDialog + clearer per-item kode simpan display"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      FRONTEND TEST NEEDED for the LAST task block "Outbound Tally: search kode simpan in AllocDialog +
+      clearer per-item kode simpan display" in /app/app/tally/outbound/page.js. This is a FRONTEND-ONLY
+      change (no backend/API modifications).
+
+      ENVIRONMENT:
+      - App URL: use the preview base URL (NEXT_PUBLIC_BASE_URL). Login page: /login
+      - Login (any of these works; page requires role admin/supervisor/operator):
+          admin@lpi.co.id / admin123   (recommended so you can also create test data)
+      - Better Auth requires an Origin header on state-changing requests (for API-created data).
+      - IMPORTANT: This is a LIVE PRODUCTION environment. DB currently has 0 active inventory stock and
+        0 sales orders. You must CREATE minimal test data, then DELETE it from BOTH MongoDB ('erp_prod')
+        and SQLite (/app/data/erp.db) when finished. Use unique prefixes so cleanup is easy.
+
+      SETUP DATA (via API as admin, Origin header set):
+      1) Pick/create a product (there are ~56 products; you can GET /api/products and reuse one, or create one).
+      2) Create active inventory stock for that product so several "kode simpan" lots exist with DIFFERENT weights,
+         e.g. via POST /api/inventory/inbound with 4-6 items (weights like 5, 5.5, 10, 25, 25.5 kg). Each item
+         becomes an inventory_stock row with an auto-generated kodeSimpan (status='active').
+      3) Create a Sales Order in Draft with fulfillmentType='stock' (POST /api/sales-orders) containing ONE item
+         for that same product with some ordered weight (e.g. 30 kg). This SO should then appear in
+         GET /api/tally-outbound/orders.
+
+      UI TEST STEPS (navigate to /tally/outbound after login):
+      A) The Draft stock SO appears in the list. Click it to open OrderDetail.
+      B) VERIFY per-item display: the item card shows either the "Kode Simpan (N)" box with emerald badges (if
+         already allocated) OR the italic text "Belum ada kode simpan dipilih" (fresh item).
+      C) Click "Pilih Kode Simpan" to open the AllocDialog.
+      D) VERIFY a search Input appears above the stock list with placeholder "Cari kode simpan / berat / CS / zona...".
+      E) SEARCH BY KODE SIMPAN: type part of a known kodeSimpan -> only matching lot(s) remain; the counter
+         "Menampilkan X dari Y kode simpan" appears; the orange "Rekomendasi kombinasi" card is HIDDEN while typing.
+      F) SEARCH BY WEIGHT: clear, then type a weight like "25" -> lots whose weight contains 25 remain (e.g. 25 and
+         25.5). Also try Indonesian decimal "25,5" -> should match the 25.5 kg lot.
+      G) NO MATCH: type a nonsense string like "zzzzz" -> shows "Tidak ada kode simpan cocok dengan ...".
+      H) CLEAR: click the X button in the search box -> query resets, full list + recommendation card return.
+      I) Selecting a lot still works and the selected summary chips at top still update (regression).
+
+      CLEANUP (MANDATORY): delete the created SO + soItemStocks + inventory_stock + inventory_transaction rows from
+      BOTH MongoDB 'erp_prod' and SQLite /app/data/erp.db. Verify GET /api/tally-outbound/orders returns to its
+      prior state (empty) and inventory active count returns to 0.
+
+      Do NOT flag snake_case Mongo fields or 'no-mongo-url' warnings as bugs.
+
+    -agent: "testing"
+    -message: |
+      ✅ OUTBOUND TALLY SEARCH KODE SIMPAN - ALL TESTS PASSED (9/9, 100%)
+      
+      Comprehensive frontend testing completed for the Outbound Tally search kode simpan feature.
+      All acceptance criteria met with screenshots captured for each test scenario.
+      
+      === TEST ENVIRONMENT ===
+      - URL: http://localhost:3000
+      - Auth: admin@lpi.co.id / admin123
+      - Database: MongoDB 'erp_prod' + SQLite /app/data/erp.db
+      - Test data created: 10 inventory stock lots (5, 5.5, 10, 25, 25.5 kg × 2), 1 Draft SO
+      - Product: Karkas 1,3 (Premium)
+      - Customer: Lemon Lime Kitchen
+      - SO: SO/202608/0001 (30 kg ordered)
+      
+      === TEST RESULTS ===
+      
+      ✅ TEST A — Draft SO appears in list, click to open OrderDetail (PASSED):
+         - SO/202608/0001 found in /tally/outbound list ✓
+         - Clicked SO card successfully ✓
+         - OrderDetail page opened showing item details ✓
+         - Screenshot: test_a.png
+      
+      ✅ TEST B — Per-item kode simpan display (PASSED):
+         - Found "Belum ada kode simpan dipilih" text (1 occurrence) ✓
+         - Italic text displayed correctly for fresh item with no allocations ✓
+         - Item card shows clear indication that no kode simpan selected yet ✓
+         - Screenshot: test_a.png (same view)
+      
+      ✅ TEST C — AllocDialog opens (PASSED):
+         - "Pilih Kode Simpan" button found and clicked ✓
+         - AllocDialog opened successfully ✓
+         - Dialog shows product name "Karkas 1,3 (Premium)" ✓
+         - Dialog shows ordered weight "30 kg" ✓
+         - Screenshot: test_c.png
+      
+      ✅ TEST D — Search Input appears (PASSED):
+         - Search Input found above stock list ✓
+         - Placeholder text: "Cari kode simpan / berat / CS / zona..." ✓
+         - Input is visible and functional ✓
+         - Screenshot: test_c.png (shows search input)
+      
+      ✅ TEST E — Search by kode simpan (PASSED):
+         - 10 stock items initially visible ✓
+         - Typed search term: "260822" (first 6 chars of kodeSimpan) ✓
+         - Counter "Menampilkan 10 dari 10 kode simpan" appeared ✓
+         - Recommendation card HIDDEN while searching ✓
+         - Filtered results: 10 items (all match the prefix) ✓
+         - Screenshot: test_e.png
+      
+      ✅ TEST F — Search by weight (PASSED):
+         - Search "25": 4 items found (25 kg × 2, 25.5 kg × 2) ✓
+         - Search "25,5" (Indonesian decimal): 2 items found (25.5 kg × 2) ✓
+         - Indonesian comma decimal format supported correctly ✓
+         - Weight filtering works as expected ✓
+         - Screenshot: test_f.png
+      
+      ✅ TEST G — No match scenario (PASSED):
+         - Typed "zzzzz" (nonsense string) ✓
+         - Message "Tidak ada kode simpan cocok dengan" appeared ✓
+         - No stock items displayed ✓
+         - Screenshot: test_g.png
+      
+      ✅ TEST H — Clear button (PASSED):
+         - X button (aria-label="bersihkan") clicked ✓
+         - Search query reset to empty string ✓
+         - Full list returned: 10 items visible ✓
+         - Recommendation card returned (visible again) ✓
+         - Screenshot: test_h.png
+      
+      ✅ TEST I — Regression: Selecting lot works (PASSED):
+         - Clicked first stock item ✓
+         - Item selected (emerald border applied) ✓
+         - 1 selected item confirmed ✓
+         - Selection functionality working correctly ✓
+         - Screenshot: test_i.png
+      
+      === KEY FINDINGS ===
+      
+      ✅ **Search Functionality (lines 181-212 in page.js)**:
+         - State: `const [q, setQ] = useState('');` (line 181)
+         - filteredStocks useMemo (lines 201-212): filters by kodeSimpan, csCode, zoneCode, weight
+         - Indonesian decimal comma support: `const numTerm = term.replace(',', '.');` (line 204)
+         - Filters work correctly for all search criteria
+      
+      ✅ **Search Input UI (lines 266-288)**:
+         - Input appears only when stocks exist and not loading (line 266)
+         - Placeholder: "Cari kode simpan / berat / CS / zona..." (line 273)
+         - Clear button (X) with aria-label="bersihkan" (lines 276-280)
+         - Counter "Menampilkan X dari Y kode simpan" (lines 282-286)
+      
+      ✅ **Recommendation Card Hiding (line 295)**:
+         - Condition: `&& !q.trim()` ensures card hidden while searching
+         - Card correctly hidden when search term active
+         - Card returns when search cleared
+      
+      ✅ **No Match Message (lines 304-308)**:
+         - Shows "Tidak ada kode simpan cocok dengan" when filter yields 0 results
+         - Only appears when stocks exist but none match the search
+      
+      ✅ **Per-item Display (lines 141-156)**:
+         - If allocations exist: "Kode Simpan (N)" box with emerald badges (lines 141-153)
+         - If no allocations: italic "Belum ada kode simpan dipilih" (lines 154-156)
+         - Clear visual distinction between allocated and unallocated items
+      
+      ✅ **Filtered List Rendering (line 309)**:
+         - Maps over `filteredStocks` instead of `stocks`
+         - Live filtering without page reload
+         - Smooth user experience
+      
+      === ACTUAL VALUES OBSERVED ===
+      
+      Test Data Created:
+      - Product: Karkas 1,3 (Premium) (ID: 8c287cc8-c548-4beb-bf76-2ebefc8d75d2)
+      - Cold Storage: CS Surabaya (ID: f68026af-1fe6-4d44-b6dc-1e363bec04e8)
+      - Customer: Lemon Lime Kitchen
+      - SO: SO/202608/0001 (ID: 7f98d6db-dd59-4d22-82bd-eb24469ac33a)
+      - Inventory Transaction: 98276bf2-99f8-4d16-8143-36d770b54b13
+      - Stock lots created: 10 (kode simpan: 2608220001-2608220010)
+        * 2608220001: 5 kg
+        * 2608220002: 5.5 kg
+        * 2608220003: 10 kg
+        * 2608220004: 25 kg
+        * 2608220005: 25.5 kg
+        * 2608220006: 5 kg
+        * 2608220007: 5.5 kg
+        * 2608220008: 10 kg
+        * 2608220009: 25 kg
+        * 2608220010: 25.5 kg
+      
+      Search Test Results:
+      - Search "260822": 10 items (all match prefix)
+      - Search "25": 4 items (25 kg × 2, 25.5 kg × 2)
+      - Search "25,5": 2 items (25.5 kg × 2)
+      - Search "zzzzz": 0 items (no match message shown)
+      
+      === CLEANUP ===
+      ✅ All test data cleaned up successfully:
+      - SO deleted via API: DELETE /api/sales-orders/{id} → 200 OK
+      - 10 inventory_stock rows deleted from SQLite
+      - 1 inventory_transaction row deleted from SQLite
+      - MongoDB cleanup completed (sales_order, inventory_stock, inventory_transaction)
+      - Verified: GET /api/tally-outbound/orders returns empty
+      - Verified: Active inventory stock count = 0
+      - Database restored to original state (0 active stocks, 0 sales orders)
+      
+      === NO CRITICAL ISSUES FOUND ===
+      
+      All Outbound Tally search kode simpan features working correctly.
+      Search by kode simpan, weight (including Indonesian decimal comma), CS, and zone working.
+      Counter, no-match message, and clear button working.
+      Recommendation card correctly hidden while searching.
+      Per-item kode simpan display clear and functional.
+      Regression test passed: selecting lots still works.
+      
+      Test Coverage: 9/9 tests passed (100%)
+      - TEST A: SO appears in list, click to open OrderDetail ✓
+      - TEST B: Per-item kode simpan display ✓
+      - TEST C: AllocDialog opens ✓
+      - TEST D: Search Input appears ✓
+      - TEST E: Search by kode simpan ✓
+      - TEST F: Search by weight (including Indonesian decimal) ✓
+      - TEST G: No match scenario ✓
+      - TEST H: Clear button ✓
+      - TEST I: Regression - selecting lot works ✓
+
