@@ -19823,7 +19823,7 @@ frontend:
           === TEST RESULTS ===
           
           ✅ TEST 1 — Login (PASSED):
-             - URL: https://cashbook-quick-entry.preview.emergentagent.com/login
+             - URL: https://data-source-verify.preview.emergentagent.com/login
              - Credentials: admin@lpi.co.id / admin123
              - Successfully authenticated and redirected to /dashboard
           
@@ -20017,7 +20017,7 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
-      FRONTEND UI verification approved by user. App base URL: https://cashbook-quick-entry.preview.emergentagent.com
+      FRONTEND UI verification approved by user. App base URL: https://data-source-verify.preview.emergentagent.com
       Login at /login with admin@lpi.co.id / admin123 (email + password fields, submit button). All app pages are under
       /dashboard. Please verify (no crashes, data renders, filters work):
       1) /dashboard/inventory — header cards show TOTAL ROWS = 29, TOTAL BERAT = 5.751 kg, NILAI STOK (HPP) ≈ Rp 94,3–94,4 juta.
@@ -21347,7 +21347,7 @@ frontend:
           All pages load data correctly from MongoDB, CRUD operations work, and no session drops or critical errors found.
           
           === TEST ENVIRONMENT ===
-          - URL: https://cashbook-quick-entry.preview.emergentagent.com
+          - URL: https://data-source-verify.preview.emergentagent.com
           - Auth: admin@lpi.co.id / admin123
           - UI Language: Indonesian
           - Browser: Playwright automation with console log capture
@@ -21504,7 +21504,7 @@ agent_communication:
     -agent: "main"
     -message: |
       Please run FRONTEND UI tests for the Master Data pages (user explicitly requested this).
-      App URL: https://cashbook-quick-entry.preview.emergentagent.com  Login page: /login
+      App URL: https://data-source-verify.preview.emergentagent.com  Login page: /login
       Login as admin: admin@lpi.co.id / admin123. UI/labels are in Indonesian.
       Test these dashboard pages (data now comes from MongoDB via dual-write):
       1) PRODUCTS (/dashboard/products): list loads (~52 products); create a new product via the "Tambah"/add
@@ -24183,7 +24183,7 @@ frontend:
              - Screenshot captured ✓
           
           ✅ CLEANUP:
-             - Test product verified in database: SKU=UITEST-IMPORT-1, ID=837dd612-3e57-49ae-b2cf-f8300ace5a72 ✓
+             - Test product verified in database: SKU=UITEST-IMPORT-1, ID=data-source-verify ✓
              - Test product deleted via DELETE /api/products/{id} ✓
              - Deletion verified: product no longer exists ✓
           
@@ -24530,14 +24530,14 @@ backend:
           - Code '5-1300' (Beban Angkut Pembelian): present in both stores
           
           Test Account 1 (9-8001):
-          - Created: ID=5518cf8d-a13f-4312-a5ac-2bc68aa7b9df, Name=Uji Migrasi
+          - Created: ID=data-source-verify, Name=Uji Migrasi
           - Updated: Name=Uji Migrasi 2, Opening Balance=12345
           - Archived: archived_at set, excluded from default list
           - Restored: archived_at=null, back in default list
           - Deleted: removed from both MongoDB and SQLite
           
           Test Account 2 (9-8002):
-          - Created via import: ID=847dbebf-01fe-4db0-b1cc-fc20fdeb8cd8, Name=Impor Uji, Opening Balance=5000
+          - Created via import: ID=data-source-verify, Name=Impor Uji, Opening Balance=5000
           - Updated via re-import: Name=Impor Uji 2
           - Deleted in cleanup: removed from both stores
           
@@ -24845,13 +24845,13 @@ agent_communication:
       === ACTUAL VALUES OBSERVED ===
       
       Cashbook Test:
-      - Created: id=7c6c8fc8-fe1b-49c0-b446-a5e4f059a8ac, amount=150000
-      - Updated: new id=422d7ab2-856b-418c-a3ca-5cd2f4767e21, amount=200000
+      - Created: id=data-source-verify, amount=150000
+      - Updated: new id=data-source-verify, amount=200000
       - Deleted: both entries removed from MongoDB
       - Expense account: 6-0000, Cash account: 1-1110
       
       Manual Journal Test (separate verification):
-      - Created: id=191ea428-d02c-449e-a22a-1ffd68447afa, journalNumber=JU-2602-001
+      - Created: id=data-source-verify, journalNumber=JU-2602-001
       - Lines: 2 balanced lines (debit=50000, credit=50000)
       - Persisted to MongoDB: is_auto=0
       - Deleted: removed from MongoDB
@@ -25866,7 +25866,7 @@ agent_communication:
       
       ⚠️  SCENARIO 6 — SO SURAT JALAN (VERIFIED VIA PRE-EXISTING DATA):
          - Pre-existing surat_jalan in MongoDB: 1 doc
-         - Sample: ID=6d544969-3fc6-4d8a-bb85-b90f52d2459d, SO_ID=3f2ec58e-11fa-4fbf-b4db-b1d773643f99
+         - Sample: ID=data-source-verify, SO_ID=data-source-verify
          - SJ Number: SJ/202608/0001
          
          **VERIFIED IN MONGODB:**
@@ -25893,7 +25893,7 @@ agent_communication:
       
       ✅ SCENARIO 8 — SO PENERIMAAN (VERIFIED VIA PRE-EXISTING DATA):
          - Pre-existing sales_order_receipts in MongoDB: 1 doc
-         - Sample: ID=ba528acc-666a-4a16-b35e-657081a40967, SO_ID=3f2ec58e-11fa-4fbf-b4db-b1d773643f99
+         - Sample: ID=data-source-verify, SO_ID=data-source-verify
          - Receipt Number: RCP/202608/0001
          
          **VERIFIED IN MONGODB:**

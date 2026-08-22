@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "https://cashbook-quick-entry.preview.emergentagent.com/api"
+BASE_URL = "https://data-source-verify.preview.emergentagent.com/api"
 session = requests.Session()
 
 # Login
