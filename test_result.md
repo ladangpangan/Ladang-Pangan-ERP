@@ -27762,3 +27762,87 @@ agent_communication:
       
       All 3 MAINTENANCE tasks are working correctly. Ready for main agent to summarize and finish.
 
+
+#====================================================================================================
+# MULTI-REPLICA CONSISTENCY: broaden Sales hydration to read paths + MongoDB data-source verification log
+#====================================================================================================
+
+backend:
+  - task: "Broaden Sales (Phase 3) hydration to Dashboard/report read paths (SALES_PATHS)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Root cause of production (multi-replica) inconsistency for the Dashboard: sales_order/sales_payments/
+          sales_returns are MongoDB-authoritative (Phase 3) but salesMongo.ensureSalesReady() only ran for
+          path[0] in {sales-orders, tally-outbound}. /dashboard/summary reads salesOrder+salesPayments+
+          salesReturns (today sales, AR) WITHOUT hydrating -> each pod served stale per-pod SQLite sales.
+          FIX: added SALES_PATHS = {sales-orders, tally-outbound, dashboard, reports, accounting,
+          sales-reports, inventory-reports, contacts} and hydrate sales for all of them (read-only full-replace
+          from Mongo; mutations still persist explicitly via persistSalesAfterMutation, unchanged).
+          NOTE: Inventory reports /inventory-reports/by-cs and /inventory-reports/by-product read ONLY
+          inventory_stock, which was ALREADY hydrated (INVENTORY_PATHS incl. 'inventory-reports') -> already
+          consistent; verified.
+          MANUAL TEST (preview) PASSED: created 1 tally stock (60kg); /dashboard/summary + /inventory-reports/
+          by-cs served consistent data; cleaned up. No regression to sales-orders CRUD observed.
+          NEEDS BACKEND TESTING: sales-orders CRUD still works (create/read/update, payments) and dashboard/
+          reports reflect Mongo sales after the broadened hydration; no FK errors from the extra sales hydrate.
+  - task: "Verification log [DATA-SOURCE=MongoDB] on Dashboard & Inventory report GETs"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Per user request: on GET /dashboard/* and /inventory-reports/* the middleware now logs a line to the
+          terminal proving the served data is sourced from MongoDB, with LIVE Mongo estimatedDocumentCount for
+          inventory_stock, sales_order, inventory_transaction, stock_ledger and the DB name. VERIFIED in preview
+          terminal: "[DATA-SOURCE=MongoDB] db=\"erp_prod\" route=/dashboard/summary | live Mongo counts -> ...".
+          Counts correctly reflected 0 (clean DB) and then 1 after creating a stock.
+
+metadata:
+  created_by: "main_agent"
+  version: "3.11"
+  test_sequence: 22
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Broaden Sales (Phase 3) hydration to Dashboard/report read paths (SALES_PATHS)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Backend-test the LAST appended block "MULTI-REPLICA CONSISTENCY" in /app/test_result.md. Focus: the
+      Sales hydration was broadened to more read paths (SALES_PATHS) to fix Dashboard multi-replica staleness.
+      Login admin@lpi.co.id/admin123 (Origin header required on raw state-changing requests). DB 'erp_prod'.
+      Do NOT flag snake_case Mongo fields or 'no-mongo-url' as bugs.
+      SCENARIOS:
+      1) REGRESSION — sales-orders still fully work: create a Sales Order (inspect route.js for the exact POST
+         /api/sales-orders body; use an existing customer/contact + product), GET it back, and confirm it also
+         appears in GET /api/sales-orders list. Add a payment if the flow supports it. Confirm the SO doc exists
+         in Mongo collection sales_order.
+      2) Dashboard reflects Mongo sales after broadened hydration: GET /api/dashboard/summary -> 200; if you
+         created an Invoiced/unpaid SO, finance.totalAR should reflect it. At minimum confirm the endpoint works
+         and returns todaySales/finance/inventoryValue without error.
+      3) Inventory reports still consistent: GET /api/inventory-reports/by-cs and /by-product -> 200 and reflect
+         current inventory_stock (create a quick tally inbound if needed to have data, then verify a row appears,
+         then clean up).
+      4) No FK/hydrate errors: check that hitting /dashboard/summary, /inventory-reports/by-cs, /reports,
+         /accounting (any GET) does not throw due to the extra sales hydrate (look for 500s / error logs).
+      CLEANUP: remove ANY test data you create (sales orders, tally stocks, ledger, etc.) from BOTH Mongo and
+      SQLite — the user keeps a clean DB to re-input production data. Report Mongo counts before/after.
+

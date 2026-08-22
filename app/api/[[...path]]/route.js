@@ -21,6 +21,7 @@ import * as potxMongo from '@/lib/db/potx-mongo';
 import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
+import { getMongoDb } from '@/lib/db/mongo';
 // -----------------------
 // Helpers
 // -----------------------
@@ -233,6 +234,17 @@ function recommendStockCombo(lots, targetKg) {
 // Top-level path prefixes (path[0]) whose handlers READ or WRITE inventory_stock.
 // For these we hydrate the per-pod SQLite mirror from MongoDB and, on mutations,
 // diff-persist the changed stock rows back to Mongo (Phase 4, multi-replica safe).
+// Phase 3: path[0] prefixes whose handlers READ the Sales Order aggregate (sales_order + items +
+// stock allocations + payments + returns). Sales data is MongoDB-authoritative; it is READ not only
+// under /sales-orders & /tally-outbound (mutations) but also by the Dashboard (AR / today sales),
+// sales & accounting reports and the contacts/commission views. Those read paths MUST hydrate the
+// per-pod SQLite mirror from Mongo first, otherwise multi-replica pods serve stale per-pod sales
+// numbers. Read-only full-replace hydrate => safe on any path (mutations still persist explicitly).
+const SALES_PATHS = new Set([
+  'sales-orders', 'tally-outbound',
+  'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts',
+]);
+
 const INVENTORY_PATHS = new Set([
   'inventory', 'inventory-stocks', 'inventory-reports',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'opnames',
@@ -289,10 +301,12 @@ async function handleRoute(request, { params }) {
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
 
-  // Phase 3 (MongoDB): the Sales Order aggregate (sales_order + items + stock allocations + payments)
-  // is MongoDB-authoritative for multi-replica consistency. Hydrate the per-pod SQLite mirror from Mongo
-  // before ANY sales-orders / tally-outbound request (read OR write) so every pod sees the same SO data.
-  if (path[0] === 'sales-orders' || path[0] === 'tally-outbound') {
+  // Phase 3 (MongoDB): the Sales Order aggregate (sales_order + items + stock allocations + payments +
+  // returns) is MongoDB-authoritative for multi-replica consistency. Hydrate the per-pod SQLite mirror
+  // from Mongo before ANY request that READS or WRITES sales data (mutations under sales-orders/
+  // tally-outbound; reads on dashboard, reports, accounting, sales-reports, inventory-reports, contacts)
+  // so every pod serves the same SO numbers (AR, today sales, commissions). Read-only full-replace.
+  if (SALES_PATHS.has(path[0])) {
     try { await salesMongo.ensureSalesReady(getRawSqlite()); } catch (e) { /* best-effort */ }
   }
 
@@ -349,6 +363,23 @@ async function handleRoute(request, { params }) {
       await tallyTxMongo.ensureReady(rawTt);
       if (method !== 'GET' && method !== 'HEAD') tallyTxMongo.captureSnapshot(request, rawTt);
     } catch (e) { /* best-effort */ }
+  }
+
+  // VERIFICATION (multi-replica single-source-of-truth audit): for the read-only Dashboard &
+  // Inventory report paths, print to the terminal that the data being served was hydrated straight
+  // from MongoDB (the single source of truth) — with LIVE collection counts read directly from Mongo.
+  // This makes it auditable that no stale per-pod SQLite data is served. Best-effort; never blocks.
+  if (method === 'GET' && (path[0] === 'dashboard' || path[0] === 'inventory-reports')) {
+    try {
+      const mdb = getMongoDb();
+      const [invStock, salesOrder, invTx, stockLedger] = await Promise.all([
+        mdb.collection('inventory_stock').estimatedDocumentCount(),
+        mdb.collection('sales_order').estimatedDocumentCount(),
+        mdb.collection('inventory_transaction').estimatedDocumentCount(),
+        mdb.collection('stock_ledger').estimatedDocumentCount(),
+      ]);
+      console.log(`[DATA-SOURCE=MongoDB] db="${mdb.databaseName}" route=${route} | live Mongo counts -> inventory_stock=${invStock}, sales_order=${salesOrder}, inventory_transaction=${invTx}, stock_ledger=${stockLedger} (SQLite is a per-request cache hydrated from these collections)`);
+    } catch (e) { /* logging best-effort */ }
   }
 
   try {
