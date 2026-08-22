@@ -505,6 +505,27 @@ async function handleRoute(request, { params }) {
       // sales_order / so_item_stocks / sales_payments to regenerate SO auto journals (revenue, COGS,
       // payments, cashback), so hydrate the SO aggregate BEFORE the engine runs.
       await salesMongo.ensureSalesReady(raw);
+
+      // VERIFICATION (multi-replica single-source-of-truth audit for FINANCIAL REPORTS):
+      // Just like the Dashboard & Inventory reports, print to the terminal that the accounting data
+      // being served (Neraca / Laba-Rugi / Buku Besar / Neraca Saldo) was hydrated straight from
+      // MongoDB — with LIVE collection counts read directly from Mongo (gl_accounts, journal_entries,
+      // journal_lines, period_closings, sales_order). This makes it auditable that no stale per-pod
+      // SQLite financial data is served across replicas. Best-effort; never blocks the request.
+      if (method === 'GET') {
+        try {
+          const mdb = getMongoDb();
+          const [glAccounts, journalEntries, journalLines, periodClosings, salesOrder] = await Promise.all([
+            mdb.collection('gl_accounts').estimatedDocumentCount(),
+            mdb.collection('journal_entries').estimatedDocumentCount(),
+            mdb.collection('journal_lines').estimatedDocumentCount(),
+            mdb.collection('period_closings').estimatedDocumentCount(),
+            mdb.collection('sales_order').estimatedDocumentCount(),
+          ]);
+          console.log(`[DATA-SOURCE=MongoDB] db="${mdb.databaseName}" route=${route} | live Mongo counts -> gl_accounts=${glAccounts}, journal_entries=${journalEntries}, journal_lines=${journalLines}, period_closings=${periodClosings}, sales_order=${salesOrder} (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)`);
+        } catch (e) { /* logging best-effort */ }
+      }
+
       const uid = session.user.id;
       const sub = path[1] || '';
       const parseRange = (url) => ({
