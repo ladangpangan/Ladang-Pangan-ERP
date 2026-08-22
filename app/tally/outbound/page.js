@@ -8,8 +8,9 @@ import { useSession } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { ChevronRight, ChevronLeft, Loader2, PackageMinus, Truck, CheckCircle2, Sparkles, Snowflake, Boxes, NotebookPen, Lock } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Loader2, PackageMinus, Truck, CheckCircle2, Sparkles, Snowflake, Boxes, NotebookPen, Lock, Search, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -137,12 +138,21 @@ function OrderDetail({ soId }) {
                 <div><span className="text-muted-foreground">Berat pesanan:</span> <b>{kg(it.orderedWeight)}</b></div>
                 <div><span className="text-muted-foreground">Terpilih:</span> <b>{kg(it.allocatedWeight)}</b></div>
               </div>
-              {it.allocations?.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {it.allocations.map(a => (
-                    <Badge key={a.stockId} variant="outline" className="font-mono text-[10px]">{a.kodeSimpan} · {kg(a.weight)}</Badge>
-                  ))}
+              {it.allocations?.length > 0 ? (
+                <div className="mt-2 rounded-md border bg-muted/30 p-2">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5 flex items-center gap-1">
+                    <Boxes className="w-3 h-3" /> Kode Simpan ({it.allocations.length})
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {it.allocations.map(a => (
+                      <Badge key={a.stockId} variant="secondary" className="font-mono text-[11px] gap-1 bg-white border border-emerald-200 text-emerald-800">
+                        {a.kodeSimpan}<span className="text-muted-foreground font-sans">· {kg(a.weight)}</span>
+                      </Badge>
+                    ))}
+                  </div>
                 </div>
+              ) : (
+                <div className="mt-2 text-[11px] text-muted-foreground italic">Belum ada kode simpan dipilih</div>
               )}
               <Button size="sm" variant={st === 'final' ? 'outline' : 'default'} className="mt-3 w-full h-9" onClick={() => setAllocItem(it)}>
                 <Boxes className="w-4 h-4 mr-1.5" />{st === 'final' ? 'Ubah Kode Simpan' : st === 'draft' ? 'Lanjutkan / Simpan' : 'Pilih Kode Simpan'}
@@ -168,6 +178,7 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
   const recommendedTotal = data?.data?.recommendedTotal || 0;
   const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
   const [saving, setSaving] = useState(null); // null | 'draft' | 'final'
+  const [q, setQ] = useState('');
 
   const pickRecommended = () => setSelected(new Set(recommendedIds));
 
@@ -186,6 +197,19 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
     return Math.round(w * 100) / 100;
   }, [selectedStocks]);
   const remaining = Math.round((Number(orderedWeight || 0) - selectedWeight) * 100) / 100;
+
+  const filteredStocks = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return stocks;
+    const numTerm = term.replace(',', '.'); // dukung input berat desimal ala Indonesia "25,5"
+    return stocks.filter(st => {
+      const weightStr = String(Number(st.weight || 0)); // contoh "25.5"
+      return (st.kodeSimpan || '').toLowerCase().includes(term) ||
+        (st.csCode || '').toLowerCase().includes(term) ||
+        (st.zoneCode || '').toLowerCase().includes(term) ||
+        weightStr.includes(numTerm);
+    });
+  }, [q, stocks]);
 
   const submit = async (mode) => {
     setSaving(mode);
@@ -238,12 +262,37 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
           )}
         </div>
 
+        {/* Kotak pencarian kode simpan */}
+        {!isLoading && stocks.length > 0 && (
+          <div className="px-3 py-2 border-b">
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Cari kode simpan / berat / CS / zona..."
+                className="pl-8 pr-8 h-9"
+              />
+              {q && (
+                <button onClick={() => setQ('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="bersihkan">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {q.trim() && (
+              <div className="text-[11px] text-muted-foreground mt-1">
+                Menampilkan {filteredStocks.length} dari {stocks.length} kode simpan
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
           {!isLoading && stocks.length === 0 && (
             <div className="text-center text-sm text-muted-foreground py-8">Tidak ada kode simpan tersedia untuk produk ini di gudang.</div>
           )}
-          {!isLoading && recommendedIds.length > 0 && (
+          {!isLoading && recommendedIds.length > 0 && !q.trim() && (
             <div className="rounded-lg border border-orange-300 bg-orange-50 p-3 flex items-center justify-between gap-2">
               <div className="text-xs min-w-0">
                 <div className="font-semibold text-orange-700 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Rekomendasi kombinasi</div>
@@ -252,7 +301,12 @@ function AllocDialog({ soId, item, onClose, onSaved }) {
               <Button size="sm" variant="outline" className="border-orange-400 text-orange-700 hover:bg-orange-100 h-8 shrink-0" onClick={pickRecommended}>Pilih</Button>
             </div>
           )}
-          {stocks.map(st => {
+          {!isLoading && stocks.length > 0 && filteredStocks.length === 0 && (
+            <div className="text-center text-sm text-muted-foreground py-8">
+              Tidak ada kode simpan cocok dengan "<b>{q}</b>".
+            </div>
+          )}
+          {filteredStocks.map(st => {
             const active = selected.has(st.id);
             return (
               <button key={st.id} onClick={() => toggle(st.id)}
