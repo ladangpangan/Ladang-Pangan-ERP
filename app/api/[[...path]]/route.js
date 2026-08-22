@@ -22,6 +22,7 @@ import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
+import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 // -----------------------
 // Helpers
 // -----------------------
@@ -300,6 +301,12 @@ async function handleRoute(request, { params }) {
   // Phase 2 (MongoDB): ensure master data (products/cold_storages/zones) is present in Mongo.
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
+
+  // ONE-TIME data fix (guarded by a mongo_migration marker): seed HPP onto existing stock & SO
+  // allocations from product.base_price ("Harga Modal / HPP"). Runs directly on Mongo BEFORE the
+  // hydration below, so the corrected cost basis flows into every replica's SQLite on hydrate and
+  // existing Sales Orders show the right HPP / gross profit. No-op after it has run once.
+  try { await ensureHppBackfill(); } catch (e) { /* non-fatal */ }
 
   // Phase 3 (MongoDB): the Sales Order aggregate (sales_order + items + stock allocations + payments +
   // returns) is MongoDB-authoritative for multi-replica consistency. Hydrate the per-pod SQLite mirror
@@ -960,6 +967,11 @@ async function handleRoute(request, { params }) {
           const avg = po.reduce((a, b) => a + Number(b.hpp), 0) / po.length;
           if (avg > 0) return avg;
         }
+        // Fallback: product master "Harga Modal / HPP" (base_price). Used for opening stock / manual
+        // Tally Inbound of products with no PO/WO cost history yet, so their sold stock carries a real
+        // cost basis (accurate COGS & gross profit on the Sales Order invoice).
+        const prod = db.select({ bp: s.products.basePrice }).from(s.products).where(eq(s.products.id, productId)).get();
+        if (prod && Number(prod.bp) > 0) return Number(prod.bp);
       } catch (e) { /* ignore */ }
       return 0;
     };
