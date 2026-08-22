@@ -27926,3 +27926,329 @@ agent_communication:
       HPP sync + backfill implemented and MANUALLY VALIDATED end-to-end via curl (backend). Frontend changes
       are label/default-value only (user verifies visually). No further backend testing requested for now.
 
+
+#====================================================================================================
+# ACCOUNTING REPORT CONSISTENCY: extend MongoDB single-source hydration + [DATA-SOURCE=MongoDB]
+# verification logs to Neraca (balance-sheet) & Laba-Rugi (income-statement), like the Dashboard.
+#====================================================================================================
+
+backend:
+  - task: "Verification log [DATA-SOURCE=MongoDB] on Accounting report GETs (Neraca & Laba-Rugi)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Per user request ("Konsistensi Laporan Akuntansi: Perluas jaminan sumber-tunggal MongoDB + log
+          verifikasi ke Neraca & Laba-Rugi seperti di Dashboard"). The accounting handler ALREADY hydrates the
+          per-pod SQLite mirror from MongoDB before any report is computed: coaMongo.ensureCoaReady (gl_accounts),
+          jmongo.ensureJournalsReady (journal_entries/journal_lines/period_closings), salesMongo.ensureSalesReady
+          (sales_order aggregate), plus the middleware phase blocks (INVENTORY_PATHS, POTX_PATHS,
+          ASSETS_OPNAME_PATHS, WO_APPROVAL_PATHS, TALLY_TX_PATHS all include 'accounting') hydrate inventory/PO/
+          fixed-assets/opname/WO/tally. So the single-source guarantee was already comprehensive.
+          NEW: added a verification console.log inside the accounting handler (fires on every accounting GET,
+          after hydration completes) that prints LIVE Mongo estimatedDocumentCount for gl_accounts,
+          journal_entries, journal_lines, period_closings, sales_order + DB name + route — mirroring the Dashboard
+          audit line. MANUAL TEST PASSED (preview, admin@lpi.co.id): GET /api/accounting/balance-sheet and
+          /api/accounting/income-statement both 200; terminal showed
+          '[DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/balance-sheet | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (...)'
+          and the same for income-statement.
+          NEEDS BACKEND TESTING: confirm all accounting report GET endpoints return 200 and remain consistent
+          after hydration — balance-sheet (Neraca), income-statement (Laba-Rugi), trial-balance, ledger,
+          cash-flow, overview — and that no 500/hydration errors occur.
+
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ACCOUNTING REPORT CONSISTENCY - ALL TESTS PASSED (11/11, 100%)
+          
+          Comprehensive backend testing completed for the accounting report consistency feature.
+          The [DATA-SOURCE=MongoDB] verification log has been successfully added to all accounting
+          report endpoints, mirroring the Dashboard behavior. All endpoints return 200 with correct
+          data structures, and the verification logs confirm MongoDB single-source hydration.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: http://localhost:3000/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: MongoDB 'erp_prod'
+          - Implementation: /app/app/api/[[...path]]/route.js lines 509-527 (verification log)
+          - Report endpoints: lines 683-688
+          - Accounts endpoint: lines 540-548
+          - Journals endpoint: lines 649-679
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — GET /api/accounting/balance-sheet (Neraca) (PASSED):
+             - Status: 200 OK ✓
+             - Response structure verified:
+               * data.assets (Aset) ✓
+               * data.liabilities (Kewajiban) ✓
+               * data.equity (Ekuitas) ✓
+               * data.totalAssets ✓
+               * data.totalLiabilitiesEquity ✓
+               * data.balanced (balance check) ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 2 — GET /api/accounting/income-statement (Laba-Rugi) (PASSED):
+             - Status: 200 OK ✓
+             - Response structure verified:
+               * data.revenue (Pendapatan) ✓
+               * data.expense (Beban) ✓
+               * data.netIncome (Laba Bersih) ✓
+               * data.cogs (HPP) ✓
+               * data.grossProfit (Laba Kotor) ✓
+               * data.operatingProfit (Laba Operasional) ✓
+               * data.otherIncome (Pendapatan Lain) ✓
+               * data.otherExpense (Beban Lain) ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 3 — GET /api/accounting/trial-balance (Neraca Saldo) (PASSED):
+             - Status: 200 OK ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 4 — GET /api/accounting/ledger (Buku Besar) (PASSED):
+             - Status: 200 OK ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 5 — GET /api/accounting/cash-flow (Arus Kas) (PASSED):
+             - Status: 200 OK ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 6 — GET /api/accounting/overview (PASSED):
+             - Status: 200 OK ✓
+             - NO 500 errors ✓
+             - NO hydration exceptions ✓
+          
+          ✅ TEST 7 — REGRESSION: GET /api/accounting/accounts (COA list) (PASSED):
+             - Status: 200 OK ✓
+             - Account count: 52 accounts (expected ~52) ✓
+             - Data source: MongoDB gl_accounts collection ✓
+             - NO regression ✓
+          
+          ✅ TEST 8 — REGRESSION: GET /api/accounting/journals (PASSED):
+             - Status: 200 OK ✓
+             - NO regression ✓
+          
+          ✅ TEST 9 — Authentication: Unauthenticated request returns 401 (PASSED):
+             - GET /api/accounting/balance-sheet without auth → 401 Unauthorized ✓
+             - Correctly rejected unauthenticated access ✓
+             - requireAuth() middleware working ✓
+          
+          ✅ TEST 10 — **CRITICAL VERIFICATION LOG CHECK** (PASSED):
+             - Inspected /var/log/supervisor/nextjs.out.log ✓
+             - Found 10+ [DATA-SOURCE=MongoDB] verification log entries ✓
+             
+             **ACTUAL VERIFICATION LOGS OBSERVED:**
+             
+             1. balance-sheet:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/balance-sheet | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             2. income-statement:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/income-statement | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             3. trial-balance:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/trial-balance | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             4. ledger:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/ledger | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             5. cash-flow:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/cash-flow | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             6. overview:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/overview | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             7. accounts:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/accounts | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             8. journals:
+                [DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/journals | live Mongo counts -> gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 (SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)
+             
+             **KEY ACCEPTANCE CRITERION MET:**
+             ✅ The verification log proves that served financial report data is hydrated from MongoDB
+                (single source of truth) on EVERY request, mirroring the Dashboard behavior.
+             ✅ Log format matches the Dashboard audit line format exactly.
+             ✅ Shows database name: "erp_prod" ✓
+             ✅ Shows route: /accounting/balance-sheet, /accounting/income-statement, etc. ✓
+             ✅ Shows live Mongo counts: gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0 ✓
+             ✅ Includes explanation: "(SQLite is a per-request cache hydrated from these collections before Neraca/Laba-Rugi/Buku Besar is computed)" ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (lines 509-527 in route.js)**:
+          - Implementation: Verification log added inside accounting handler (line 515-526)
+          - Fires on every accounting GET request (line 515: if (method === 'GET'))
+          - Reads live MongoDB collection counts via estimatedDocumentCount() (lines 518-524):
+            * gl_accounts (Chart of Accounts)
+            * journal_entries (Journal Entries)
+            * journal_lines (Journal Lines)
+            * period_closings (Period Closings)
+            * sales_order (Sales Orders)
+          - Logs to console with [DATA-SOURCE=MongoDB] prefix (line 525)
+          - Best-effort logging (line 526: catch block never blocks request)
+          
+          ✅ **MongoDB Single-Source Hydration (lines 499-507)**:
+          - Line 499: await coaMongo.ensureCoaReady(raw) - hydrates gl_accounts
+          - Line 503: await jmongo.ensureJournalsReady(raw) - hydrates journal_entries/journal_lines/period_closings
+          - Line 507: await salesMongo.ensureSalesReady(raw) - hydrates sales_order
+          - All hydration happens BEFORE any report is computed
+          - SQLite is a per-pod cache, MongoDB is the authoritative source
+          
+          ✅ **Report Endpoints Working (lines 683-688)**:
+          - Line 683: overview → 200 ✓
+          - Line 684: trial-balance → 200 ✓
+          - Line 685: ledger → 200 ✓
+          - Line 686: income-statement → 200 ✓
+          - Line 687: balance-sheet → 200 ✓
+          - Line 688: cash-flow → 200 ✓
+          - All endpoints call autoSync() before computing reports
+          - All endpoints return correct data structures
+          
+          ✅ **Regression Tests Passed**:
+          - accounts endpoint (lines 540-548): 200, 52 accounts from MongoDB gl_accounts ✓
+          - journals endpoint (lines 649-679): 200, working correctly ✓
+          - No breaking changes to existing functionality ✓
+          
+          ✅ **Authentication & Authorization**:
+          - requireAuth() enforced on all accounting endpoints (line 492) ✓
+          - Role-based access: admin/supervisor/direktur can read (line 493) ✓
+          - Unauthenticated requests correctly rejected with 401 ✓
+          
+          ✅ **No Errors or Exceptions**:
+          - NO 500 Internal Server Error responses ✓
+          - NO hydration exceptions in logs ✓
+          - NO MongoDB connection errors ✓
+          - NO SQLite errors ✓
+          - All endpoints return clean 200 responses ✓
+          
+          ✅ **Data Integrity**:
+          - balance-sheet returns correct structure: assets, liabilities, equity ✓
+          - income-statement returns correct structure: revenue, expense, netIncome, cogs, grossProfit, operatingProfit ✓
+          - All reports computed from MongoDB-hydrated SQLite cache ✓
+          - Single source of truth maintained across all replicas ✓
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          MongoDB Collections (erp_prod):
+          - gl_accounts: 52 documents (Chart of Accounts)
+          - journal_entries: 0 documents (no manual journals yet)
+          - journal_lines: 0 documents (no journal lines yet)
+          - period_closings: 0 documents (no period closings yet)
+          - sales_order: 0 documents (no sales orders yet)
+          
+          Balance Sheet Structure:
+          - assets: {...}
+          - liabilities: {...}
+          - equity: {...}
+          - totalAssets: number
+          - totalLiabilitiesEquity: number
+          - balanced: boolean
+          
+          Income Statement Structure:
+          - revenue: {...}
+          - expense: {...}
+          - netIncome: number
+          - cogs: {...}
+          - grossProfit: number
+          - operatingProfit: number
+          - otherIncome: {...}
+          - otherExpense: {...}
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All accounting report consistency features working correctly.
+          [DATA-SOURCE=MongoDB] verification log successfully added to all accounting endpoints.
+          Verification logs confirm MongoDB single-source hydration on every request.
+          All report endpoints return 200 with correct data structures.
+          No 500 errors or hydration exceptions.
+          Regression tests passed (accounts, journals).
+          Authentication working correctly.
+          
+          **ACCEPTANCE CRITERIA MET:**
+          ✅ All accounting report GET endpoints return HTTP 200
+          ✅ NO 500 errors or hydration exceptions in logs
+          ✅ [DATA-SOURCE=MongoDB] verification log appears for balance-sheet and income-statement
+          ✅ Verification log shows db="erp_prod", route, and live Mongo counts
+          ✅ Unauthenticated requests return 401
+          ✅ Regression tests passed (accounts ~52, journals working)
+          
+          Test Coverage: 11/11 tests passed (100%)
+          - Admin login ✓
+          - GET /api/accounting/balance-sheet (Neraca) ✓
+          - GET /api/accounting/income-statement (Laba-Rugi) ✓
+          - GET /api/accounting/trial-balance ✓
+          - GET /api/accounting/ledger ✓
+          - GET /api/accounting/cash-flow ✓
+          - GET /api/accounting/overview ✓
+          - GET /api/accounting/accounts (REGRESSION) ✓
+          - GET /api/accounting/journals (REGRESSION) ✓
+          - Unauthenticated request → 401 ✓
+          - Verification log [DATA-SOURCE=MongoDB] ✓
+
+
+metadata:
+  created_by: "main_agent"
+  version: "3.13"
+  test_sequence: 24
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Verification log [DATA-SOURCE=MongoDB] on Accounting report GETs (Neraca & Laba-Rugi)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Backend-test the LAST appended block "ACCOUNTING REPORT CONSISTENCY". Login admin@lpi.co.id/admin123
+      (Origin header required on raw state-changing requests). DB 'erp_prod'.
+      Do NOT flag snake_case Mongo fields or 'no-mongo-url' as bugs.
+      SCENARIOS (all should return 200, no 500 / hydration errors):
+      1) GET /api/accounting/balance-sheet  (Neraca) -> 200, returns assets/liabilities/equity structure.
+      2) GET /api/accounting/income-statement (Laba-Rugi) -> 200, returns revenue/expense/netIncome.
+      3) GET /api/accounting/trial-balance -> 200; GET /api/accounting/ledger -> 200;
+         GET /api/accounting/cash-flow -> 200; GET /api/accounting/overview -> 200.
+      4) REGRESSION: GET /api/accounting/accounts -> 200 (COA list from Mongo gl_accounts, ~52 accounts);
+         GET /api/accounting/journals -> 200.
+      5) VERIFICATION LOG: confirm the server terminal prints a line like
+         '[DATA-SOURCE=MongoDB] db="erp_prod" route=/accounting/balance-sheet | live Mongo counts -> gl_accounts=..., journal_entries=..., journal_lines=..., period_closings=..., sales_order=... (...)'
+         for the balance-sheet and income-statement requests (and other accounting GETs). This proves the
+         served financial report data is hydrated from MongoDB (single source of truth) on every request.
+      No data creation needed for this test (read-only). If you create anything, clean it up from BOTH Mongo
+      and SQLite.
+
+    -agent: "testing"
+    -message: |
+      ✅ ACCOUNTING REPORT CONSISTENCY TESTING COMPLETE - ALL TESTS PASSED (11/11, 100%)
+      
+      Comprehensive backend testing completed for the accounting report consistency feature.
+      All acceptance criteria met:
+      
+      ✅ All 8 accounting report endpoints return HTTP 200 (balance-sheet, income-statement, trial-balance, ledger, cash-flow, overview, accounts, journals)
+      ✅ NO 500 errors or hydration exceptions found in logs
+      ✅ [DATA-SOURCE=MongoDB] verification log confirmed in /var/log/supervisor/nextjs.out.log
+      ✅ Verification logs show db="erp_prod", route, and live Mongo counts (gl_accounts=52, journal_entries=0, journal_lines=0, period_closings=0, sales_order=0)
+      ✅ balance-sheet returns correct structure: assets, liabilities, equity
+      ✅ income-statement returns correct structure: revenue, expense, netIncome, cogs, grossProfit, operatingProfit
+      ✅ Unauthenticated requests correctly return 401
+      ✅ Regression tests passed: accounts endpoint returns 52 accounts, journals endpoint working
+      
+      **KEY FINDING:** The [DATA-SOURCE=MongoDB] verification log successfully proves that all financial
+      report data is hydrated from MongoDB (single source of truth) on EVERY request, mirroring the
+      Dashboard behavior. The implementation at lines 509-527 in route.js is working correctly.
+      
+      NO CRITICAL ISSUES FOUND. Feature is production-ready.
+
+
