@@ -78,7 +78,7 @@ export default function ProductsPage() {
   const exportProducts = () => exportToExcel('produk', [{ name: 'Produk', headers: [
     { key: 'sku', label: 'SKU' }, { key: 'name', label: 'Nama' }, { key: 'category', label: 'Kategori' },
     { key: 'weightUnit', label: 'Satuan Berat' }, { key: 'packagingType', label: 'Kemasan' },
-    { key: 'basePrice', label: 'Harga Dasar' }, { key: 'minStock', label: 'Min Stock' }, { key: 'status', label: 'Status' },
+    { key: 'basePrice', label: 'Harga Modal / HPP' }, { key: 'minStock', label: 'Min Stock' }, { key: 'status', label: 'Status' },
   ], rows: rows.map((r) => ({ sku: r.sku, name: r.name, category: r.category, weightUnit: r.weightUnit || r.unit, packagingType: r.packagingType, basePrice: r.basePrice, minStock: r.minStock, status: r.status })) }]);
 
   const save = async () => {
@@ -138,7 +138,7 @@ export default function ProductsPage() {
                   <SelectContent>{PACKAGING_TYPES.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
                 </Select>
               </F>
-              <F label="Harga Dasar (Rp)"><CurrencyInput value={form.basePrice} onChange={v => setForm({ ...form, basePrice: v })} placeholder="0" /></F>
+              <F label="Harga Modal / HPP (Rp)"><CurrencyInput value={form.basePrice} onChange={v => setForm({ ...form, basePrice: v })} placeholder="0" /></F>
               <F label="Min Stock"><Input type="number" value={form.minStock} onChange={e => setForm({ ...form, minStock: Number(e.target.value) })} /></F>
               <F label="Shelf Life (hari)"><Input type="number" value={form.shelfLifeDays} onChange={e => setForm({ ...form, shelfLifeDays: Number(e.target.value) })} /></F>
               <F label="Status">
@@ -181,7 +181,7 @@ export default function ProductsPage() {
               <SortHead field="name" sort={sort}>Nama</SortHead>
               <SortHead field="category" sort={sort}>Kategori</SortHead>
               <TableHead>Satuan Berat</TableHead><TableHead>Kemasan</TableHead>
-              <SortHead field="basePrice" sort={sort} className="text-right">Harga</SortHead>
+              <SortHead field="basePrice" sort={sort} className="text-right">HPP/kg</SortHead>
               <SortHead field="minStock" sort={sort} className="text-right">Min Stock</SortHead>
               <TableHead>Shelf Life</TableHead>
               <SortHead field="status" sort={sort}>Status</SortHead>

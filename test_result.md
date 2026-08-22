@@ -27846,3 +27846,83 @@ agent_communication:
       CLEANUP: remove ANY test data you create (sales orders, tally stocks, ledger, etc.) from BOTH Mongo and
       SQLite — the user keeps a clean DB to re-input production data. Report Mongo counts before/after.
 
+
+#====================================================================================================
+# HPP SYNC: product master (base_price) -> stock & Sales Order HPP + one-time backfill of existing data
+#====================================================================================================
+
+backend:
+  - task: "getProductHpp() fallback to product base_price (Harga Modal/HPP)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Manual Tally Inbound (opening stock) recorded hpp_per_kg=0 because getProductHpp() only read
+          PO/WO cost history. Added a fallback to products.base_price (the master "Harga Modal / HPP"). Now
+          manual inbound stock carries the product cost, and SO stock allocation copies it into
+          so_item_stocks.hpp_per_kg (via stockHpp()). SO gross profit is computed live from that, so the SO
+          invoice shows correct HPP/COGS/profit. MANUAL TEST PASSED: set base_price=30000 -> tally inbound 25kg
+          -> stock hpp_per_kg=30000 -> allocate to SO (sell @35000) -> so_item_stocks.hpp_per_kg=30000 -> SO
+          detail revenue=875000, cogsTotal=750000, grossProfit=125000 (was 875000/100% before). Cleaned up.
+  - task: "One-time backfill: existing stock & SO allocations HPP from base_price (hpp-backfill.js)"
+    implemented: true
+    working: true
+    file: "/app/lib/db/hpp-backfill.js, /app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          ensureHppBackfill() runs ONCE (guarded by mongo_migration marker hpp_backfill_from_baseprice_v1),
+          directly on Mongo BEFORE hydration: for inventory_stock & so_item_stocks rows with hpp_per_kg 0/null
+          and product base_price>0, sets hpp_per_kg = base_price. Products master is camelCase+_id (basePrice),
+          transaction collections snake_case+id (hpp_per_kg, product_id) — handled. Wired in middleware after
+          ensureMasterSync, before sales/inventory hydration so the corrected values flow into every replica's
+          SQLite on next hydrate. Downstream (SO gross profit live, COGS journals via syncLedger) self-corrects.
+          MANUAL TEST PASSED: forced stock+alloc hpp to 0, deleted marker, restarted, GET /dashboard/summary ->
+          log "[hpp-backfill] applied ... inventory_stock=1, so_item_stocks=1 corrected", Mongo hpp back to
+          30000, SO detail grossProfit back to 125000. Marker recorded invUpdated/soUpdated. Cleaned up.
+
+frontend:
+  - task: "SO form: stop auto-filling unitPrice from base_price; Product form relabel 'Harga Dasar' -> 'Harga Modal / HPP'"
+    implemented: true
+    working: "NA"
+    file: "/app/app/dashboard/sales-orders/page.js, /app/app/dashboard/products/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Since base_price now means COST (HPP), the SO item selling price (unitPrice) no longer defaults to
+          base_price (starts 0, entered manually) in all 3 places (stock picker + 2 product selects); dropship
+          buyPrice still defaults to base_price (cost estimate). Product form label + list header + export
+          column relabeled "Harga Dasar" -> "Harga Modal / HPP". UI-only; user will verify visually.
+
+metadata:
+  created_by: "main_agent"
+  version: "3.12"
+  test_sequence: 23
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      HPP sync + backfill implemented and MANUALLY VALIDATED end-to-end via curl (backend). Frontend changes
+      are label/default-value only (user verifies visually). No further backend testing requested for now.
+

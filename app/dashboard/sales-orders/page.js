@@ -204,7 +204,7 @@ function CreateSODialog({ onSaved }) {
       availableWeight: avail,
       weight: avail, // default: sell all available (not reserved)
       quantity: Number(stk.availableQty !== undefined ? stk.availableQty : stk.quantity || 0),
-      unitPrice: Number(product.basePrice || 0),
+      unitPrice: 0, // harga jual diisi manual (base_price kini = Harga Modal/HPP, bukan harga jual)
       expiredDate: stk.expiredDate,
     });
     setStockPickerFor(null);
@@ -391,13 +391,13 @@ function CreateSODialog({ onSaved }) {
                   <div className="flex-1 min-w-0">
                     <Label className="text-xs text-muted-foreground">Produk</Label>
                     {isDropship ? (
-                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), buyPrice: Number(p.basePrice || 0), avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
+                      <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: 0, buyPrice: Number(p.basePrice || 0), avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
                         <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                         <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                       </Select>
                     ) : (
                       <>
-                        <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: Number(p.basePrice || 0), avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
+                        <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: 0, avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
                           <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
                           <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
                         </Select>
