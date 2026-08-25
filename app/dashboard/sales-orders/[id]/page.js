@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
@@ -201,6 +201,35 @@ export default function SODetailPage() {
               <div><span className="text-muted-foreground">Berat Diterima Customer: </span><b>{Number(so.dropshipShipVsRecv.received).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b>{!so.dropshipShipVsRecv.hasReceipt && <span className="text-[11px] text-muted-foreground"> (belum ada penerimaan)</span>}</div>
               <div><span className="text-muted-foreground">Susut: </span><b className={so.dropshipShipVsRecv.susut > 0.0001 ? 'text-red-600' : 'text-emerald-700'}>{Number(so.dropshipShipVsRecv.susut).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</b></div>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {Array.isArray(so.commissions) && so.commissions.length > 0 && (
+        <Card className="border-pink-200 bg-pink-50/40">
+          <CardContent className="py-3">
+            {so.commissions.map((cm) => {
+              const typeLabel = cm.commissionType === 'per_kg' ? 'Per Kg'
+                : cm.commissionType === 'fixed' ? 'Nominal Tetap'
+                : cm.commissionType === 'percent_profit' ? '% Profit Bersih' : (cm.commissionType || '-');
+              const valLabel = cm.commissionType === 'percent_profit'
+                ? `${Number(cm.commissionValue || 0)}%`
+                : `Rp ${Number(cm.commissionValue || 0).toLocaleString('id-ID')}`;
+              return (
+                <div key={cm.id} className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
+                  <div className="flex items-center gap-2 font-semibold text-pink-800"><Wallet className="w-4 h-4" />Komisi Dropshipper</div>
+                  <div><span className="text-muted-foreground">Dropshipper: </span><b>{cm.dropshipper ? `${cm.dropshipper.code} · ${cm.dropshipper.displayName}` : '-'}</b></div>
+                  <div><span className="text-muted-foreground">Tipe: </span><b>{typeLabel}</b> <span className="text-muted-foreground">({valLabel})</span></div>
+                  <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">Rp {Number(cm.commissionAmount || 0).toLocaleString('id-ID')}</b></div>
+                  <div>
+                    <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
+                      cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+                      {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       )}

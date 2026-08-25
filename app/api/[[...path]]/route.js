@@ -3169,7 +3169,14 @@ async function handleRoute(request, { params }) {
         linkedPurchaseOrder = db.select({ id: s.purchaseOrder.id, poNumber: s.purchaseOrder.poNumber, pipelineStatus: s.purchaseOrder.pipelineStatus, totalAmount: s.purchaseOrder.totalAmount, invoiceWeightBasis: s.purchaseOrder.invoiceWeightBasis })
           .from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get() || null;
       }
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv } });
+      // Komisi Dropshipper yang tercatat untuk SO ini (dari commission_records), diperkaya nama dropshipper.
+      const commissionRows = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.salesOrderId, id)).all();
+      const commissions = commissionRows.map(r => {
+        const dsc = db.select({ id: s.contacts.id, code: s.contacts.code, displayName: s.contacts.displayName })
+          .from(s.contacts).where(eq(s.contacts.id, r.dropshipperId)).get();
+        return { ...r, dropshipper: dsc || null };
+      });
+      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
