@@ -10,7 +10,7 @@ import json
 import sys
 from datetime import datetime, timedelta
 
-BASE_URL = "https://data-source-verify.preview.emergentagent.com/api"
+BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 

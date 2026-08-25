@@ -1,7 +1,7 @@
 ============================================================
 LPI ERP BACKEND API TEST SUITE
 ============================================================
-Base URL: https://data-source-verify.preview.emergentagent.com/api
+Base URL: https://github-to-production.preview.emergentagent.com/api
 ============================================================
 
 === TEST 1: HEALTH CHECK ===

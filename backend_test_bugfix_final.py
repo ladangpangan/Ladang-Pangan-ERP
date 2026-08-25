@@ -10,7 +10,7 @@ from datetime import datetime
 import sqlite3
 
 # Configuration
-BASE_URL = "https://data-source-verify.preview.emergentagent.com/api"
+BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
 LOGIN_EMAIL = "admin@lpi.co.id"
 LOGIN_PASSWORD = "admin123"
 DB_PATH = "/app/data/erp.db"

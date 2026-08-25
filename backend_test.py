@@ -10,10 +10,10 @@ import time
 from datetime import datetime
 
 # Configuration
-BASE_URL = "https://ladang-erp-system.preview.emergentagent.com/api"
+BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
 LOGIN_EMAIL = "admin@lpi.co.id"
 LOGIN_PASSWORD = "admin123"
-ORIGIN = "https://ladang-erp-system.preview.emergentagent.com"
+ORIGIN = "https://github-to-production.preview.emergentagent.com"
 
 # Test data IDs (will be populated during test)
 test_data = {

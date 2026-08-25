@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta
 
 # Configuration
-BASE_URL = "https://data-source-verify.preview.emergentagent.com/api"
+BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
 CREDENTIALS = {
     "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
     "supervisor": {"email": "supervisor@lpi.co.id", "password": "super123"},
@@ -932,7 +932,7 @@ def test_e1_operator_dashboard_redirect():
     
     # Make request to dashboard without following redirects
     resp = requests.get(
-        "https://data-source-verify.preview.emergentagent.com/dashboard",
+        "https://github-to-production.preview.emergentagent.com/dashboard",
         cookies=cookies,
         allow_redirects=False
     )
@@ -958,7 +958,7 @@ def test_e2_operator_notifications_page_redirect():
     
     # Make request to notifications page without following redirects
     resp = requests.get(
-        "https://data-source-verify.preview.emergentagent.com/dashboard/notifications",
+        "https://github-to-production.preview.emergentagent.com/dashboard/notifications",
         cookies=cookies,
         allow_redirects=False
     )
@@ -1002,7 +1002,7 @@ def test_e4_supervisor_no_redirect():
     
     # Make request without following redirects
     resp = requests.get(
-        "https://data-source-verify.preview.emergentagent.com/dashboard/notifications",
+        "https://github-to-production.preview.emergentagent.com/dashboard/notifications",
         cookies=cookies,
         allow_redirects=False
     )
