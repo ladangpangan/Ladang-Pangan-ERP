@@ -62,6 +62,14 @@ chainlit.md
 
 # Data and databases
 agenthub/agents/youtube/db
+# SQLite runtime DB is NOT committed — production hydrates from MongoDB (Atlas) durable
+# backups, and a truly-fresh install falls back to lib/db/seed-snapshot.json.
+/data/erp.db
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+/data/*.restore.tmp*
+/data/.erp-backup-*.db
 
 # Archive files and large assets
 **/*.zip
