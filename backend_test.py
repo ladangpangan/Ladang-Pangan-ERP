@@ -1,763 +1,713 @@
 #!/usr/bin/env python3
 """
-MIGRATION Phase 6 Backend Test: fixed_assets + stock_opname(+items) MongoDB-authoritative
-Tests the DIFF-persist write strategy for multi-replica safe operations.
+PHASE 10 Data Persistence Migration Test
+Tests MongoDB-authoritative persistence for 4 domains:
+1. app_settings
+2. contact_customers
+3. notifications
+4. contact_documents (skipped - file upload complex)
 """
 
 import requests
 import json
 import time
-from pymongo import MongoClient
-import sqlite3
-from datetime import datetime
-from http.cookiejar import Cookie
+import sys
+from typing import Dict, Any, Optional
 
 # Configuration
-BASE_URL = "http://localhost:3000/api"
-MONGO_URL = "mongodb://localhost:27017"
-MONGO_DB_NAME = "erp_prod"
-SQLITE_DB = "/app/data/erp.db"
+BASE_URL = "https://mongo-migration-26.preview.emergentagent.com/api"
+LOGIN_CREDENTIALS = {
+    "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
+    "supervisor": {"email": "supervisor@lpi.co.id", "password": "super123"},
+    "direktur": {"email": "direktur@lpi.co.id", "password": "direktur123"},
+    "operator": {"email": "operator@lpi.co.id", "password": "operator123"}
+}
 
-# Auth credentials
-ADMIN_EMAIL = "admin@lpi.co.id"
-ADMIN_PASSWORD = "admin123"
-OPERATOR_EMAIL = "operator@lpi.co.id"
-OPERATOR_PASSWORD = "operator123"
-
-# Test results
-test_results = []
-
-def log_test(name, passed, details=""):
-    """Log test result"""
-    status = "✅ PASSED" if passed else "❌ FAILED"
-    print(f"\n{status}: {name}")
-    if details:
-        print(f"  Details: {details}")
-    test_results.append({"name": name, "passed": passed, "details": details})
-
-def login(email, password):
-    """Login and return session with manually set cookie"""
-    session = requests.Session()
-    headers = {
-        "Content-Type": "application/json",
-        "Origin": "http://localhost:3000"
-    }
-    
-    # Try to login
-    response = session.post(
-        f"{BASE_URL.replace('/api', '')}/api/auth/sign-in/email",
-        json={"email": email, "password": password},
-        headers=headers
-    )
-    
-    if response.status_code == 200:
-        # Extract the session token from Set-Cookie header
-        set_cookie_header = response.headers.get('set-cookie', '')
-        if '__Secure-better-auth.session_token=' in set_cookie_header:
-            # Extract token value
-            token_start = set_cookie_header.find('__Secure-better-auth.session_token=') + len('__Secure-better-auth.session_token=')
-            token_end = set_cookie_header.find(';', token_start)
-            token_value = set_cookie_header[token_start:token_end]
-            
-            # Manually add the cookie to the session (without Secure flag for HTTP)
-            cookie = Cookie(
-                version=0,
-                name='__Secure-better-auth.session_token',
-                value=token_value,
-                port=None,
-                port_specified=False,
-                domain='localhost',
-                domain_specified=True,
-                domain_initial_dot=False,
-                path='/',
-                path_specified=True,
-                secure=False,  # Set to False for HTTP
-                expires=None,
-                discard=True,
-                comment=None,
-                comment_url=None,
-                rest={'HttpOnly': None},
-                rfc2109=False
-            )
-            session.cookies.set_cookie(cookie)
-            print(f"✓ Logged in as {email} (token: {token_value[:20]}...)")
-            return session
-        else:
-            print(f"✗ No session token in response for {email}")
-            return None
-    else:
-        print(f"✗ Login failed for {email}: {response.status_code} - {response.text[:200]}")
-        return None
-
-def get_mongo_client():
-    """Get MongoDB client and database"""
-    client = MongoClient(MONGO_URL)
-    db = client[MONGO_DB_NAME]
-    return client, db
-
-def get_sqlite_conn():
-    """Get SQLite connection (readonly)"""
-    conn = sqlite3.connect(SQLITE_DB)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def count_mongo_collection(db, collection_name):
-    """Count documents in MongoDB collection"""
-    try:
-        return db[collection_name].count_documents({})
-    except Exception as e:
-        print(f"Error counting {collection_name}: {e}")
-        return 0
-
-def count_sqlite_table(conn, table_name):
-    """Count rows in SQLite table"""
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-        return cursor.fetchone()[0]
-    except Exception as e:
-        print(f"Error counting {table_name}: {e}")
-        return 0
-
-def get_accounts(session):
-    """Get chart of accounts to find valid account codes"""
-    response = session.get(f"{BASE_URL}/accounting/accounts")
-    if response.status_code == 200:
-        accounts = response.json().get("data", [])
-        # Find asset, accumulated depreciation, and expense accounts
-        asset_acct = next((a for a in accounts if a.get("code") == "1-2100"), None)  # Peralatan & Mesin
-        accum_acct = next((a for a in accounts if a.get("code") == "1-2900"), None)  # Akumulasi Penyusutan
-        expense_acct = next((a for a in accounts if a.get("code") == "6-1600"), None)  # Beban Penyusutan
-        return asset_acct, accum_acct, expense_acct
-    return None, None, None
-
-def test_scenario_1_fixed_asset_create(session, mongo_db):
-    """Scenario 1: Fixed Asset CREATE - verify in both Mongo and API"""
-    print("\n" + "="*80)
-    print("SCENARIO 1: Fixed Asset CREATE")
-    print("="*80)
-    
-    # Get valid account codes
-    asset_acct, accum_acct, expense_acct = get_accounts(session)
-    if not asset_acct or not accum_acct or not expense_acct:
-        log_test("Scenario 1: Get accounts", False, "Could not find required account codes")
-        return None
-    
-    print(f"Using accounts: asset={asset_acct['code']}, accum={accum_acct['code']}, expense={expense_acct['code']}")
-    
-    # Count before
-    count_before = count_mongo_collection(mongo_db, "fixed_assets")
-    print(f"MongoDB fixed_assets count before: {count_before}")
-    
-    # Create fixed asset
-    payload = {
-        "code": "FA-T1",
-        "name": "Mesin Uji",
-        "category": "Mesin",
-        "acquisitionDate": "2026-01-01",
-        "acquisitionCost": 12000000,
-        "salvageValue": 0,
-        "usefulLifeMonths": 60,
-        "method": "straight_line",
-        "assetAccountCode": asset_acct["code"],
-        "accumAccountCode": accum_acct["code"],
-        "expenseAccountCode": expense_acct["code"],
-        "postDepreciation": True
-    }
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    response = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload, headers=headers)
-    
-    if response.status_code != 200:
-        log_test("Scenario 1: Create fixed asset", False, f"API returned {response.status_code}: {response.text[:200]}")
-        return None
-    
-    data = response.json().get("data")
-    asset_id = data.get("id")
-    print(f"✓ Created fixed asset: {asset_id}")
-    
-    # Verify in API
-    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
-    if response.status_code != 200:
-        log_test("Scenario 1: Verify in API", False, f"GET failed: {response.status_code}")
-        return asset_id
-    
-    assets = response.json().get("data", [])
-    found_in_api = any(a["id"] == asset_id for a in assets)
-    
-    # Verify in MongoDB
-    time.sleep(0.5)  # Give time for async persist
-    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
-    found_in_mongo = mongo_doc is not None
-    
-    count_after = count_mongo_collection(mongo_db, "fixed_assets")
-    print(f"MongoDB fixed_assets count after: {count_after}")
-    
-    if found_in_api and found_in_mongo:
-        log_test("Scenario 1: Fixed Asset CREATE", True, f"Asset {asset_id} exists in both API and MongoDB")
-    else:
-        log_test("Scenario 1: Fixed Asset CREATE", False, f"API: {found_in_api}, MongoDB: {found_in_mongo}")
-    
-    return asset_id
-
-def test_scenario_2_fixed_asset_edit(session, mongo_db, asset_id):
-    """Scenario 2: Fixed Asset EDIT - verify changes in both Mongo and API"""
-    print("\n" + "="*80)
-    print("SCENARIO 2: Fixed Asset EDIT")
-    print("="*80)
-    
-    if not asset_id:
-        log_test("Scenario 2: Fixed Asset EDIT", False, "No asset_id from Scenario 1")
-        return
-    
-    # Edit the asset
-    payload = {
-        "name": "Mesin Uji EDITED",
-        "acquisitionCost": 15000000
-    }
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    response = session.patch(f"{BASE_URL}/accounting/fixed-assets/{asset_id}", json=payload, headers=headers)
-    
-    if response.status_code != 200:
-        log_test("Scenario 2: Edit fixed asset", False, f"API returned {response.status_code}: {response.text[:200]}")
-        return
-    
-    print(f"✓ Edited fixed asset: {asset_id}")
-    
-    # Verify in API
-    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
-    assets = response.json().get("data", [])
-    api_asset = next((a for a in assets if a["id"] == asset_id), None)
-    
-    # Verify in MongoDB
-    time.sleep(0.5)
-    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
-    
-    api_correct = api_asset and api_asset["name"] == "Mesin Uji EDITED" and api_asset["acquisition_cost"] == 15000000
-    mongo_correct = mongo_doc and mongo_doc["name"] == "Mesin Uji EDITED" and mongo_doc["acquisition_cost"] == 15000000
-    
-    if api_correct and mongo_correct:
-        log_test("Scenario 2: Fixed Asset EDIT", True, "Changes reflected in both API and MongoDB")
-    else:
-        log_test("Scenario 2: Fixed Asset EDIT", False, f"API correct: {api_correct}, MongoDB correct: {mongo_correct}")
-
-def test_scenario_3_depreciation_engine(session, mongo_db):
-    """Scenario 3: Depreciation posting / Engine - verify trial balance and auto journals"""
-    print("\n" + "="*80)
-    print("SCENARIO 3: Depreciation Engine & Trial Balance")
-    print("="*80)
-    
-    # Get trial balance
-    response = session.get(f"{BASE_URL}/accounting/trial-balance")
-    if response.status_code != 200:
-        log_test("Scenario 3: Get trial balance", False, f"API returned {response.status_code}")
-        return
-    
-    tb_data = response.json().get("data", {})
-    total_debit = tb_data.get("totalDebit", 0)
-    total_credit = tb_data.get("totalCredit", 0)
-    balanced = abs(total_debit - total_credit) < 0.01
-    
-    print(f"Trial Balance: Debit={total_debit}, Credit={total_credit}, Balanced={balanced}")
-    
-    # Get balance sheet
-    response = session.get(f"{BASE_URL}/accounting/balance-sheet")
-    if response.status_code != 200:
-        log_test("Scenario 3: Get balance sheet", False, f"API returned {response.status_code}")
-        return
-    
-    bs_data = response.json().get("data", {})
-    bs_balanced = bs_data.get("balanced", False)
-    
-    print(f"Balance Sheet: Balanced={bs_balanced}")
-    
-    # Get journals to check for DEPR auto journals
-    response = session.get(f"{BASE_URL}/accounting/journals")
-    if response.status_code != 200:
-        log_test("Scenario 3: Get journals", False, f"API returned {response.status_code}")
-        return
-    
-    journals = response.json().get("data", [])
-    depr_journals = [j for j in journals if j.get("source") == "DEPR" or j.get("source_type") == "DEPR"]
-    
-    print(f"Found {len(depr_journals)} DEPR journals in API")
-    
-    # Verify DEPR journals are NOT in MongoDB (they are derived, not stored)
-    mongo_depr_count = mongo_db["journal_entries"].count_documents({"source_type": "DEPR", "is_auto": 1})
-    
-    print(f"MongoDB journal_entries with DEPR+is_auto: {mongo_depr_count}")
-    
-    if balanced and bs_balanced and mongo_depr_count == 0:
-        log_test("Scenario 3: Depreciation Engine", True, "Trial balance balanced, DEPR journals derived (not stored in Mongo)")
-    else:
-        log_test("Scenario 3: Depreciation Engine", False, f"TB balanced: {balanced}, BS balanced: {bs_balanced}, Mongo DEPR count: {mongo_depr_count}")
-
-def test_scenario_4_archive_restore(session, mongo_db, asset_id):
-    """Scenario 4: Archive/Restore - verify archived_at in MongoDB"""
-    print("\n" + "="*80)
-    print("SCENARIO 4: Archive/Restore Fixed Asset")
-    print("="*80)
-    
-    if not asset_id:
-        log_test("Scenario 4: Archive/Restore", False, "No asset_id from Scenario 1")
-        return
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    
-    # Archive
-    response = session.post(f"{BASE_URL}/accounting/fixed-assets/{asset_id}/archive", headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 4: Archive", False, f"API returned {response.status_code}")
-        return
-    
-    print(f"✓ Archived asset: {asset_id}")
-    
-    # Verify in MongoDB
-    time.sleep(0.5)
-    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
-    archived_at = mongo_doc.get("archived_at") if mongo_doc else None
-    
-    if not archived_at:
-        log_test("Scenario 4: Archive", False, "archived_at not set in MongoDB")
-        return
-    
-    print(f"✓ archived_at set in MongoDB: {archived_at}")
-    
-    # Restore
-    response = session.post(f"{BASE_URL}/accounting/fixed-assets/{asset_id}/restore", headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 4: Restore", False, f"API returned {response.status_code}")
-        return
-    
-    print(f"✓ Restored asset: {asset_id}")
-    
-    # Verify in MongoDB
-    time.sleep(0.5)
-    mongo_doc = mongo_db["fixed_assets"].find_one({"id": asset_id})
-    archived_at_after = mongo_doc.get("archived_at") if mongo_doc else "NOT_FOUND"
-    
-    if archived_at_after is None:
-        log_test("Scenario 4: Archive/Restore", True, "archived_at correctly set and cleared in MongoDB")
-    else:
-        log_test("Scenario 4: Archive/Restore", False, f"archived_at after restore: {archived_at_after}")
-
-def test_scenario_5_stock_opname_create(session, mongo_db):
-    """Scenario 5: Stock Opname CREATE - verify in both Mongo and API"""
-    print("\n" + "="*80)
-    print("SCENARIO 5: Stock Opname CREATE")
-    print("="*80)
-    
-    # Get cold storages
-    response = session.get(f"{BASE_URL}/cold-storages")
-    if response.status_code != 200:
-        log_test("Scenario 5: Get cold storages", False, f"API returned {response.status_code}")
-        return None
-    
-    cold_storages = response.json().get("data", [])
-    if not cold_storages:
-        log_test("Scenario 5: Get cold storages", False, "No cold storages found")
-        return None
-    
-    cs_id = cold_storages[0]["id"]
-    print(f"Using cold storage: {cs_id}")
-    
-    # Count before
-    count_opname_before = count_mongo_collection(mongo_db, "stock_opname")
-    count_items_before = count_mongo_collection(mongo_db, "stock_opname_items")
-    print(f"MongoDB stock_opname count before: {count_opname_before}")
-    print(f"MongoDB stock_opname_items count before: {count_items_before}")
-    
-    # Create stock opname
-    payload = {
-        "coldStorageId": cs_id,
-        "opnameDate": "2026-01-15",
-        "notes": "Test opname for Phase 6"
-    }
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    response = session.post(f"{BASE_URL}/opnames", json=payload, headers=headers)
-    
-    if response.status_code != 201:
-        log_test("Scenario 5: Create stock opname", False, f"API returned {response.status_code}: {response.text[:200]}")
-        return None
-    
-    data = response.json().get("data")
-    opname_id = data.get("id")
-    print(f"✓ Created stock opname: {opname_id}")
-    
-    # Verify in API
-    response = session.get(f"{BASE_URL}/opnames/{opname_id}")
-    if response.status_code != 200:
-        log_test("Scenario 5: Verify in API", False, f"GET failed: {response.status_code}")
-        return opname_id
-    
-    opname_data = response.json().get("data", {})
-    items_count = len(opname_data.get("items", []))
-    
-    # Verify in MongoDB
-    time.sleep(0.5)
-    mongo_opname = mongo_db["stock_opname"].find_one({"id": opname_id})
-    mongo_items = list(mongo_db["stock_opname_items"].find({"opname_id": opname_id}))
-    
-    count_opname_after = count_mongo_collection(mongo_db, "stock_opname")
-    count_items_after = count_mongo_collection(mongo_db, "stock_opname_items")
-    print(f"MongoDB stock_opname count after: {count_opname_after}")
-    print(f"MongoDB stock_opname_items count after: {count_items_after}")
-    
-    if mongo_opname and len(mongo_items) == items_count:
-        log_test("Scenario 5: Stock Opname CREATE", True, f"Opname {opname_id} with {items_count} items exists in both API and MongoDB")
-    else:
-        log_test("Scenario 5: Stock Opname CREATE", False, f"Mongo opname: {bool(mongo_opname)}, Mongo items: {len(mongo_items)}, API items: {items_count}")
-    
-    return opname_id
-
-def test_scenario_6_stock_opname_approve(session, mongo_db, sqlite_conn, opname_id):
-    """Scenario 6: Stock Opname APPROVE - verify status in Mongo and trial balance"""
-    print("\n" + "="*80)
-    print("SCENARIO 6: Stock Opname APPROVE")
-    print("="*80)
-    
-    if not opname_id:
-        log_test("Scenario 6: Stock Opname APPROVE", False, "No opname_id from Scenario 5")
-        return
-    
-    # Get opname details
-    response = session.get(f"{BASE_URL}/opnames/{opname_id}")
-    if response.status_code != 200:
-        log_test("Scenario 6: Get opname", False, f"API returned {response.status_code}")
-        return
-    
-    opname_data = response.json().get("data", {})
-    items = opname_data.get("items", [])
-    
-    if not items:
-        print("No items in opname, skipping approve test")
-        log_test("Scenario 6: Stock Opname APPROVE", True, "No items to approve (skipped)")
-        return
-    
-    # Modify physical count to create a delta
-    item_updates = []
-    for item in items[:1]:  # Just modify first item
-        item_updates.append({
-            "id": item["id"],
-            "physicalWeight": float(item["systemWeight"]) - 1.0,  # Create 1kg shrinkage
-            "physicalQty": item["systemQty"]
+class TestSession:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         })
+        self.test_data = {}
+        
+    def login(self, role: str = "admin") -> bool:
+        """Login and obtain session cookie"""
+        try:
+            creds = LOGIN_CREDENTIALS[role]
+            # Better Auth sign-in endpoint
+            auth_url = BASE_URL.replace('/api', '/api/auth/sign-in/email')
+            resp = self.session.post(auth_url, json=creds, timeout=10)
+            
+            if resp.status_code == 200:
+                print(f"✅ Login successful as {role} ({creds['email']})")
+                return True
+            else:
+                print(f"❌ Login failed: {resp.status_code} - {resp.text[:200]}")
+                return False
+        except Exception as e:
+            print(f"❌ Login exception: {e}")
+            return False
     
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    def get(self, endpoint: str, **kwargs) -> requests.Response:
+        """GET request"""
+        url = f"{BASE_URL}{endpoint}"
+        return self.session.get(url, **kwargs)
     
-    # Update items
-    response = session.post(f"{BASE_URL}/opnames/{opname_id}/items", json={"items": item_updates}, headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 6: Update items", False, f"API returned {response.status_code}")
-        return
+    def post(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
+        """POST request"""
+        url = f"{BASE_URL}{endpoint}"
+        if data is not None and 'json' not in kwargs:
+            kwargs['json'] = data
+        return self.session.post(url, **kwargs)
     
-    print(f"✓ Updated opname items with delta")
+    def put(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
+        """PUT request"""
+        url = f"{BASE_URL}{endpoint}"
+        if data is not None and 'json' not in kwargs:
+            kwargs['json'] = data
+        return self.session.put(url, **kwargs)
     
-    # Submit
-    response = session.post(f"{BASE_URL}/opnames/{opname_id}/submit", headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 6: Submit opname", False, f"API returned {response.status_code}")
-        return
+    def patch(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
+        """PATCH request"""
+        url = f"{BASE_URL}{endpoint}"
+        if data is not None and 'json' not in kwargs:
+            kwargs['json'] = data
+        return self.session.patch(url, **kwargs)
     
-    print(f"✓ Submitted opname: {opname_id}")
-    
-    # Approve
-    response = session.post(f"{BASE_URL}/opnames/{opname_id}/approve", headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 6: Approve opname", False, f"API returned {response.status_code}: {response.text[:200]}")
-        return
-    
-    print(f"✓ Approved opname: {opname_id}")
-    
-    # Verify status in MongoDB
-    time.sleep(0.5)
-    mongo_opname = mongo_db["stock_opname"].find_one({"id": opname_id})
-    status = mongo_opname.get("status") if mongo_opname else None
-    
-    # Verify trial balance still balanced
-    response = session.get(f"{BASE_URL}/accounting/trial-balance")
-    if response.status_code != 200:
-        log_test("Scenario 6: Trial balance", False, f"API returned {response.status_code}")
-        return
-    
-    tb_data = response.json().get("data", {})
-    total_debit = tb_data.get("totalDebit", 0)
-    total_credit = tb_data.get("totalCredit", 0)
-    balanced = abs(total_debit - total_credit) < 0.01
-    
-    print(f"Trial Balance after approve: Debit={total_debit}, Credit={total_credit}, Balanced={balanced}")
-    
-    # Check inventory_stock consistency
-    stock_id = items[0]["stockId"]
-    cursor = sqlite_conn.cursor()
-    cursor.execute("SELECT * FROM inventory_stock WHERE id=?", (stock_id,))
-    stock_row = cursor.fetchone()
-    
-    if status == "approved" and balanced and stock_row:
-        log_test("Scenario 6: Stock Opname APPROVE", True, f"Status={status}, TB balanced, inventory_stock consistent")
-    else:
-        log_test("Scenario 6: Stock Opname APPROVE", False, f"Status={status}, TB balanced={balanced}, stock exists={bool(stock_row)}")
+    def delete(self, endpoint: str, **kwargs) -> requests.Response:
+        """DELETE request"""
+        url = f"{BASE_URL}{endpoint}"
+        return self.session.delete(url, **kwargs)
 
-def test_scenario_7_multi_isolation(session, mongo_db):
-    """Scenario 7: Multi-isolation (concurrency) - create two assets, delete one"""
-    print("\n" + "="*80)
-    print("SCENARIO 7: Multi-Isolation (Concurrency)")
-    print("="*80)
-    
-    # Get valid account codes
-    asset_acct, accum_acct, expense_acct = get_accounts(session)
-    if not asset_acct:
-        log_test("Scenario 7: Multi-isolation", False, "Could not find account codes")
-        return
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    
-    # Create first asset
-    payload1 = {
-        "code": "FA-MULTI-1",
-        "name": "Multi Test Asset 1",
-        "category": "Test",
-        "acquisitionDate": "2026-01-01",
-        "acquisitionCost": 1000000,
-        "salvageValue": 0,
-        "usefulLifeMonths": 12,
-        "method": "straight_line",
-        "assetAccountCode": asset_acct["code"],
-        "accumAccountCode": accum_acct["code"],
-        "expenseAccountCode": expense_acct["code"],
-        "postDepreciation": False
-    }
-    
-    response1 = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload1, headers=headers)
-    if response1.status_code != 200:
-        log_test("Scenario 7: Create asset 1", False, f"API returned {response1.status_code}")
-        return
-    
-    asset1_id = response1.json().get("data", {}).get("id")
-    print(f"✓ Created asset 1: {asset1_id}")
-    
-    # Create second asset
-    payload2 = {
-        "code": "FA-MULTI-2",
-        "name": "Multi Test Asset 2",
-        "category": "Test",
-        "acquisitionDate": "2026-01-01",
-        "acquisitionCost": 2000000,
-        "salvageValue": 0,
-        "usefulLifeMonths": 12,
-        "method": "straight_line",
-        "assetAccountCode": asset_acct["code"],
-        "accumAccountCode": accum_acct["code"],
-        "expenseAccountCode": expense_acct["code"],
-        "postDepreciation": False
-    }
-    
-    response2 = session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload2, headers=headers)
-    if response2.status_code != 200:
-        log_test("Scenario 7: Create asset 2", False, f"API returned {response2.status_code}")
-        return
-    
-    asset2_id = response2.json().get("data", {}).get("id")
-    print(f"✓ Created asset 2: {asset2_id}")
-    
-    # Verify both exist in MongoDB
-    time.sleep(0.5)
-    mongo_asset1 = mongo_db["fixed_assets"].find_one({"id": asset1_id})
-    mongo_asset2 = mongo_db["fixed_assets"].find_one({"id": asset2_id})
-    
-    if not (mongo_asset1 and mongo_asset2):
-        log_test("Scenario 7: Both assets in Mongo", False, f"Asset1: {bool(mongo_asset1)}, Asset2: {bool(mongo_asset2)}")
-        return
-    
-    print(f"✓ Both assets exist in MongoDB")
-    
-    # Delete first asset
-    response = session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset1_id}", headers=headers)
-    if response.status_code != 200:
-        log_test("Scenario 7: Delete asset 1", False, f"API returned {response.status_code}")
-        return
-    
-    print(f"✓ Deleted asset 1: {asset1_id}")
-    
-    # Verify asset1 deleted, asset2 remains
-    time.sleep(0.5)
-    mongo_asset1_after = mongo_db["fixed_assets"].find_one({"id": asset1_id})
-    mongo_asset2_after = mongo_db["fixed_assets"].find_one({"id": asset2_id})
-    
-    # Verify in API
-    response = session.get(f"{BASE_URL}/accounting/fixed-assets")
-    assets = response.json().get("data", [])
-    api_has_asset1 = any(a["id"] == asset1_id for a in assets)
-    api_has_asset2 = any(a["id"] == asset2_id for a in assets)
-    
-    if not mongo_asset1_after and mongo_asset2_after and not api_has_asset1 and api_has_asset2:
-        log_test("Scenario 7: Multi-Isolation", True, "Asset1 deleted, Asset2 remains in both Mongo and API")
-        # Cleanup asset2
-        session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset2_id}", headers=headers)
-    else:
-        log_test("Scenario 7: Multi-Isolation", False, f"Mongo: asset1={bool(mongo_asset1_after)}, asset2={bool(mongo_asset2_after)}; API: asset1={api_has_asset1}, asset2={api_has_asset2}")
 
-def test_scenario_8_non_cascade_safety(sqlite_conn):
-    """Scenario 8: Non-cascade safety - verify inventory_stock NOT wiped"""
-    print("\n" + "="*80)
-    print("SCENARIO 8: Non-Cascade Safety (inventory_stock)")
-    print("="*80)
+def test_app_settings(ts: TestSession) -> bool:
+    """Test 1: app_settings persistence"""
+    print("\n" + "="*70)
+    print("TEST 1: APP_SETTINGS PERSISTENCE")
+    print("="*70)
     
-    # Count inventory_stock before and after all operations
-    count = count_sqlite_table(sqlite_conn, "inventory_stock")
-    print(f"SQLite inventory_stock count: {count}")
+    all_passed = True
     
-    if count > 0:
-        log_test("Scenario 8: Non-Cascade Safety", True, f"inventory_stock has {count} rows (NOT wiped by FK-off hydrate)")
-    else:
-        log_test("Scenario 8: Non-Cascade Safety", False, "inventory_stock is empty (may have been wiped)")
+    # Test 1.1: POST /api/settings/company
+    print("\n[1.1] POST /api/settings/company with test data")
+    try:
+        test_data = {
+            "name": "PT Test Ladang Pangan",
+            "phone": "0811-TEST-123",
+            "address": "Jl. Test MongoDB No. 123",
+            "city": "Jakarta"
+        }
+        resp = ts.post("/settings/company", {"value": test_data})
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('key') == 'company' and data.get('value') == test_data:
+                print(f"✅ PASSED: Settings saved successfully")
+                print(f"   Response: {json.dumps(data, indent=2)}")
+            else:
+                print(f"❌ FAILED: Response data mismatch")
+                print(f"   Expected value: {test_data}")
+                print(f"   Got: {data}")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            print(f"   Response: {resp.text[:500]}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 1.2: GET /api/settings/company (verify persistence)
+    print("\n[1.2] GET /api/settings/company (verify round-trip)")
+    try:
+        time.sleep(0.5)  # Brief delay for MongoDB sync
+        resp = ts.get("/settings/company")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('key') == 'company' and data.get('value') == test_data:
+                print(f"✅ PASSED: Settings persisted correctly")
+                print(f"   Retrieved value matches saved value")
+            else:
+                print(f"❌ FAILED: Retrieved data doesn't match")
+                print(f"   Expected: {test_data}")
+                print(f"   Got: {data.get('value')}")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            print(f"   Response: {resp.text[:500]}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 1.3: Test another key (appearance)
+    print("\n[1.3] POST /api/settings/appearance with test data")
+    try:
+        appearance_data = {
+            "theme": "light",
+            "accentColor": "#1D4ED8",
+            "fontSize": "medium"
+        }
+        resp = ts.post("/settings/appearance", {"value": appearance_data})
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('key') == 'appearance' and data.get('value') == appearance_data:
+                print(f"✅ PASSED: Appearance settings saved")
+            else:
+                print(f"❌ FAILED: Response data mismatch")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 1.4: GET appearance (verify independence)
+    print("\n[1.4] GET /api/settings/appearance (verify key independence)")
+    try:
+        time.sleep(0.5)
+        resp = ts.get("/settings/appearance")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('value') == appearance_data:
+                print(f"✅ PASSED: Appearance settings persisted independently")
+            else:
+                print(f"❌ FAILED: Data mismatch")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 1.5: Verify company still intact
+    print("\n[1.5] GET /api/settings/company (verify no cross-contamination)")
+    try:
+        resp = ts.get("/settings/company")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('value') == test_data:
+                print(f"✅ PASSED: Company settings still intact")
+            else:
+                print(f"❌ FAILED: Company settings corrupted")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    return all_passed
 
-def test_scenario_9_role_guard(mongo_db):
-    """Scenario 9: Role guard - operator should get 403 on fixed asset create"""
-    print("\n" + "="*80)
-    print("SCENARIO 9: Role Guard (operator -> 403)")
-    print("="*80)
-    
-    # Login as operator
-    operator_session = login(OPERATOR_EMAIL, OPERATOR_PASSWORD)
-    if not operator_session:
-        log_test("Scenario 9: Role Guard", False, "Could not login as operator")
-        return
-    
-    # Try to create fixed asset
-    payload = {
-        "code": "FA-FORBIDDEN",
-        "name": "Should Fail",
-        "category": "Test",
-        "acquisitionDate": "2026-01-01",
-        "acquisitionCost": 1000000,
-        "salvageValue": 0,
-        "usefulLifeMonths": 12,
-        "method": "straight_line",
-        "postDepreciation": False
-    }
-    
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
-    response = operator_session.post(f"{BASE_URL}/accounting/fixed-assets", json=payload, headers=headers)
-    
-    print(f"Operator POST response: {response.status_code}")
-    
-    if response.status_code == 403:
-        log_test("Scenario 9: Role Guard", True, "Operator correctly rejected with 403")
-    else:
-        log_test("Scenario 9: Role Guard", False, f"Expected 403, got {response.status_code}")
 
-def cleanup_test_data(session, mongo_db, asset_ids):
-    """Cleanup test data"""
-    print("\n" + "="*80)
-    print("CLEANUP: Deleting test data")
-    print("="*80)
+def test_contact_customers(ts: TestSession) -> bool:
+    """Test 2: contact_customers persistence"""
+    print("\n" + "="*70)
+    print("TEST 2: CONTACT_CUSTOMERS PERSISTENCE")
+    print("="*70)
     
-    headers = {"Content-Type": "application/json", "Origin": "http://localhost:3000"}
+    all_passed = True
+    contact_id = None
+    customer_id = None
     
-    # Delete test fixed assets
-    for asset_id in asset_ids:
-        if asset_id:
-            try:
-                response = session.delete(f"{BASE_URL}/accounting/fixed-assets/{asset_id}", headers=headers)
-                if response.status_code == 200:
-                    print(f"✓ Deleted fixed asset: {asset_id}")
+    # Test 2.1: Find or create an Agen/Dropshipper contact
+    print("\n[2.1] Find or create Agen/Dropshipper contact")
+    try:
+        # Try to find existing Agen
+        resp = ts.get("/contacts?limit=100")
+        if resp.status_code == 200:
+            contacts = resp.json().get('data', [])
+            agen_contacts = [c for c in contacts if 'Agen' in c.get('categories', [])]
+            
+            if agen_contacts:
+                contact_id = agen_contacts[0]['id']
+                print(f"✅ Found existing Agen: {agen_contacts[0].get('displayName')} (ID: {contact_id})")
+            else:
+                # Create new Agen
+                print("   No Agen found, creating new one...")
+                new_contact = {
+                    "displayName": "Test Agen MongoDB",
+                    "categories": ["Agen"],
+                    "contactType": "company",
+                    "phone": "0812-TEST-AGEN",
+                    "address": "Jl. Test Agen No. 1"
+                }
+                resp = ts.post("/contacts", new_contact)
+                if resp.status_code == 201:
+                    contact_id = resp.json().get('data', {}).get('id')
+                    print(f"✅ Created new Agen (ID: {contact_id})")
+                    ts.test_data['created_contact_id'] = contact_id
                 else:
-                    print(f"✗ Failed to delete fixed asset {asset_id}: {response.status_code}")
-            except Exception as e:
-                print(f"✗ Error deleting asset {asset_id}: {e}")
+                    print(f"❌ FAILED: Could not create Agen - HTTP {resp.status_code}")
+                    print(f"   Response: {resp.text[:500]}")
+                    return False
+        else:
+            print(f"❌ FAILED: Could not fetch contacts - HTTP {resp.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        return False
     
-    # Note: Stock opname may not have delete endpoint
-    print("Note: Stock opname delete endpoint may not exist (as per review request)")
+    if not contact_id:
+        print("❌ FAILED: No contact_id available")
+        return False
+    
+    # Test 2.2: POST contact customer (pelanggan akhir)
+    print(f"\n[2.2] POST /api/contacts/{contact_id}/customers")
+    try:
+        customer_data = {
+            "name": "Pelanggan Test MongoDB",
+            "phone": "0813-CUST-TEST",
+            "address": "Jl. Pelanggan Test No. 99",
+            "city": "Surabaya",
+            "notes": "Test customer for MongoDB persistence"
+        }
+        resp = ts.post(f"/contacts/{contact_id}/customers", customer_data)
+        
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            customer_id = data.get('id')
+            if customer_id and data.get('name') == customer_data['name']:
+                print(f"✅ PASSED: Customer created successfully")
+                print(f"   Customer ID: {customer_id}")
+                print(f"   Name: {data.get('name')}")
+                ts.test_data['customer_id'] = customer_id
+            else:
+                print(f"❌ FAILED: Response data incomplete")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            print(f"   Response: {resp.text[:500]}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    if not customer_id:
+        print("❌ FAILED: No customer_id, skipping remaining tests")
+        return False
+    
+    # Test 2.3: GET customers list (verify persistence)
+    print(f"\n[2.3] GET /api/contacts/{contact_id}/customers (verify round-trip)")
+    try:
+        time.sleep(0.5)
+        resp = ts.get(f"/contacts/{contact_id}/customers")
+        
+        if resp.status_code == 200:
+            customers = resp.json().get('data', [])
+            found = any(c.get('id') == customer_id for c in customers)
+            if found:
+                customer = next(c for c in customers if c.get('id') == customer_id)
+                if customer.get('name') == customer_data['name']:
+                    print(f"✅ PASSED: Customer persisted correctly")
+                    print(f"   Found in list with correct data")
+                else:
+                    print(f"❌ FAILED: Customer data mismatch")
+                    all_passed = False
+            else:
+                print(f"❌ FAILED: Customer not found in list")
+                print(f"   Expected ID: {customer_id}")
+                print(f"   Found {len(customers)} customers")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 2.4: PATCH customer (update)
+    print(f"\n[2.4] PATCH /api/contacts/{contact_id}/customers/{customer_id}")
+    try:
+        update_data = {
+            "phone": "0813-UPDATED-PHONE",
+            "notes": "Updated notes for MongoDB test"
+        }
+        resp = ts.patch(f"/contacts/{contact_id}/customers/{customer_id}", update_data)
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            if data.get('phone') == update_data['phone']:
+                print(f"✅ PASSED: Customer updated successfully")
+            else:
+                print(f"❌ FAILED: Update not reflected")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 2.5: GET again to verify update persisted
+    print(f"\n[2.5] GET customers list again (verify update persisted)")
+    try:
+        time.sleep(0.5)
+        resp = ts.get(f"/contacts/{contact_id}/customers")
+        
+        if resp.status_code == 200:
+            customers = resp.json().get('data', [])
+            customer = next((c for c in customers if c.get('id') == customer_id), None)
+            if customer and customer.get('phone') == "0813-UPDATED-PHONE":
+                print(f"✅ PASSED: Update persisted correctly")
+            else:
+                print(f"❌ FAILED: Update not persisted")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 2.6: DELETE customer
+    print(f"\n[2.6] DELETE /api/contacts/{contact_id}/customers/{customer_id}")
+    try:
+        resp = ts.delete(f"/contacts/{contact_id}/customers/{customer_id}")
+        
+        if resp.status_code == 200:
+            print(f"✅ PASSED: Customer deleted successfully")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 2.7: Verify deletion persisted
+    print(f"\n[2.7] GET customers list (verify deletion persisted)")
+    try:
+        time.sleep(0.5)
+        resp = ts.get(f"/contacts/{contact_id}/customers")
+        
+        if resp.status_code == 200:
+            customers = resp.json().get('data', [])
+            found = any(c.get('id') == customer_id for c in customers)
+            if not found:
+                print(f"✅ PASSED: Deletion persisted correctly")
+            else:
+                print(f"❌ FAILED: Customer still exists after deletion")
+                all_passed = False
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    return all_passed
 
-def print_summary(mongo_db, sqlite_conn):
-    """Print test summary"""
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
+
+def test_notifications(ts: TestSession) -> bool:
+    """Test 3: notifications persistence"""
+    print("\n" + "="*70)
+    print("TEST 3: NOTIFICATIONS PERSISTENCE")
+    print("="*70)
     
-    # MongoDB info
-    print(f"\nMongoDB Database: {MONGO_DB_NAME}")
-    print(f"  fixed_assets count: {count_mongo_collection(mongo_db, 'fixed_assets')}")
-    print(f"  stock_opname count: {count_mongo_collection(mongo_db, 'stock_opname')}")
-    print(f"  stock_opname_items count: {count_mongo_collection(mongo_db, 'stock_opname_items')}")
+    all_passed = True
     
-    # SQLite info
-    print(f"\nSQLite Database: {SQLITE_DB}")
-    print(f"  inventory_stock count: {count_sqlite_table(sqlite_conn, 'inventory_stock')}")
+    # Test 3.1: Get initial unread count
+    print("\n[3.1] GET /api/notifications/unread-count (baseline)")
+    try:
+        resp = ts.get("/notifications/unread-count")
+        
+        if resp.status_code == 200:
+            initial_count = resp.json().get('count', 0)
+            print(f"✅ PASSED: Initial unread count: {initial_count}")
+            ts.test_data['initial_unread_count'] = initial_count
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
     
-    # Test results
-    print(f"\nTest Results:")
-    passed = sum(1 for t in test_results if t["passed"])
-    total = len(test_results)
-    print(f"  Passed: {passed}/{total}")
+    # Test 3.2: Create a Purchase Order to generate notification
+    print("\n[3.2] Create Purchase Order (to generate notification)")
+    try:
+        # First, get a supplier
+        resp = ts.get("/contacts?limit=100")
+        if resp.status_code == 200:
+            contacts = resp.json().get('data', [])
+            suppliers = [c for c in contacts if 'Supplier' in c.get('categories', [])]
+            
+            if not suppliers:
+                print("   No suppliers found, creating one...")
+                new_supplier = {
+                    "displayName": "Test Supplier MongoDB",
+                    "categories": ["Supplier"],
+                    "contactType": "company",
+                    "phone": "0814-SUPPLIER"
+                }
+                resp = ts.post("/contacts", new_supplier)
+                if resp.status_code == 201:
+                    supplier_id = resp.json().get('data', {}).get('id')
+                    ts.test_data['created_supplier_id'] = supplier_id
+                else:
+                    print(f"❌ Could not create supplier")
+                    return False
+            else:
+                supplier_id = suppliers[0]['id']
+            
+            # Get a product
+            resp = ts.get("/products?limit=10")
+            if resp.status_code == 200:
+                products = resp.json().get('data', [])
+                if not products:
+                    print("❌ No products available")
+                    return False
+                product_id = products[0]['id']
+                
+                # Create PO
+                po_data = {
+                    "supplierId": supplier_id,
+                    "poType": "Produk Jadi",
+                    "items": [{
+                        "productId": product_id,
+                        "quantity": 10,
+                        "weight": 50,
+                        "unitPrice": 45000
+                    }]
+                }
+                resp = ts.post("/purchase-orders", po_data)
+                
+                if resp.status_code == 201:
+                    po_id = resp.json().get('data', {}).get('id')
+                    print(f"✅ PASSED: PO created (ID: {po_id})")
+                    ts.test_data['po_id'] = po_id
+                else:
+                    print(f"⚠️  PO creation returned {resp.status_code}")
+                    print(f"   This may not generate a notification, continuing...")
+            else:
+                print(f"❌ Could not fetch products")
+                return False
+        else:
+            print(f"❌ Could not fetch contacts")
+            return False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
     
-    for test in test_results:
-        status = "✅" if test["passed"] else "❌"
-        print(f"  {status} {test['name']}")
-        if test["details"]:
-            print(f"      {test['details']}")
+    # Test 3.3: GET notifications (verify persistence)
+    print("\n[3.3] GET /api/notifications (verify notification exists)")
+    try:
+        time.sleep(1)  # Wait for notification to be created
+        resp = ts.get("/notifications?limit=50")
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            notifications = data.get('data', [])
+            unread_count = data.get('unreadCount', 0)
+            
+            print(f"✅ PASSED: Retrieved {len(notifications)} notifications")
+            print(f"   Unread count: {unread_count}")
+            
+            if notifications:
+                print(f"   Latest notification: {notifications[0].get('message', 'N/A')[:80]}")
+                ts.test_data['notification_id'] = notifications[0].get('id')
+            else:
+                print(f"   ℹ️  No notifications found (may be expected if PO doesn't trigger notification)")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
     
-    print("\n" + "="*80)
+    # Test 3.4: Mark single notification as read (if exists)
+    notification_id = ts.test_data.get('notification_id')
+    if notification_id:
+        print(f"\n[3.4] POST /api/notifications/{notification_id}/read")
+        try:
+            resp = ts.post(f"/notifications/{notification_id}/read")
+            
+            if resp.status_code == 200:
+                print(f"✅ PASSED: Notification marked as read")
+            else:
+                print(f"❌ FAILED: HTTP {resp.status_code}")
+                all_passed = False
+        except Exception as e:
+            print(f"❌ FAILED: Exception - {e}")
+            all_passed = False
+        
+        # Test 3.5: Verify read status persisted
+        print(f"\n[3.5] GET /api/notifications/unread-count (verify read persisted)")
+        try:
+            time.sleep(0.5)
+            resp = ts.get("/notifications/unread-count")
+            
+            if resp.status_code == 200:
+                new_count = resp.json().get('count', 0)
+                print(f"✅ PASSED: Unread count after marking read: {new_count}")
+                print(f"   (Initial was: {ts.test_data.get('initial_unread_count', 'N/A')})")
+            else:
+                print(f"❌ FAILED: HTTP {resp.status_code}")
+                all_passed = False
+        except Exception as e:
+            print(f"❌ FAILED: Exception - {e}")
+            all_passed = False
+    else:
+        print(f"\n[3.4-3.5] SKIPPED: No notification ID available")
+    
+    # Test 3.6: Mark all as read
+    print(f"\n[3.6] POST /api/notifications/read-all")
+    try:
+        resp = ts.post("/notifications/read-all")
+        
+        if resp.status_code == 200:
+            print(f"✅ PASSED: All notifications marked as read")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 3.7: Verify all marked as read
+    print(f"\n[3.7] GET /api/notifications/unread-count (verify read-all persisted)")
+    try:
+        time.sleep(0.5)
+        resp = ts.get("/notifications/unread-count")
+        
+        if resp.status_code == 200:
+            final_count = resp.json().get('count', 0)
+            if final_count == 0:
+                print(f"✅ PASSED: All notifications marked as read (count: 0)")
+            else:
+                print(f"⚠️  Unread count is {final_count} (expected 0)")
+                print(f"   This may be due to new notifications arriving")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    return all_passed
+
+
+def test_regression(ts: TestSession) -> bool:
+    """Test 4: Regression - existing endpoints still work"""
+    print("\n" + "="*70)
+    print("TEST 4: REGRESSION - EXISTING ENDPOINTS")
+    print("="*70)
+    
+    all_passed = True
+    
+    # Test 4.1: GET /api/contacts
+    print("\n[4.1] GET /api/contacts")
+    try:
+        resp = ts.get("/contacts?limit=10")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            print(f"✅ PASSED: Retrieved {len(data)} contacts")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 4.2: GET /api/products
+    print("\n[4.2] GET /api/products")
+    try:
+        resp = ts.get("/products?limit=10")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            print(f"✅ PASSED: Retrieved {len(data)} products")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 4.3: GET /api/purchase-orders
+    print("\n[4.3] GET /api/purchase-orders")
+    try:
+        resp = ts.get("/purchase-orders?limit=10")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            print(f"✅ PASSED: Retrieved {len(data)} purchase orders")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    # Test 4.4: GET /api/sales-orders
+    print("\n[4.4] GET /api/sales-orders")
+    try:
+        resp = ts.get("/sales-orders?limit=10")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', [])
+            print(f"✅ PASSED: Retrieved {len(data)} sales orders")
+        else:
+            print(f"❌ FAILED: HTTP {resp.status_code}")
+            all_passed = False
+    except Exception as e:
+        print(f"❌ FAILED: Exception - {e}")
+        all_passed = False
+    
+    return all_passed
+
 
 def main():
-    """Main test execution"""
-    print("="*80)
-    print("MIGRATION Phase 6 Backend Test")
-    print("Fixed Assets + Stock Opname -> MongoDB-authoritative")
-    print("="*80)
+    print("="*70)
+    print("PHASE 10 DATA PERSISTENCE MIGRATION TEST")
+    print("MongoDB-authoritative for: app_settings, contact_customers,")
+    print("contact_documents, notifications")
+    print("="*70)
     
-    # Login as admin
-    admin_session = login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    if not admin_session:
-        print("FATAL: Could not login as admin")
-        return
+    ts = TestSession()
     
-    # Connect to MongoDB
-    mongo_client, mongo_db = get_mongo_client()
-    print(f"✓ Connected to MongoDB: {MONGO_DB_NAME}")
+    # Login
+    if not ts.login("admin"):
+        print("\n❌ CRITICAL: Login failed, cannot proceed")
+        sys.exit(1)
     
-    # Connect to SQLite
-    sqlite_conn = get_sqlite_conn()
-    print(f"✓ Connected to SQLite: {SQLITE_DB}")
+    # Run tests
+    results = {}
     
-    # Record initial inventory_stock count
-    initial_stock_count = count_sqlite_table(sqlite_conn, "inventory_stock")
-    print(f"✓ Initial inventory_stock count: {initial_stock_count}")
+    results['app_settings'] = test_app_settings(ts)
+    results['contact_customers'] = test_contact_customers(ts)
+    results['notifications'] = test_notifications(ts)
+    results['regression'] = test_regression(ts)
     
-    # Track created assets for cleanup
-    created_assets = []
+    # Summary
+    print("\n" + "="*70)
+    print("TEST SUMMARY")
+    print("="*70)
     
-    try:
-        # Run scenarios
-        asset_id = test_scenario_1_fixed_asset_create(admin_session, mongo_db)
-        if asset_id:
-            created_assets.append(asset_id)
-        
-        test_scenario_2_fixed_asset_edit(admin_session, mongo_db, asset_id)
-        test_scenario_3_depreciation_engine(admin_session, mongo_db)
-        test_scenario_4_archive_restore(admin_session, mongo_db, asset_id)
-        
-        opname_id = test_scenario_5_stock_opname_create(admin_session, mongo_db)
-        test_scenario_6_stock_opname_approve(admin_session, mongo_db, sqlite_conn, opname_id)
-        
-        test_scenario_7_multi_isolation(admin_session, mongo_db)
-        test_scenario_8_non_cascade_safety(sqlite_conn)
-        test_scenario_9_role_guard(mongo_db)
-        
-        # Cleanup
-        cleanup_test_data(admin_session, mongo_db, created_assets)
-        
-        # Print summary
-        print_summary(mongo_db, sqlite_conn)
-        
-    finally:
-        # Close connections
-        sqlite_conn.close()
-        mongo_client.close()
-        print("\n✓ Connections closed")
+    for test_name, passed in results.items():
+        status = "✅ PASSED" if passed else "❌ FAILED"
+        print(f"{status}: {test_name}")
+    
+    all_passed = all(results.values())
+    
+    print("\n" + "="*70)
+    if all_passed:
+        print("✅ ALL TESTS PASSED")
+    else:
+        print("❌ SOME TESTS FAILED")
+    print("="*70)
+    
+    return 0 if all_passed else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

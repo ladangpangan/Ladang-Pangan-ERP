@@ -21,6 +21,7 @@ import * as potxMongo from '@/lib/db/potx-mongo';
 import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
+import * as miscMongo from '@/lib/db/misc-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 // -----------------------
@@ -292,6 +293,22 @@ const TALLY_TX_PATHS = new Set([
   'purchase-orders', 'accounting', 'dashboard', 'reports',
 ]);
 
+// Phase 10: path[0] prefixes that READ or WRITE the last SQLite-only tables now migrated to Mongo:
+//   notifications        -> read/managed under /notifications; CREATED as a side-effect via the
+//                           createApproval()/createNotification() helpers on purchase-orders,
+//                           sales-orders, work-orders, opnames and approvals mutations.
+//   contact_customers    -> managed under /contacts (pelanggan akhir Agen/Dropshipper)
+//   contact_documents    -> managed under /contacts (dokumen legal)
+//   app_settings         -> managed under /settings (key-value)
+// Hydrate the per-pod SQLite mirror for these paths and, on mutations, snapshot so we diff-persist
+// only the changed rows (concurrency-safe, multi-replica). All 4 tables are hydrated together
+// whenever any of these prefixes is hit (they are tiny, so the extra reads are negligible).
+const MISC_PATHS = new Set([
+  'notifications', 'contacts', 'settings',
+  'purchase-orders', 'sales-orders', 'tally-outbound', 'tally-sessions',
+  'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
+]);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -369,6 +386,17 @@ async function handleRoute(request, { params }) {
       const rawTt = getRawSqlite();
       await tallyTxMongo.ensureReady(rawTt);
       if (method !== 'GET' && method !== 'HEAD') tallyTxMongo.captureSnapshot(request, rawTt);
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Phase 10 (MongoDB): notifications + contact_customers + contact_documents + app_settings are
+  // MongoDB-authoritative. Hydrate the per-pod SQLite mirror for these paths and, on mutations,
+  // snapshot so we diff-persist only changed rows (concurrency-safe).
+  if (MISC_PATHS.has(path[0])) {
+    try {
+      const rawMisc = getRawSqlite();
+      await miscMongo.ensureReady(rawMisc);
+      if (method !== 'GET' && method !== 'HEAD') miscMongo.captureSnapshot(request, rawMisc);
     } catch (e) { /* best-effort */ }
   }
 
@@ -6055,6 +6083,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await woApprovalMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 9: diff-persist any tally_session(+items) / inventory_transaction rows this request changed.
       try { await tallyTxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 10: diff-persist any notifications / contact_customers / contact_documents / app_settings rows.
+      try { await miscMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
