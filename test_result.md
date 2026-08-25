@@ -109,6 +109,33 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 frontend:
+  - task: "Item #2: PDF text-overflow bugfix + redesign (tiles + GRAND TOTAL bar) across all documents"
+    implemented: true
+    working: "NA"
+    file: "/app/lib/pdf/invoice.js, /app/lib/pdf/theme.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): PDF text sometimes overlaps / gets cut off / columns misaligned depending on content length
+          (happens on all documents; example priority = Tally/Surat Jalan outbound).
+          ROOT CAUSES fixed in lib/pdf/invoice.js: (1) table startY was FIXED (y0+40/42) so a long
+          customer name/address made the items table overlap the header block -> now startY is DYNAMIC =
+          max(partyBlockBottom, metaBoxBottom)+6 in ALL generators (Invoice/SO/SuratJalan/PO/TallyInbound).
+          (2) partyBlock name was not wrapped -> now wrapped to maxW so it can't spill into the meta box.
+          (3) metaBox & kvRow values + tally meta values are now ellipsized (new theme.js `ellipsize`) so long
+          numbers/codes never overlap their labels. (4) table body/description columns use overflow:'linebreak'.
+          REDESIGN (per user's reference image): Invoice now has 3 accent "tiles" (Invoice No / Tgl / Jatuh Tempo),
+          a right-aligned "INVOICE TO" block, and a full teal "GRAND TOTAL" bar. Uses company logo from Setting.
+          VERIFIED by main via Node render with EXTREME long-text data + analyze_file_tool: no overlaps, table
+          starts below header, GRAND TOTAL amount fully visible. Needs UI verification that PDF buttons still work.
+          TEST (frontend): login admin@lpi.co.id/admin123. On an Invoiced SO detail -> click "PDF Invoice", "PDF SO",
+          and a "Surat Jalan" row "PDF" -> expect success toast + NO error toast + zero console errors. On a PO detail
+          -> "PDF". On Tally Inbound -> the tally PDF. Also Setting > PDF & Dokumen "Lihat Contoh" preview renders.
+
   - task: "PDF Redesign + Configurable PDF Components (Setting > PDF & Dokumen)"
     implemented: true
     working: "NA"
