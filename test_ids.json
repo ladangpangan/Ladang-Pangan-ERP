@@ -1,0 +1,26 @@
+{
+  "productId": "8c287cc8-c548-4beb-bf76-2ebefc8d75d2",
+  "customerId": "1ca7fc83-76d9-4f0b-a92e-d9ae0057cd66",
+  "coldStorageId": "f68026af-1fe6-4d44-b6dc-1e363bec04e8",
+  "zoneId": "b8f3ac91-ee7b-4fc9-ad2c-47a93bc67c3a",
+  "soId": "59b2d6c5-03d3-4cb2-aaab-4e9c1845c90d",
+  "soNumber": "QA-SO-1",
+  "itemId": "91cd788c-f062-453d-9dc8-baa8286f9248",
+  "stocks": [
+    {
+      "id": "a9764ae2-7a6a-4afd-8222-0cff7bcb693e",
+      "kodeSimpan": "QA-S1",
+      "weight": 45
+    },
+    {
+      "id": "16034ee9-332d-4218-9a0e-91459ff8eb2a",
+      "kodeSimpan": "QA-S2",
+      "weight": 55
+    },
+    {
+      "id": "7bbda625-0315-4a08-a4bd-d804a88ea1fb",
+      "kodeSimpan": "QA-S3",
+      "weight": 120
+    }
+  ]
+}

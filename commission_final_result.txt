@@ -1,0 +1,66 @@
+
+================================================================================
+COMMISSION & END-CUSTOMERS - COMPREHENSIVE TEST
+================================================================================
+✅ Logged in as admin@lpi.co.id
+
+[TEST A] Contact Types - Agen & Dropshipper
+--------------------------------------------------------------------------------
+✅ A.1 POST Dropshipper
+   ID=resume-project-90, commissionType=per_kg, value=150
+✅ A.2 POST Agen
+   ID=resume-project-90, agentDiscountPct=5
+✅ A.3 GET ?type=Dropshipper
+   Found 4 Dropshipper(s)
+✅ A.3 GET ?type=Agen
+   Found 3 Agen(s)
+
+[TEST B] End-Customers
+--------------------------------------------------------------------------------
+✅ B.1 POST end-customer
+   ID=resume-project-90, name=End Customer Test
+✅ B.2 GET end-customers
+   Found 1 customer(s)
+✅ B.3 PATCH end-customer
+   name=Updated Name
+✅ Logged in as operator@lpi.co.id
+✅ B.5 RBAC operator POST → 403
+✅ Logged in as direktur@lpi.co.id
+✅ B.5 RBAC direktur GET → 200
+✅ B.5 RBAC direktur POST → 403
+
+[TEST C] Commission Flow
+--------------------------------------------------------------------------------
+✅ C.1 POST SO with dropshipperId
+   SO=SO/202608/0003, commission amount=15000 (expected 15000)
+❌ C.1 GET commissions
+   Found 0 record(s), amount=None
+✅ C.2 Preview (fixed)
+   amount=50000
+✅ C.2 Preview (per_kg)
+   amount=20000 (expected 20000)
+✅ C.2 Preview (percent_profit)
+✅ C.3 Duplicate SO rejection
+   Duplicate correctly rejected
+❌ C.4 percent_profit with costAmount
+❌ C.6 Pay all remaining
+   outstanding=None, unpaidAmount=None
+❌ C.7 DELETE unpaid commission
+   Failed to create unpaid commission
+✅ C.8 RBAC operator POST commission → 403
+✅ C.8 RBAC operator POST payment → 403
+✅ C.8 RBAC direktur GET commissions → 200
+✅ C.8 RBAC direktur POST commission → 403
+
+[TEST D] Surat Jalan ship-to
+--------------------------------------------------------------------------------
+❌ D.2 POST surat-jalan with shipToCustomerId
+❌ D.3 POST surat-jalan with manual ship-to
+
+[TEST E] inventory_stock.hpp_per_kg
+--------------------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/app/test_commission_final.py", line 458, in <module>
+    stocks = stocks_data.get('data', [])
+             ^^^^^^^^^^^^^^^
+AttributeError: 'list' object has no attribute 'get'

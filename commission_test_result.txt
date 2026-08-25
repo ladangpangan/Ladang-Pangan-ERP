@@ -1,0 +1,76 @@
+
+================================================================================
+COMMISSION & END-CUSTOMERS FEATURE TEST
+================================================================================
+✅ Logged in as admin@lpi.co.id
+
+[TEST A] Contact Types - Agen & Dropshipper
+--------------------------------------------------------------------------------
+
+[A.1] POST /api/contacts (Dropshipper with commission)
+Status: 201
+✅ Dropshipper created: ed3c38e5-9988-40df-a259-eb5661240637
+   commissionType=per_kg, commissionValue=150
+
+[A.2] POST /api/contacts (Agen with discount)
+Status: 201
+✅ Agen created: fc434292-20c5-49fa-b44a-49cfcda60f97
+   agentDiscountPct=5
+
+[A.3] GET /api/contacts?type=Dropshipper
+✅ Found 3 Dropshipper(s)
+
+[A.3] GET /api/contacts?type=Agen
+✅ Found 2 Agen(s)
+
+[TEST B] End-Customers (contact_customers)
+--------------------------------------------------------------------------------
+
+[B.1] POST /api/contacts/ed3c38e5-9988-40df-a259-eb5661240637/customers
+Status: 201
+✅ End-customer created: b3c98780-6be3-4de2-b504-8c46b9266295 - End Customer Test
+
+[B.2] GET /api/contacts/ed3c38e5-9988-40df-a259-eb5661240637/customers
+Status: 200
+✅ Found 1 end-customer(s)
+
+[B.3] PATCH /api/contacts/ed3c38e5-9988-40df-a259-eb5661240637/customers/b3c98780-6be3-4de2-b504-8c46b9266295
+Status: 200
+✅ Updated: Updated Name
+
+[B.5] RBAC: operator POST → 403
+❌ Login failed: 401
+
+[B.5] RBAC: direktur GET → 200, POST → 403
+❌ Login failed: 401
+
+[TEST C] Commission Flow
+--------------------------------------------------------------------------------
+
+[Setup] Creating Customer contact
+✅ Customer created: c93da29e-085b-477d-b057-7447671b86c8
+
+[Setup] Creating Product
+✅ Product created: 6be814a6-be55-4046-94e7-e89f1b221314
+
+[C.1] POST /api/sales-orders with dropshipperId=resume-project-90
+Status: 201
+✅ SO created: SO/202608/0001
+   ⚠️  No commission object in response
+
+[C.1] GET /api/contacts/ed3c38e5-9988-40df-a259-eb5661240637/commissions
+Status: 200
+✅ Commission records: 0
+   Summary: unpaidAmount=None
+
+[C.2] POST /api/commissions/preview (percent_profit)
+Status: 200
+✅ Preview: revenue=None, profit=None, amount=None
+
+[C.2] POST /api/commissions/preview (fixed)
+✅ Fixed: amount=None (should be 50000)
+Traceback (most recent call last):
+  File "/app/test_commission_feature.py", line 291, in <module>
+    assert preview.get('amount') == 50000, "Fixed amount mismatch"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Fixed amount mismatch
