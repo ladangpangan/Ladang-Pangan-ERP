@@ -1,0 +1,64 @@
+
+================================================================================
+BACKEND API TESTING: Agen & Dropshipper + Commission + End-Customers
+================================================================================
+Base URL: https://data-source-verify.preview.emergentagent.com/api
+Test started at: 2026-08-07 08:37:55
+
+================================================================================
+TEST A: Contact types Agen & Dropshipper
+================================================================================
+✅ Logged in as admin@lpi.co.id
+
+[A1] POST /api/contacts contactType='Dropshipper'
+Status: 201
+✅ Dropshipper created: None - None
+   commissionType: None, commissionValue: None
+
+[A2] POST /api/contacts contactType='Agen'
+Status: 201
+✅ Agen created: None - None
+   agentDiscountPct: None
+
+[A3] GET /api/contacts?type=Dropshipper
+Status: 200
+✅ Found 1 Dropshipper contacts
+
+[A3] GET /api/contacts?type=Agen
+Status: 200
+✅ Found 1 Agen contacts
+
+================================================================================
+TEST B: End-Customers (contact_customers)
+================================================================================
+⚠️  Skipping: No dropshipper_id
+
+================================================================================
+TEST C: Commission flow
+================================================================================
+⚠️  Skipping: No dropshipper_id
+
+================================================================================
+TEST D: Surat Jalan ship-to
+================================================================================
+⚠️  Skipping: No customer_id or dropshipper_id
+
+================================================================================
+TEST E: inventory_stock.hpp_per_kg
+================================================================================
+✅ Logged in as admin@lpi.co.id
+
+[Setup] Creating cold storage
+✅ Cold storage created: None
+
+[Setup] Creating product
+✅ Product created: None
+
+[E] POST /api/inventory/inbound with referenceType='MANUAL'
+Status: 400
+❌ Failed: {"error":"coldStorageId required"}
+
+================================================================================
+TESTING COMPLETE
+================================================================================
+Test completed at: 2026-08-07 08:37:58

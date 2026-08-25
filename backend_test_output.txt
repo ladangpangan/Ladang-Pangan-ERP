@@ -1,0 +1,178 @@
+============================================================
+LPI ERP BACKEND API TEST SUITE
+============================================================
+Base URL: https://data-source-verify.preview.emergentagent.com/api
+============================================================
+
+=== TEST 1: HEALTH CHECK ===
+✅ PASS: Health check
+   Response: {'ok': True, 'service': 'LPI ERP API'}
+
+=== TEST 2: SEED ENDPOINT ===
+✅ PASS: Seed endpoint
+   Seeded: False, Message: Admin already exists
+
+=== TEST 3: UNAUTHENTICATED CHECK ===
+✅ PASS: Unauthenticated access returns 401
+   Correctly returned 401
+
+=== TEST 4: LOGIN ALL ROLES ===
+✅ PASS: Login as admin
+   Logged in successfully, cookies: 2 cookie(s)
+✅ PASS: Login as supervisor
+   Logged in successfully, cookies: 2 cookie(s)
+✅ PASS: Login as direktur
+   Logged in successfully, cookies: 2 cookie(s)
+✅ PASS: Login as operator
+   Logged in successfully, cookies: 2 cookie(s)
+
+=== TEST 5: CONTACTS RBAC MATRIX ===
+
+--- 5a: GET /api/contacts ---
+✅ PASS: GET /api/contacts as admin
+   Expected 200, got 200
+✅ PASS: GET /api/contacts as supervisor
+   Expected 200, got 200
+✅ PASS: GET /api/contacts as direktur
+   Expected 200, got 200
+✅ PASS: GET /api/contacts as operator
+   Expected 403, got 403
+
+--- 5b: POST /api/contacts ---
+✅ PASS: POST /api/contacts as admin
+   Expected 201, got 201
+✅ PASS: POST /api/contacts as supervisor
+   Expected 201, got 201
+✅ PASS: POST /api/contacts as direktur
+   Expected 403, got 403
+✅ PASS: POST /api/contacts as operator
+   Expected 403, got 403
+
+--- 5c: PATCH /api/contacts/:id ---
+✅ PASS: PATCH /api/contacts/:id as admin
+   Expected 200, got 200
+✅ PASS: PATCH /api/contacts/:id as supervisor
+   Expected 200, got 200
+✅ PASS: PATCH /api/contacts/:id as direktur
+   Expected 403, got 403
+✅ PASS: PATCH /api/contacts/:id as operator
+   Expected 403, got 403
+
+--- 5d: DELETE /api/contacts/:id ---
+✅ PASS: DELETE /api/contacts/:id as admin
+   Expected 200, got 200
+✅ PASS: DELETE /api/contacts/:id as supervisor
+   Expected 403, got 403
+✅ PASS: DELETE /api/contacts/:id as direktur
+   Expected 403, got 403
+✅ PASS: DELETE /api/contacts/:id as operator
+   Expected 403, got 403
+
+=== TEST 6: CONTACTS SEARCH & FILTER ===
+
+--- 6a: GET /api/contacts?type=Supplier ---
+✅ PASS: Filter by type=Supplier
+   Found 2 suppliers
+
+--- 6b: GET /api/contacts?type=Customer ---
+✅ PASS: Filter by type=Customer
+   Found 2 customers
+
+--- 6c: GET /api/contacts?q=Sejahtera ---
+✅ PASS: Search by q=Sejahtera
+   Found 1 contacts with 'Sejahtera'
+
+--- 6d: GET /api/contacts?q=021-5551001 ---
+✅ PASS: Search by phone q=021-5551001
+   Found 1 contacts with phone '021-5551001'
+
+=== TEST 7: CONTACT HISTORY ===
+✅ PASS: Contact history structure
+   All fields present: ['contact', 'salesOrders', 'purchaseOrders', 'workOrders', 'summary']
+
+=== TEST 8: PRODUCTS CRUD ===
+
+--- 8a: GET /api/products ---
+✅ PASS: GET /api/products
+   Found 5 products (expected at least 5)
+
+--- 8b: POST /api/products ---
+✅ PASS: POST /api/products
+   Created product with ID: ed9835bf-1781-4179-bb88-d9e9b752d963
+
+--- 8c: PATCH /api/products/:id ---
+✅ PASS: PATCH /api/products/:id
+   Price updated to 15000
+
+--- 8d: DELETE /api/products/:id ---
+✅ PASS: DELETE /api/products/:id
+   Product deleted successfully
+
+--- 8e: GET /api/products?category=Karkas ---
+✅ PASS: Filter by category=Karkas
+   Found 1 Karkas products
+
+--- 8f: GET /api/products?q=Boneless ---
+✅ PASS: Search by q=Boneless
+   Found 1 products with 'Boneless'
+
+--- 8g: Products RBAC - Operator ---
+✅ PASS: GET /api/products as operator
+   Operator can view products
+✅ PASS: POST /api/products as operator
+   Operator correctly denied (403)
+
+=== TEST 9: COLD STORAGES + ZONES ===
+
+--- 9a: GET /api/cold-storages ---
+✅ PASS: GET /api/cold-storages
+   Found 2 cold storages with zoneCount
+
+--- 9b: POST /api/cold-storages ---
+✅ PASS: POST /api/cold-storages
+   Created cold storage with ID: f7e6a6ef-4bd0-4356-971d-e27a12dc6f42
+
+--- 9c: GET /api/cold-storages/:id ---
+✅ PASS: GET /api/cold-storages/:id
+   Cold storage has zones array: 0 zones
+
+--- 9d: POST /api/zones ---
+✅ PASS: POST /api/zones
+   Created zone with ID: 2ea371b2-f5f9-4642-aa55-bd61c17ee3e2
+
+--- 9e: GET /api/zones?cold_storage_id=xxx ---
+✅ PASS: GET /api/zones with filter
+   Found 1 zones for cold storage
+
+--- 9f: PATCH /api/zones/:id ---
+✅ PASS: PATCH /api/zones/:id
+   Zone renamed to 'Renamed Zone'
+
+--- 9g: DELETE /api/zones/:id ---
+✅ PASS: DELETE /api/zones/:id
+   Zone deleted successfully
+
+--- 9h: DELETE /api/cold-storages/:id ---
+✅ PASS: DELETE /api/cold-storages/:id
+   Cold storage deleted successfully
+
+--- 9i: Cold Storage RBAC ---
+✅ PASS: POST /api/cold-storages as supervisor
+   Expected 201, got 201
+✅ PASS: POST /api/cold-storages as direktur
+   Expected 403, got 403
+✅ PASS: POST /api/cold-storages as operator
+   Expected 403, got 403
+
+=== TEST 10: STATS ENDPOINT ===
+✅ PASS: GET /api/stats
+   Stats: {'contacts': 7, 'products': 5, 'coldStorages': 2, 'zones': 4, 'users': 4}
+
+============================================================
+TEST SUMMARY
+============================================================
+✅ Passed: 48
+❌ Failed: 0
+Total: 48
+
+============================================================
