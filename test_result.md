@@ -481,7 +481,7 @@ backend:
           Commission records are created AND persisted for both STOCK and DROPSHIP sales orders.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://ladang-erp-system.preview.emergentagent.com/api
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
           - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Test execution time: ~81 seconds
@@ -20158,7 +20158,7 @@ frontend:
           === TEST RESULTS ===
           
           ✅ TEST 1 — Login (PASSED):
-             - URL: https://data-source-verify.preview.emergentagent.com/login
+             - URL: https://github-to-production.preview.emergentagent.com/login
              - Credentials: admin@lpi.co.id / admin123
              - Successfully authenticated and redirected to /dashboard
           
@@ -20352,7 +20352,7 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
-      FRONTEND UI verification approved by user. App base URL: https://data-source-verify.preview.emergentagent.com
+      FRONTEND UI verification approved by user. App base URL: https://github-to-production.preview.emergentagent.com
       Login at /login with admin@lpi.co.id / admin123 (email + password fields, submit button). All app pages are under
       /dashboard. Please verify (no crashes, data renders, filters work):
       1) /dashboard/inventory — header cards show TOTAL ROWS = 29, TOTAL BERAT = 5.751 kg, NILAI STOK (HPP) ≈ Rp 94,3–94,4 juta.
@@ -21682,7 +21682,7 @@ frontend:
           All pages load data correctly from MongoDB, CRUD operations work, and no session drops or critical errors found.
           
           === TEST ENVIRONMENT ===
-          - URL: https://data-source-verify.preview.emergentagent.com
+          - URL: https://github-to-production.preview.emergentagent.com
           - Auth: admin@lpi.co.id / admin123
           - UI Language: Indonesian
           - Browser: Playwright automation with console log capture
@@ -21839,7 +21839,7 @@ agent_communication:
     -agent: "main"
     -message: |
       Please run FRONTEND UI tests for the Master Data pages (user explicitly requested this).
-      App URL: https://data-source-verify.preview.emergentagent.com  Login page: /login
+      App URL: https://github-to-production.preview.emergentagent.com  Login page: /login
       Login as admin: admin@lpi.co.id / admin123. UI/labels are in Indonesian.
       Test these dashboard pages (data now comes from MongoDB via dual-write):
       1) PRODUCTS (/dashboard/products): list loads (~52 products); create a new product via the "Tambah"/add
@@ -28616,7 +28616,7 @@ agent_communication:
           All data correctly persists to MongoDB and round-trips successfully.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://mongo-migration-26.preview.emergentagent.com/api
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -28713,7 +28713,7 @@ agent_communication:
           Full CRUD cycle tested: Create → Read → Update → Read → Delete → Verify deletion.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://mongo-migration-26.preview.emergentagent.com/api
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -28820,7 +28820,7 @@ agent_communication:
           Tested notification retrieval, mark-as-read (single + all), and unread count tracking.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://mongo-migration-26.preview.emergentagent.com/api
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -28931,7 +28931,7 @@ agent_communication:
           after PHASE 10 MongoDB-authoritative migration for misc tables.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://mongo-migration-26.preview.emergentagent.com/api
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           
@@ -29286,7 +29286,7 @@ agent_communication:
       All 4 domains (app_settings, contact_customers, notifications, + regression) tested and verified.
       
       === TEST ENVIRONMENT ===
-      - Base URL: https://mongo-migration-26.preview.emergentagent.com/api
+      - Base URL: https://github-to-production.preview.emergentagent.com/api
       - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
       - Database: MongoDB Atlas (erp_prod) + SQLite mirror
       - Module: /app/lib/db/misc-mongo.js

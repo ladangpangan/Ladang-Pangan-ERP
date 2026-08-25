@@ -7,7 +7,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "https://data-source-verify.preview.emergentagent.com/api"
+BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
 
 # Correct passwords from seed
 ADMIN_CREDS = ("admin@lpi.co.id", "admin123")
