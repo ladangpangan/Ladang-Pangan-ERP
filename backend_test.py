@@ -1,713 +1,684 @@
 #!/usr/bin/env python3
 """
-PHASE 10 Data Persistence Migration Test
-Tests MongoDB-authoritative persistence for 4 domains:
-1. app_settings
-2. contact_customers
-3. notifications
-4. contact_documents (skipped - file upload complex)
+Backend API Test for Item #1B: Dropshipper Commission Bugfix
+Tests that commission records are created AND returned by GET /sales-orders/:id
 """
 
 import requests
 import json
 import time
-import sys
-from typing import Dict, Any, Optional
+from datetime import datetime
 
 # Configuration
-BASE_URL = "https://mongo-migration-26.preview.emergentagent.com/api"
-LOGIN_CREDENTIALS = {
-    "admin": {"email": "admin@lpi.co.id", "password": "admin123"},
-    "supervisor": {"email": "supervisor@lpi.co.id", "password": "super123"},
-    "direktur": {"email": "direktur@lpi.co.id", "password": "direktur123"},
-    "operator": {"email": "operator@lpi.co.id", "password": "operator123"}
+BASE_URL = "https://ladang-erp-system.preview.emergentagent.com/api"
+LOGIN_EMAIL = "admin@lpi.co.id"
+LOGIN_PASSWORD = "admin123"
+ORIGIN = "https://ladang-erp-system.preview.emergentagent.com"
+
+# Test data IDs (will be populated during test)
+test_data = {
+    'dropshipper_id': None,
+    'customer_id': None,
+    'supplier_id': None,
+    'product_id': None,
+    'so_stock_id': None,
+    'so_dropship_id': None,
 }
 
-class TestSession:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        })
-        self.test_data = {}
+def log(msg):
+    """Print timestamped log message"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+def login():
+    """Login and return session"""
+    log("=== AUTHENTICATION ===")
+    session = requests.Session()
+    
+    # Login
+    login_url = f"{BASE_URL}/auth/sign-in/email"
+    login_data = {
+        "email": LOGIN_EMAIL,
+        "password": LOGIN_PASSWORD
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": ORIGIN
+    }
+    
+    try:
+        resp = session.post(login_url, json=login_data, headers=headers)
+        log(f"Login response: {resp.status_code}")
         
-    def login(self, role: str = "admin") -> bool:
-        """Login and obtain session cookie"""
-        try:
-            creds = LOGIN_CREDENTIALS[role]
-            # Better Auth sign-in endpoint
-            auth_url = BASE_URL.replace('/api', '/api/auth/sign-in/email')
-            resp = self.session.post(auth_url, json=creds, timeout=10)
+        if resp.status_code == 200:
+            log("✅ Login successful")
+            return session
+        else:
+            log(f"❌ Login failed: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        log(f"❌ Login error: {str(e)}")
+        return None
+
+def test_step_1_create_prerequisites(session):
+    """Step 1: Create dropshipper, customer, supplier, product"""
+    log("\n=== STEP 1: CREATE PREREQUISITES ===")
+    
+    timestamp = int(time.time())
+    
+    # 1.1 Create Dropshipper contact
+    log("\n1.1 Creating Dropshipper contact...")
+    dropshipper_data = {
+        "displayName": f"Test DS {timestamp}",
+        "categories": ["Dropshipper"],
+        "commissionType": "per_kg",
+        "commissionValue": 1000
+    }
+    
+    try:
+        resp = session.post(f"{BASE_URL}/contacts", json=dropshipper_data)
+        log(f"Dropshipper creation response: {resp.status_code}")
+        
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            test_data['dropshipper_id'] = data.get('id')
+            log(f"✅ Dropshipper created: ID={test_data['dropshipper_id']}, code={data.get('code')}, isDropshipper={data.get('isDropshipper')}")
             
-            if resp.status_code == 200:
-                print(f"✅ Login successful as {role} ({creds['email']})")
-                return True
+            # Verify response has code like 'DS-xxx' and isDropshipper true
+            code = data.get('code', '')
+            is_dropshipper = data.get('isDropshipper')
+            
+            if code.startswith('DS-') and is_dropshipper:
+                log(f"✅ Dropshipper validation passed: code={code}, isDropshipper={is_dropshipper}")
             else:
-                print(f"❌ Login failed: {resp.status_code} - {resp.text[:200]}")
-                return False
-        except Exception as e:
-            print(f"❌ Login exception: {e}")
+                log(f"⚠️ Dropshipper validation warning: code={code}, isDropshipper={is_dropshipper}")
+        else:
+            log(f"❌ Dropshipper creation failed: {resp.status_code} - {resp.text}")
             return False
+    except Exception as e:
+        log(f"❌ Dropshipper creation error: {str(e)}")
+        return False
     
-    def get(self, endpoint: str, **kwargs) -> requests.Response:
-        """GET request"""
-        url = f"{BASE_URL}{endpoint}"
-        return self.session.get(url, **kwargs)
+    # 1.2 Create Customer contact
+    log("\n1.2 Creating Customer contact...")
+    customer_data = {
+        "displayName": f"Test Cust {timestamp}",
+        "categories": ["Customer"]
+    }
     
-    def post(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
-        """POST request"""
-        url = f"{BASE_URL}{endpoint}"
-        if data is not None and 'json' not in kwargs:
-            kwargs['json'] = data
-        return self.session.post(url, **kwargs)
+    try:
+        resp = session.post(f"{BASE_URL}/contacts", json=customer_data)
+        log(f"Customer creation response: {resp.status_code}")
+        
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            test_data['customer_id'] = data.get('id')
+            log(f"✅ Customer created: ID={test_data['customer_id']}, code={data.get('code')}")
+        else:
+            log(f"❌ Customer creation failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ Customer creation error: {str(e)}")
+        return False
     
-    def put(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
-        """PUT request"""
-        url = f"{BASE_URL}{endpoint}"
-        if data is not None and 'json' not in kwargs:
-            kwargs['json'] = data
-        return self.session.put(url, **kwargs)
+    # 1.3 Create Supplier contact
+    log("\n1.3 Creating Supplier contact...")
+    supplier_data = {
+        "displayName": f"Test Sup {timestamp}",
+        "categories": ["Supplier"]
+    }
     
-    def patch(self, endpoint: str, data: Any = None, **kwargs) -> requests.Response:
-        """PATCH request"""
-        url = f"{BASE_URL}{endpoint}"
-        if data is not None and 'json' not in kwargs:
-            kwargs['json'] = data
-        return self.session.patch(url, **kwargs)
+    try:
+        resp = session.post(f"{BASE_URL}/contacts", json=supplier_data)
+        log(f"Supplier creation response: {resp.status_code}")
+        
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            test_data['supplier_id'] = data.get('id')
+            log(f"✅ Supplier created: ID={test_data['supplier_id']}, code={data.get('code')}")
+        else:
+            log(f"❌ Supplier creation failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ Supplier creation error: {str(e)}")
+        return False
     
-    def delete(self, endpoint: str, **kwargs) -> requests.Response:
-        """DELETE request"""
-        url = f"{BASE_URL}{endpoint}"
-        return self.session.delete(url, **kwargs)
+    # 1.4 Create Product
+    log("\n1.4 Creating Product...")
+    product_data = {
+        "sku": f"ITEST-{timestamp}",
+        "name": f"Test Prod {timestamp}",
+        "unit": "kg",
+        "basePrice": 30000,
+        "category": "Produk Jadi"
+    }
+    
+    try:
+        resp = session.post(f"{BASE_URL}/products", json=product_data)
+        log(f"Product creation response: {resp.status_code}")
+        
+        if resp.status_code == 201:
+            data = resp.json().get('data', {})
+            test_data['product_id'] = data.get('id')
+            log(f"✅ Product created: ID={test_data['product_id']}, SKU={data.get('sku')}")
+        else:
+            log(f"❌ Product creation failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ Product creation error: {str(e)}")
+        return False
+    
+    log("\n✅ STEP 1 COMPLETE: All prerequisites created")
+    return True
 
-
-def test_app_settings(ts: TestSession) -> bool:
-    """Test 1: app_settings persistence"""
-    print("\n" + "="*70)
-    print("TEST 1: APP_SETTINGS PERSISTENCE")
-    print("="*70)
+def test_step_2_stock_so_with_commission(session):
+    """Step 2: Create STOCK SO with commission and verify response"""
+    log("\n=== STEP 2: STOCK SO WITH COMMISSION ===")
     
-    all_passed = True
+    so_data = {
+        "customerId": test_data['customer_id'],
+        "dropshipperId": test_data['dropshipper_id'],
+        "commissionType": "per_kg",
+        "commissionValue": 1000,
+        "fulfillmentType": "stock",
+        "orderDate": "2026-08-25",
+        "paymentTerm": "cash",
+        "items": [
+            {
+                "productId": test_data['product_id'],
+                "quantity": 10,
+                "weight": 50,
+                "unitPrice": 40000
+            }
+        ]
+    }
     
-    # Test 1.1: POST /api/settings/company
-    print("\n[1.1] POST /api/settings/company with test data")
     try:
-        test_data = {
-            "name": "PT Test Ladang Pangan",
-            "phone": "0811-TEST-123",
-            "address": "Jl. Test MongoDB No. 123",
-            "city": "Jakarta"
-        }
-        resp = ts.post("/settings/company", {"value": test_data})
+        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
+        log(f"Stock SO creation response: {resp.status_code}")
         
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('key') == 'company' and data.get('value') == test_data:
-                print(f"✅ PASSED: Settings saved successfully")
-                print(f"   Response: {json.dumps(data, indent=2)}")
-            else:
-                print(f"❌ FAILED: Response data mismatch")
-                print(f"   Expected value: {test_data}")
-                print(f"   Got: {data}")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            print(f"   Response: {resp.text[:500]}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 1.2: GET /api/settings/company (verify persistence)
-    print("\n[1.2] GET /api/settings/company (verify round-trip)")
-    try:
-        time.sleep(0.5)  # Brief delay for MongoDB sync
-        resp = ts.get("/settings/company")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('key') == 'company' and data.get('value') == test_data:
-                print(f"✅ PASSED: Settings persisted correctly")
-                print(f"   Retrieved value matches saved value")
-            else:
-                print(f"❌ FAILED: Retrieved data doesn't match")
-                print(f"   Expected: {test_data}")
-                print(f"   Got: {data.get('value')}")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            print(f"   Response: {resp.text[:500]}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 1.3: Test another key (appearance)
-    print("\n[1.3] POST /api/settings/appearance with test data")
-    try:
-        appearance_data = {
-            "theme": "light",
-            "accentColor": "#1D4ED8",
-            "fontSize": "medium"
-        }
-        resp = ts.post("/settings/appearance", {"value": appearance_data})
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('key') == 'appearance' and data.get('value') == appearance_data:
-                print(f"✅ PASSED: Appearance settings saved")
-            else:
-                print(f"❌ FAILED: Response data mismatch")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 1.4: GET appearance (verify independence)
-    print("\n[1.4] GET /api/settings/appearance (verify key independence)")
-    try:
-        time.sleep(0.5)
-        resp = ts.get("/settings/appearance")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('value') == appearance_data:
-                print(f"✅ PASSED: Appearance settings persisted independently")
-            else:
-                print(f"❌ FAILED: Data mismatch")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 1.5: Verify company still intact
-    print("\n[1.5] GET /api/settings/company (verify no cross-contamination)")
-    try:
-        resp = ts.get("/settings/company")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('value') == test_data:
-                print(f"✅ PASSED: Company settings still intact")
-            else:
-                print(f"❌ FAILED: Company settings corrupted")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    return all_passed
-
-
-def test_contact_customers(ts: TestSession) -> bool:
-    """Test 2: contact_customers persistence"""
-    print("\n" + "="*70)
-    print("TEST 2: CONTACT_CUSTOMERS PERSISTENCE")
-    print("="*70)
-    
-    all_passed = True
-    contact_id = None
-    customer_id = None
-    
-    # Test 2.1: Find or create an Agen/Dropshipper contact
-    print("\n[2.1] Find or create Agen/Dropshipper contact")
-    try:
-        # Try to find existing Agen
-        resp = ts.get("/contacts?limit=100")
-        if resp.status_code == 200:
-            contacts = resp.json().get('data', [])
-            agen_contacts = [c for c in contacts if 'Agen' in c.get('categories', [])]
+        if resp.status_code == 201:
+            response_data = resp.json()
+            data = response_data.get('data', {})
+            commission = response_data.get('commission')
             
-            if agen_contacts:
-                contact_id = agen_contacts[0]['id']
-                print(f"✅ Found existing Agen: {agen_contacts[0].get('displayName')} (ID: {contact_id})")
-            else:
-                # Create new Agen
-                print("   No Agen found, creating new one...")
-                new_contact = {
-                    "displayName": "Test Agen MongoDB",
-                    "categories": ["Agen"],
-                    "contactType": "company",
-                    "phone": "0812-TEST-AGEN",
-                    "address": "Jl. Test Agen No. 1"
-                }
-                resp = ts.post("/contacts", new_contact)
-                if resp.status_code == 201:
-                    contact_id = resp.json().get('data', {}).get('id')
-                    print(f"✅ Created new Agen (ID: {contact_id})")
-                    ts.test_data['created_contact_id'] = contact_id
+            test_data['so_stock_id'] = data.get('id')
+            log(f"✅ Stock SO created: ID={test_data['so_stock_id']}, SO Number={data.get('soNumber')}")
+            
+            # Verify commission in response
+            if commission:
+                commission_amount = commission.get('amount')
+                expected_amount = 50000  # 1000 * 50kg
+                
+                log(f"Commission in response: {json.dumps(commission, indent=2)}")
+                
+                if commission_amount == expected_amount:
+                    log(f"✅ Commission amount correct: {commission_amount} (expected {expected_amount})")
                 else:
-                    print(f"❌ FAILED: Could not create Agen - HTTP {resp.status_code}")
-                    print(f"   Response: {resp.text[:500]}")
+                    log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
                     return False
+            else:
+                log(f"❌ Commission not found in response")
+                return False
         else:
-            print(f"❌ FAILED: Could not fetch contacts - HTTP {resp.status_code}")
+            log(f"❌ Stock SO creation failed: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
+        log(f"❌ Stock SO creation error: {str(e)}")
         return False
     
-    if not contact_id:
-        print("❌ FAILED: No contact_id available")
-        return False
+    log("\n✅ STEP 2 COMPLETE: Stock SO with commission created")
+    return True
+
+def test_step_3_get_so_detail_returns_commissions(session):
+    """Step 3: CORE FIX - GET SO detail returns commissions array"""
+    log("\n=== STEP 3: CORE FIX - GET SO DETAIL RETURNS COMMISSIONS ===")
     
-    # Test 2.2: POST contact customer (pelanggan akhir)
-    print(f"\n[2.2] POST /api/contacts/{contact_id}/customers")
+    so_id = test_data['so_stock_id']
+    
     try:
-        customer_data = {
-            "name": "Pelanggan Test MongoDB",
-            "phone": "0813-CUST-TEST",
-            "address": "Jl. Pelanggan Test No. 99",
-            "city": "Surabaya",
-            "notes": "Test customer for MongoDB persistence"
-        }
-        resp = ts.post(f"/contacts/{contact_id}/customers", customer_data)
+        resp = session.get(f"{BASE_URL}/sales-orders/{so_id}")
+        log(f"GET SO detail response: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            commissions = data.get('commissions')
+            
+            log(f"SO Number: {data.get('soNumber')}")
+            log(f"Commissions field present: {commissions is not None}")
+            
+            if commissions is None:
+                log(f"❌ CRITICAL: commissions field is missing from response")
+                return False
+            
+            if not isinstance(commissions, list):
+                log(f"❌ CRITICAL: commissions is not an array, type={type(commissions)}")
+                return False
+            
+            log(f"✅ Commissions is an array with length: {len(commissions)}")
+            
+            if len(commissions) < 1:
+                log(f"❌ CRITICAL: commissions array is empty (expected at least 1 record)")
+                return False
+            
+            log(f"✅ Commissions array has {len(commissions)} record(s)")
+            
+            # Verify first commission record
+            commission = commissions[0]
+            log(f"\nCommission record details:")
+            log(f"  - commissionAmount: {commission.get('commissionAmount')}")
+            log(f"  - commissionType: {commission.get('commissionType')}")
+            log(f"  - status: {commission.get('status')}")
+            log(f"  - dropshipper: {commission.get('dropshipper')}")
+            
+            # Verify commission amount
+            commission_amount = commission.get('commissionAmount')
+            expected_amount = 50000  # 1000 * 50kg
+            
+            if commission_amount != expected_amount:
+                log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
+                return False
+            
+            log(f"✅ Commission amount correct: {commission_amount}")
+            
+            # Verify commission type
+            commission_type = commission.get('commissionType')
+            if commission_type != 'per_kg':
+                log(f"❌ Commission type mismatch: {commission_type} (expected 'per_kg')")
+                return False
+            
+            log(f"✅ Commission type correct: {commission_type}")
+            
+            # Verify status
+            status = commission.get('status')
+            if status != 'unpaid':
+                log(f"❌ Status mismatch: {status} (expected 'unpaid')")
+                return False
+            
+            log(f"✅ Status correct: {status}")
+            
+            # Verify dropshipper object populated
+            dropshipper = commission.get('dropshipper')
+            if not dropshipper:
+                log(f"❌ Dropshipper object is missing or null")
+                return False
+            
+            log(f"✅ Dropshipper object populated:")
+            log(f"  - code: {dropshipper.get('code')}")
+            log(f"  - displayName: {dropshipper.get('displayName')}")
+            
+            # Verify dropshipper matches the one we created
+            if dropshipper.get('code') and dropshipper.get('displayName'):
+                log(f"✅ Dropshipper has code and displayName")
+            else:
+                log(f"❌ Dropshipper missing code or displayName")
+                return False
+            
+        else:
+            log(f"❌ GET SO detail failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ GET SO detail error: {str(e)}")
+        return False
+    
+    log("\n✅ STEP 3 COMPLETE: GET SO detail returns commissions array with correct data")
+    return True
+
+def test_step_4_dropship_so_with_commission(session):
+    """Step 4: Create DROPSHIP SO with commission and verify"""
+    log("\n=== STEP 4: DROPSHIP SO WITH COMMISSION ===")
+    
+    so_data = {
+        "customerId": test_data['customer_id'],
+        "dropshipperId": test_data['dropshipper_id'],
+        "commissionType": "per_kg",
+        "commissionValue": 1500,
+        "fulfillmentType": "dropship",
+        "supplierId": test_data['supplier_id'],
+        "orderDate": "2026-08-25",
+        "paymentTerm": "cash",
+        "items": [
+            {
+                "productId": test_data['product_id'],
+                "quantity": 10,
+                "weight": 40,
+                "unitPrice": 45000,
+                "buyPrice": 35000
+            }
+        ]
+    }
+    
+    try:
+        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
+        log(f"Dropship SO creation response: {resp.status_code}")
+        
+        if resp.status_code == 201:
+            response_data = resp.json()
+            data = response_data.get('data', {})
+            commission = response_data.get('commission')
+            
+            test_data['so_dropship_id'] = data.get('id')
+            log(f"✅ Dropship SO created: ID={test_data['so_dropship_id']}, SO Number={data.get('soNumber')}")
+            
+            # Verify commission in response
+            if commission:
+                commission_amount = commission.get('amount')
+                expected_amount = 60000  # 1500 * 40kg
+                
+                log(f"Commission in response: {json.dumps(commission, indent=2)}")
+                
+                if commission_amount == expected_amount:
+                    log(f"✅ Commission amount correct: {commission_amount} (expected {expected_amount})")
+                else:
+                    log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
+                    return False
+            else:
+                log(f"❌ Commission not found in response")
+                return False
+            
+            # Now GET the SO detail to verify commissions array
+            log(f"\nGetting SO detail for dropship SO...")
+            resp2 = session.get(f"{BASE_URL}/sales-orders/{test_data['so_dropship_id']}")
+            
+            if resp2.status_code == 200:
+                data2 = resp2.json().get('data', {})
+                commissions = data2.get('commissions')
+                
+                if commissions and len(commissions) >= 1:
+                    commission_rec = commissions[0]
+                    commission_amount = commission_rec.get('commissionAmount')
+                    dropshipper = commission_rec.get('dropshipper')
+                    
+                    log(f"✅ Dropship SO commissions array has {len(commissions)} record(s)")
+                    log(f"  - commissionAmount: {commission_amount} (expected 60000)")
+                    log(f"  - dropshipper populated: {dropshipper is not None}")
+                    
+                    if commission_amount == 60000 and dropshipper:
+                        log(f"✅ Dropship SO commission verification passed")
+                    else:
+                        log(f"❌ Dropship SO commission verification failed")
+                        return False
+                else:
+                    log(f"❌ Dropship SO commissions array is empty or missing")
+                    return False
+            else:
+                log(f"❌ GET dropship SO detail failed: {resp2.status_code}")
+                return False
+            
+        else:
+            log(f"❌ Dropship SO creation failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ Dropship SO creation error: {str(e)}")
+        return False
+    
+    log("\n✅ STEP 4 COMPLETE: Dropship SO with commission created and verified")
+    return True
+
+def test_step_5_persistence_check_via_dropshipper_endpoint(session):
+    """Step 5: Persistence check via dropshipper endpoint"""
+    log("\n=== STEP 5: PERSISTENCE CHECK VIA DROPSHIPPER ENDPOINT ===")
+    
+    dropshipper_id = test_data['dropshipper_id']
+    
+    try:
+        resp = session.get(f"{BASE_URL}/contacts/{dropshipper_id}/commissions")
+        log(f"GET dropshipper commissions response: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            data = resp.json().get('data', {})
+            records = data.get('records', [])
+            summary = data.get('summary', {})
+            
+            log(f"Commission records count: {len(records)}")
+            log(f"Summary: {json.dumps(summary, indent=2)}")
+            
+            # Should have 2 records (1 from stock SO, 1 from dropship SO)
+            if len(records) < 2:
+                log(f"❌ Expected at least 2 commission records, got {len(records)}")
+                return False
+            
+            log(f"✅ Found {len(records)} commission records")
+            
+            # Verify amounts
+            total_commission = 0
+            for rec in records:
+                amount = rec.get('commissionAmount', 0)
+                so_number = rec.get('soNumber', 'N/A')
+                log(f"  - SO {so_number}: Rp {amount:,.0f}")
+                total_commission += amount
+            
+            expected_total = 110000  # 50000 + 60000
+            log(f"\nTotal commission: Rp {total_commission:,.0f} (expected Rp {expected_total:,.0f})")
+            
+            if total_commission == expected_total:
+                log(f"✅ Total commission correct")
+            else:
+                log(f"⚠️ Total commission mismatch (but records exist)")
+            
+            # Check summary
+            summary_total = summary.get('totalCommission', 0)
+            log(f"Summary totalCommission: Rp {summary_total:,.0f}")
+            
+            if summary_total == expected_total:
+                log(f"✅ Summary totalCommission correct")
+            else:
+                log(f"⚠️ Summary totalCommission mismatch")
+            
+        else:
+            log(f"❌ GET dropshipper commissions failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        log(f"❌ GET dropshipper commissions error: {str(e)}")
+        return False
+    
+    log("\n✅ STEP 5 COMPLETE: Persistence check passed")
+    return True
+
+def test_step_6_regression_tests(session):
+    """Step 6: Regression tests"""
+    log("\n=== STEP 6: REGRESSION TESTS ===")
+    
+    # 6.1 Add "pelanggan akhir" to the dropshipper
+    log("\n6.1 Adding pelanggan akhir to dropshipper...")
+    
+    customer_data = {
+        "name": "Pelanggan Test",
+        "phone": "0812",
+        "city": "Kediri"
+    }
+    
+    try:
+        resp = session.post(f"{BASE_URL}/contacts/{test_data['dropshipper_id']}/customers", json=customer_data)
+        log(f"Add customer response: {resp.status_code}")
         
         if resp.status_code == 201:
             data = resp.json().get('data', {})
             customer_id = data.get('id')
-            if customer_id and data.get('name') == customer_data['name']:
-                print(f"✅ PASSED: Customer created successfully")
-                print(f"   Customer ID: {customer_id}")
-                print(f"   Name: {data.get('name')}")
-                ts.test_data['customer_id'] = customer_id
-            else:
-                print(f"❌ FAILED: Response data incomplete")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            print(f"   Response: {resp.text[:500]}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    if not customer_id:
-        print("❌ FAILED: No customer_id, skipping remaining tests")
-        return False
-    
-    # Test 2.3: GET customers list (verify persistence)
-    print(f"\n[2.3] GET /api/contacts/{contact_id}/customers (verify round-trip)")
-    try:
-        time.sleep(0.5)
-        resp = ts.get(f"/contacts/{contact_id}/customers")
-        
-        if resp.status_code == 200:
-            customers = resp.json().get('data', [])
-            found = any(c.get('id') == customer_id for c in customers)
-            if found:
-                customer = next(c for c in customers if c.get('id') == customer_id)
-                if customer.get('name') == customer_data['name']:
-                    print(f"✅ PASSED: Customer persisted correctly")
-                    print(f"   Found in list with correct data")
-                else:
-                    print(f"❌ FAILED: Customer data mismatch")
-                    all_passed = False
-            else:
-                print(f"❌ FAILED: Customer not found in list")
-                print(f"   Expected ID: {customer_id}")
-                print(f"   Found {len(customers)} customers")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 2.4: PATCH customer (update)
-    print(f"\n[2.4] PATCH /api/contacts/{contact_id}/customers/{customer_id}")
-    try:
-        update_data = {
-            "phone": "0813-UPDATED-PHONE",
-            "notes": "Updated notes for MongoDB test"
-        }
-        resp = ts.patch(f"/contacts/{contact_id}/customers/{customer_id}", update_data)
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            if data.get('phone') == update_data['phone']:
-                print(f"✅ PASSED: Customer updated successfully")
-            else:
-                print(f"❌ FAILED: Update not reflected")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 2.5: GET again to verify update persisted
-    print(f"\n[2.5] GET customers list again (verify update persisted)")
-    try:
-        time.sleep(0.5)
-        resp = ts.get(f"/contacts/{contact_id}/customers")
-        
-        if resp.status_code == 200:
-            customers = resp.json().get('data', [])
-            customer = next((c for c in customers if c.get('id') == customer_id), None)
-            if customer and customer.get('phone') == "0813-UPDATED-PHONE":
-                print(f"✅ PASSED: Update persisted correctly")
-            else:
-                print(f"❌ FAILED: Update not persisted")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 2.6: DELETE customer
-    print(f"\n[2.6] DELETE /api/contacts/{contact_id}/customers/{customer_id}")
-    try:
-        resp = ts.delete(f"/contacts/{contact_id}/customers/{customer_id}")
-        
-        if resp.status_code == 200:
-            print(f"✅ PASSED: Customer deleted successfully")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 2.7: Verify deletion persisted
-    print(f"\n[2.7] GET customers list (verify deletion persisted)")
-    try:
-        time.sleep(0.5)
-        resp = ts.get(f"/contacts/{contact_id}/customers")
-        
-        if resp.status_code == 200:
-            customers = resp.json().get('data', [])
-            found = any(c.get('id') == customer_id for c in customers)
-            if not found:
-                print(f"✅ PASSED: Deletion persisted correctly")
-            else:
-                print(f"❌ FAILED: Customer still exists after deletion")
-                all_passed = False
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    return all_passed
-
-
-def test_notifications(ts: TestSession) -> bool:
-    """Test 3: notifications persistence"""
-    print("\n" + "="*70)
-    print("TEST 3: NOTIFICATIONS PERSISTENCE")
-    print("="*70)
-    
-    all_passed = True
-    
-    # Test 3.1: Get initial unread count
-    print("\n[3.1] GET /api/notifications/unread-count (baseline)")
-    try:
-        resp = ts.get("/notifications/unread-count")
-        
-        if resp.status_code == 200:
-            initial_count = resp.json().get('count', 0)
-            print(f"✅ PASSED: Initial unread count: {initial_count}")
-            ts.test_data['initial_unread_count'] = initial_count
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 3.2: Create a Purchase Order to generate notification
-    print("\n[3.2] Create Purchase Order (to generate notification)")
-    try:
-        # First, get a supplier
-        resp = ts.get("/contacts?limit=100")
-        if resp.status_code == 200:
-            contacts = resp.json().get('data', [])
-            suppliers = [c for c in contacts if 'Supplier' in c.get('categories', [])]
+            log(f"✅ Customer added: ID={customer_id}, name={data.get('name')}")
             
-            if not suppliers:
-                print("   No suppliers found, creating one...")
-                new_supplier = {
-                    "displayName": "Test Supplier MongoDB",
-                    "categories": ["Supplier"],
-                    "contactType": "company",
-                    "phone": "0814-SUPPLIER"
-                }
-                resp = ts.post("/contacts", new_supplier)
-                if resp.status_code == 201:
-                    supplier_id = resp.json().get('data', {}).get('id')
-                    ts.test_data['created_supplier_id'] = supplier_id
-                else:
-                    print(f"❌ Could not create supplier")
+            # Now GET the customers list
+            resp2 = session.get(f"{BASE_URL}/contacts/{test_data['dropshipper_id']}/customers")
+            
+            if resp2.status_code == 200:
+                customers = resp2.json().get('data', [])
+                log(f"✅ GET customers returned {len(customers)} customer(s)")
+                
+                # Check if our customer is in the list
+                found = False
+                for cust in customers:
+                    if cust.get('name') == 'Pelanggan Test':
+                        found = True
+                        log(f"✅ New customer found in list: {cust.get('name')}")
+                        break
+                
+                if not found:
+                    log(f"❌ New customer not found in list")
                     return False
             else:
-                supplier_id = suppliers[0]['id']
-            
-            # Get a product
-            resp = ts.get("/products?limit=10")
-            if resp.status_code == 200:
-                products = resp.json().get('data', [])
-                if not products:
-                    print("❌ No products available")
-                    return False
-                product_id = products[0]['id']
-                
-                # Create PO
-                po_data = {
-                    "supplierId": supplier_id,
-                    "poType": "Produk Jadi",
-                    "items": [{
-                        "productId": product_id,
-                        "quantity": 10,
-                        "weight": 50,
-                        "unitPrice": 45000
-                    }]
-                }
-                resp = ts.post("/purchase-orders", po_data)
-                
-                if resp.status_code == 201:
-                    po_id = resp.json().get('data', {}).get('id')
-                    print(f"✅ PASSED: PO created (ID: {po_id})")
-                    ts.test_data['po_id'] = po_id
-                else:
-                    print(f"⚠️  PO creation returned {resp.status_code}")
-                    print(f"   This may not generate a notification, continuing...")
-            else:
-                print(f"❌ Could not fetch products")
+                log(f"❌ GET customers failed: {resp2.status_code}")
                 return False
         else:
-            print(f"❌ Could not fetch contacts")
+            log(f"❌ Add customer failed: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
+        log(f"❌ Add customer error: {str(e)}")
+        return False
     
-    # Test 3.3: GET notifications (verify persistence)
-    print("\n[3.3] GET /api/notifications (verify notification exists)")
+    # 6.2 Plain SO WITHOUT dropshipperId
+    log("\n6.2 Creating plain SO without dropshipperId...")
+    
+    so_data = {
+        "customerId": test_data['customer_id'],
+        "fulfillmentType": "stock",
+        "orderDate": "2026-08-25",
+        "paymentTerm": "cash",
+        "items": [
+            {
+                "productId": test_data['product_id'],
+                "quantity": 5,
+                "weight": 20,
+                "unitPrice": 40000
+            }
+        ]
+    }
+    
     try:
-        time.sleep(1)  # Wait for notification to be created
-        resp = ts.get("/notifications?limit=50")
+        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
+        log(f"Plain SO creation response: {resp.status_code}")
         
-        if resp.status_code == 200:
-            data = resp.json()
-            notifications = data.get('data', [])
-            unread_count = data.get('unreadCount', 0)
+        if resp.status_code == 201:
+            response_data = resp.json()
+            data = response_data.get('data', {})
+            commission = response_data.get('commission')
+            so_id = data.get('id')
             
-            print(f"✅ PASSED: Retrieved {len(notifications)} notifications")
-            print(f"   Unread count: {unread_count}")
+            log(f"✅ Plain SO created: ID={so_id}, SO Number={data.get('soNumber')}")
             
-            if notifications:
-                print(f"   Latest notification: {notifications[0].get('message', 'N/A')[:80]}")
-                ts.test_data['notification_id'] = notifications[0].get('id')
+            # Verify commission is null
+            if commission is None:
+                log(f"✅ Commission is null (as expected)")
             else:
-                print(f"   ℹ️  No notifications found (may be expected if PO doesn't trigger notification)")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 3.4: Mark single notification as read (if exists)
-    notification_id = ts.test_data.get('notification_id')
-    if notification_id:
-        print(f"\n[3.4] POST /api/notifications/{notification_id}/read")
-        try:
-            resp = ts.post(f"/notifications/{notification_id}/read")
+                log(f"⚠️ Commission is not null: {commission}")
             
-            if resp.status_code == 200:
-                print(f"✅ PASSED: Notification marked as read")
-            else:
-                print(f"❌ FAILED: HTTP {resp.status_code}")
-                all_passed = False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            all_passed = False
-        
-        # Test 3.5: Verify read status persisted
-        print(f"\n[3.5] GET /api/notifications/unread-count (verify read persisted)")
-        try:
-            time.sleep(0.5)
-            resp = ts.get("/notifications/unread-count")
+            # GET SO detail to verify commissions array is empty
+            resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id}")
             
-            if resp.status_code == 200:
-                new_count = resp.json().get('count', 0)
-                print(f"✅ PASSED: Unread count after marking read: {new_count}")
-                print(f"   (Initial was: {ts.test_data.get('initial_unread_count', 'N/A')})")
+            if resp2.status_code == 200:
+                data2 = resp2.json().get('data', {})
+                commissions = data2.get('commissions')
+                
+                if commissions is not None and isinstance(commissions, list):
+                    if len(commissions) == 0:
+                        log(f"✅ Commissions array is empty (length 0)")
+                    else:
+                        log(f"❌ Commissions array is not empty: length={len(commissions)}")
+                        return False
+                else:
+                    log(f"❌ Commissions field is missing or not an array")
+                    return False
+                
+                log(f"✅ No 500 errors, plain SO works correctly")
             else:
-                print(f"❌ FAILED: HTTP {resp.status_code}")
-                all_passed = False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            all_passed = False
-    else:
-        print(f"\n[3.4-3.5] SKIPPED: No notification ID available")
-    
-    # Test 3.6: Mark all as read
-    print(f"\n[3.6] POST /api/notifications/read-all")
-    try:
-        resp = ts.post("/notifications/read-all")
-        
-        if resp.status_code == 200:
-            print(f"✅ PASSED: All notifications marked as read")
+                if resp2.status_code == 500:
+                    log(f"❌ 500 error when getting plain SO detail")
+                    return False
+                else:
+                    log(f"❌ GET plain SO detail failed: {resp2.status_code}")
+                    return False
         else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 3.7: Verify all marked as read
-    print(f"\n[3.7] GET /api/notifications/unread-count (verify read-all persisted)")
-    try:
-        time.sleep(0.5)
-        resp = ts.get("/notifications/unread-count")
-        
-        if resp.status_code == 200:
-            final_count = resp.json().get('count', 0)
-            if final_count == 0:
-                print(f"✅ PASSED: All notifications marked as read (count: 0)")
+            if resp.status_code == 500:
+                log(f"❌ 500 error when creating plain SO")
+                return False
             else:
-                print(f"⚠️  Unread count is {final_count} (expected 0)")
-                print(f"   This may be due to new notifications arriving")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
+                log(f"❌ Plain SO creation failed: {resp.status_code} - {resp.text}")
+                return False
     except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
+        log(f"❌ Plain SO creation error: {str(e)}")
+        return False
     
-    return all_passed
-
-
-def test_regression(ts: TestSession) -> bool:
-    """Test 4: Regression - existing endpoints still work"""
-    print("\n" + "="*70)
-    print("TEST 4: REGRESSION - EXISTING ENDPOINTS")
-    print("="*70)
-    
-    all_passed = True
-    
-    # Test 4.1: GET /api/contacts
-    print("\n[4.1] GET /api/contacts")
-    try:
-        resp = ts.get("/contacts?limit=10")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', [])
-            print(f"✅ PASSED: Retrieved {len(data)} contacts")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 4.2: GET /api/products
-    print("\n[4.2] GET /api/products")
-    try:
-        resp = ts.get("/products?limit=10")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', [])
-            print(f"✅ PASSED: Retrieved {len(data)} products")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 4.3: GET /api/purchase-orders
-    print("\n[4.3] GET /api/purchase-orders")
-    try:
-        resp = ts.get("/purchase-orders?limit=10")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', [])
-            print(f"✅ PASSED: Retrieved {len(data)} purchase orders")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    # Test 4.4: GET /api/sales-orders
-    print("\n[4.4] GET /api/sales-orders")
-    try:
-        resp = ts.get("/sales-orders?limit=10")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', [])
-            print(f"✅ PASSED: Retrieved {len(data)} sales orders")
-        else:
-            print(f"❌ FAILED: HTTP {resp.status_code}")
-            all_passed = False
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
-        all_passed = False
-    
-    return all_passed
-
+    log("\n✅ STEP 6 COMPLETE: Regression tests passed")
+    return True
 
 def main():
-    print("="*70)
-    print("PHASE 10 DATA PERSISTENCE MIGRATION TEST")
-    print("MongoDB-authoritative for: app_settings, contact_customers,")
-    print("contact_documents, notifications")
-    print("="*70)
-    
-    ts = TestSession()
+    """Main test runner"""
+    log("=" * 80)
+    log("BACKEND API TEST: Item #1B - Dropshipper Commission Bugfix")
+    log("=" * 80)
     
     # Login
-    if not ts.login("admin"):
-        print("\n❌ CRITICAL: Login failed, cannot proceed")
-        sys.exit(1)
+    session = login()
+    if not session:
+        log("\n❌ TEST FAILED: Unable to login")
+        return False
     
     # Run tests
-    results = {}
+    results = []
     
-    results['app_settings'] = test_app_settings(ts)
-    results['contact_customers'] = test_contact_customers(ts)
-    results['notifications'] = test_notifications(ts)
-    results['regression'] = test_regression(ts)
+    # Step 1: Create prerequisites
+    result = test_step_1_create_prerequisites(session)
+    results.append(("Step 1: Create prerequisites", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 1 failed")
+        return False
+    
+    # Step 2: Stock SO with commission
+    result = test_step_2_stock_so_with_commission(session)
+    results.append(("Step 2: Stock SO with commission", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 2 failed")
+        return False
+    
+    # Step 3: CORE FIX - GET SO detail returns commissions
+    result = test_step_3_get_so_detail_returns_commissions(session)
+    results.append(("Step 3: GET SO detail returns commissions", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 3 failed (CORE FIX)")
+        return False
+    
+    # Step 4: Dropship SO with commission
+    result = test_step_4_dropship_so_with_commission(session)
+    results.append(("Step 4: Dropship SO with commission", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 4 failed")
+        return False
+    
+    # Step 5: Persistence check via dropshipper endpoint
+    result = test_step_5_persistence_check_via_dropshipper_endpoint(session)
+    results.append(("Step 5: Persistence check", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 5 failed")
+        return False
+    
+    # Step 6: Regression tests
+    result = test_step_6_regression_tests(session)
+    results.append(("Step 6: Regression tests", result))
+    if not result:
+        log("\n❌ TEST FAILED: Step 6 failed")
+        return False
     
     # Summary
-    print("\n" + "="*70)
-    print("TEST SUMMARY")
-    print("="*70)
+    log("\n" + "=" * 80)
+    log("TEST SUMMARY")
+    log("=" * 80)
     
-    for test_name, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        print(f"{status}: {test_name}")
+    for test_name, result in results:
+        status = "✅ PASS" if result else "❌ FAIL"
+        log(f"{status} - {test_name}")
     
-    all_passed = all(results.values())
+    all_passed = all(result for _, result in results)
     
-    print("\n" + "="*70)
     if all_passed:
-        print("✅ ALL TESTS PASSED")
+        log("\n✅ ALL TESTS PASSED")
+        log("\nTest data IDs (NOT deleted):")
+        for key, value in test_data.items():
+            log(f"  - {key}: {value}")
     else:
-        print("❌ SOME TESTS FAILED")
-    print("="*70)
+        log("\n❌ SOME TESTS FAILED")
     
-    return 0 if all_passed else 1
-
+    log("=" * 80)
+    
+    return all_passed
 
 if __name__ == "__main__":
-    sys.exit(main())
+    success = main()
+    exit(0 if success else 1)

@@ -424,6 +424,271 @@ frontend:
           - TEST 3: No regression (basic functionality) ✓
 
 backend:
+  - task: "Item #1B: GET /sales-orders/:id returns commission records (dropshipper commission visible on SO detail)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG (user): commission appears in the SO create form but seems "not recorded" after the SO is created.
+          Investigation: commission_records ARE created & persisted to Mongo for BOTH stock & dropship SO; the
+          real gap was that GET /sales-orders/:id returned no commission data, so the SO detail page showed nothing.
+          FIX: GET /sales-orders/:id now returns `commissions` (array of commission_records for that SO, each
+          enriched with dropshipper:{id,code,displayName}). Frontend SO detail now renders a "Komisi Dropshipper" card.
+          TEST: see agent_communication (create dropshipper+customer+product, create STOCK SO w/ commission, GET detail
+          -> data.commissions length>=1 with commissionAmount>0 & dropshipper populated; repeat for DROPSHIP SO; also
+          POST /contacts/:id/customers works; SO without dropshipperId still works; no 500s).
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (6/6 steps, 100%)
+          
+          Comprehensive backend testing completed for Item #1B: Dropshipper Commission Bugfix.
+          The CORE FIX is working: GET /sales-orders/:id now returns commissions array with full dropshipper details.
+          Commission records are created AND persisted for both STOCK and DROPSHIP sales orders.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://ladang-erp-system.preview.emergentagent.com/api
+          - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
+          - Database: MongoDB Atlas (erp_prod) + SQLite mirror
+          - Test execution time: ~81 seconds
+          
+          === TEST RESULTS ===
+          
+          ✅ STEP 1 — Prerequisites Created (PASSED):
+             - Dropshipper: DS-002 (ID: d63814a6-18c4-472d-8b9d-b6b3cf43de75)
+               * commissionType: per_kg, commissionValue: 1000
+               * isDropshipper: true ✓
+               * code format: DS-xxx ✓
+             - Customer: CUST-093 (ID: aef3e424-d9c8-42cc-b713-4a24431cb39b)
+             - Supplier: SUP-002 (ID: fb717009-0e3b-459a-8ce2-fcbd238d774f)
+             - Product: ITEST-1787659653 (ID: 975468e5-1f63-4f8c-9986-225262893a0a)
+               * unit: kg, basePrice: 30000, category: Produk Jadi
+          
+          ✅ STEP 2 — STOCK SO with Commission (PASSED):
+             - SO Number: SO/202608/0003
+             - SO ID: a1502616-77e9-4dec-aa3f-2cb3cf0d1662
+             - Items: 1 item (productId, quantity=10, weight=50kg, unitPrice=40000)
+             - Commission in POST response:
+               * amount: 50000 (1000 × 50kg) ✓
+               * dropshipperId: d63814a6-18c4-472d-8b9d-b6b3cf43de75 ✓
+               * basis: 50 (weight in kg) ✓
+               * revenue: 2000000, cost: 1500000, profit: 500000 ✓
+             
+             **KEY FINDING:**
+             ✅ Commission record created successfully on SO creation
+             ✅ Commission amount calculated correctly (per_kg × weight)
+          
+          ✅ STEP 3 — **CORE FIX** — GET SO detail returns commissions (PASSED):
+             - GET /api/sales-orders/a1502616-77e9-4dec-aa3f-2cb3cf0d1662
+             - Response: 200 OK
+             
+             **CRITICAL VERIFICATION:**
+             ✅ data.commissions field present (not null)
+             ✅ data.commissions is an ARRAY (not object)
+             ✅ data.commissions.length = 1 (expected >= 1)
+             
+             **Commission Record Contents:**
+             - commissionAmount: 50000 ✓ (expected 50000)
+             - commissionType: "per_kg" ✓ (expected "per_kg")
+             - status: "unpaid" ✓ (expected "unpaid")
+             - dropshipper: {
+                 id: "d63814a6-18c4-472d-8b9d-b6b3cf43de75",
+                 code: "DS-002",
+                 displayName: "Test DS 1787659653"
+               } ✓
+             
+             **THIS IS THE CORE BUGFIX:**
+             ✅ GET /sales-orders/:id NOW returns commissions array
+             ✅ Each commission record enriched with dropshipper object
+             ✅ Dropshipper has id, code, and displayName populated
+             ✅ Commission data visible on SO detail page (frontend can now render it)
+             
+             **BUG FIXED:**
+             - BEFORE: GET /sales-orders/:id returned NO commission data → SO detail page showed nothing
+             - AFTER: GET /sales-orders/:id returns commissions array → SO detail page can display commission
+          
+          ✅ STEP 4 — DROPSHIP SO with Commission (PASSED):
+             - SO Number: SO/202608/0004
+             - SO ID: 59e2cc79-78ea-47fb-b3dc-c8831f73ce4c
+             - fulfillmentType: dropship
+             - supplierId: fb717009-0e3b-459a-8ce2-fcbd238d774f
+             - Items: 1 item (quantity=10, weight=40kg, unitPrice=45000, buyPrice=35000)
+             - Commission in POST response:
+               * amount: 60000 (1500 × 40kg) ✓
+               * dropshipperId: d63814a6-18c4-472d-8b9d-b6b3cf43de75 ✓
+               * basis: 40 (weight in kg) ✓
+             
+             - GET /api/sales-orders/59e2cc79-78ea-47fb-b3dc-c8831f73ce4c
+             - data.commissions.length = 1 ✓
+             - commissionAmount: 60000 ✓
+             - dropshipper populated: true ✓
+             
+             **KEY FINDING:**
+             ✅ Dropship SO commission works identically to stock SO
+             ✅ Commission records created for BOTH fulfillment types
+          
+          ✅ STEP 5 — Persistence Check via Dropshipper Endpoint (PASSED):
+             - GET /api/contacts/d63814a6-18c4-472d-8b9d-b6b3cf43de75/commissions
+             - Response: 200 OK
+             
+             **Commission Records:**
+             - Total records: 2 ✓ (1 from stock SO, 1 from dropship SO)
+             - SO/202608/0004: Rp 60,000 ✓
+             - SO/202608/0003: Rp 50,000 ✓
+             
+             **Summary:**
+             - totalCommission: 110000 ✓ (50000 + 60000)
+             - totalPaid: 0 ✓
+             - outstanding: 110000 ✓
+             - unpaidAmount: 110000 ✓
+             - recordCount: 2 ✓
+             
+             **KEY FINDING:**
+             ✅ Commission records persisted correctly to database
+             ✅ Both SO commissions visible via dropshipper endpoint
+             ✅ Summary calculations correct
+          
+          ✅ STEP 6 — Regression Tests (PASSED):
+             
+             6.1) Add "pelanggan akhir" to dropshipper:
+             - POST /api/contacts/d63814a6-18c4-472d-8b9d-b6b3cf43de75/customers
+             - Body: {name: "Pelanggan Test", phone: "0812", city: "Kediri"}
+             - Response: 201 Created ✓
+             - Customer ID: 677124c0-6468-4a28-a154-6bcc34adb65f
+             
+             - GET /api/contacts/d63814a6-18c4-472d-8b9d-b6b3cf43de75/customers
+             - Response: 200 OK ✓
+             - Customers count: 1 ✓
+             - New customer found in list: "Pelanggan Test" ✓
+             
+             **KEY FINDING:**
+             ✅ POST /contacts/:id/customers works correctly
+             ✅ GET /contacts/:id/customers returns the new customer
+             
+             6.2) Plain SO WITHOUT dropshipperId:
+             - SO Number: SO/202608/0005
+             - SO ID: 359f4973-8d96-4a1a-98b8-93c0dea8b871
+             - customerId: aef3e424-d9c8-42cc-b713-4a24431cb39b
+             - fulfillmentType: stock
+             - Items: 1 item (quantity=5, weight=20kg, unitPrice=40000)
+             - NO dropshipperId field
+             
+             - POST response: 201 Created ✓
+             - commission field in response: null ✓ (as expected)
+             
+             - GET /api/sales-orders/359f4973-8d96-4a1a-98b8-93c0dea8b871
+             - Response: 200 OK ✓ (NO 500 error)
+             - data.commissions: [] (empty array) ✓
+             - data.commissions.length: 0 ✓
+             
+             **KEY FINDING:**
+             ✅ SO without dropshipperId works correctly
+             ✅ commission field is null in POST response
+             ✅ commissions array is empty (length 0) in GET response
+             ✅ NO 500 errors when dropshipperId is missing
+             ✅ Backward compatibility maintained
+          
+          === KEY FINDINGS ===
+          
+          ✅ **CORE BUGFIX VERIFIED (lines 3172-3179 in route.js)**:
+          - Implementation:
+            ```javascript
+            const commissionRows = db.select().from(s.commissionRecords)
+              .where(eq(s.commissionRecords.salesOrderId, id)).all();
+            const commissions = commissionRows.map(r => {
+              const dsc = db.select({ id: s.contacts.id, code: s.contacts.code, displayName: s.contacts.displayName })
+                .from(s.contacts).where(eq(s.contacts.id, r.dropshipperId)).get();
+              return { ...r, dropshipper: dsc || null };
+            });
+            return json({ data: { ...so, ..., commissions } });
+            ```
+          - GET /sales-orders/:id NOW returns commissions array
+          - Each commission record enriched with dropshipper:{id, code, displayName}
+          - Frontend can now display commission data on SO detail page
+          
+          ✅ **Commission Creation (lines 3047-3071 in route.js)**:
+          - POST /sales-orders creates commission_records when dropshipperId provided
+          - Works for BOTH stock and dropship fulfillment types
+          - Commission calculation: computeSoCommission(id, type, value, costAmount)
+          - Commission record persisted to commission_records table
+          - Response includes commission object with amount, basis, revenue, cost, profit
+          
+          ✅ **Data Integrity**:
+          - Commission records persisted to database (SQLite + MongoDB mirror)
+          - Commission amounts calculated correctly (per_kg × weight)
+          - Dropshipper details populated correctly (id, code, displayName)
+          - Status field set to "unpaid" by default
+          - All commission data accessible via multiple endpoints:
+            * GET /sales-orders/:id → commissions array
+            * GET /contacts/:id/commissions → records + summary
+          
+          ✅ **Backward Compatibility**:
+          - SO without dropshipperId: commission=null, commissions=[]
+          - No 500 errors when dropshipperId missing
+          - Existing SO creation flow unchanged
+          - Optional dropshipperId field (not required)
+          
+          ✅ **Regression Tests**:
+          - POST /contacts/:id/customers works (pelanggan akhir)
+          - GET /contacts/:id/customers returns customer list
+          - Plain SO without dropshipperId works correctly
+          - No breaking changes to existing functionality
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test Data Created:
+          - Dropshipper: DS-002 (d63814a6-18c4-472d-8b9d-b6b3cf43de75)
+          - Customer: CUST-093 (aef3e424-d9c8-42cc-b713-4a24431cb39b)
+          - Supplier: SUP-002 (fb717009-0e3b-459a-8ce2-fcbd238d774f)
+          - Product: ITEST-1787659653 (975468e5-1f63-4f8c-9986-225262893a0a)
+          
+          Sales Orders Created:
+          1. SO/202608/0003 (stock, with commission):
+             - SO ID: a1502616-77e9-4dec-aa3f-2cb3cf0d1662
+             - Commission: 50000 (1000 × 50kg)
+             - commissions array length: 1
+          
+          2. SO/202608/0004 (dropship, with commission):
+             - SO ID: 59e2cc79-78ea-47fb-b3dc-c8831f73ce4c
+             - Commission: 60000 (1500 × 40kg)
+             - commissions array length: 1
+          
+          3. SO/202608/0005 (stock, NO commission):
+             - SO ID: 359f4973-8d96-4a1a-98b8-93c0dea8b871
+             - Commission: null
+             - commissions array length: 0
+          
+          Dropshipper Commission Summary:
+          - Total commission: Rp 110,000 (50000 + 60000)
+          - Total paid: Rp 0
+          - Outstanding: Rp 110,000
+          - Record count: 2
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All commission bugfix features working correctly.
+          CORE FIX verified: GET /sales-orders/:id returns commissions array.
+          Commission records created and persisted for both stock and dropship SO.
+          Dropshipper details populated correctly in commissions array.
+          Backward compatibility maintained (SO without dropshipperId works).
+          No 500 errors.
+          All regression tests passed.
+          
+          Test Coverage: 6/6 steps passed (100%)
+          - STEP 1: Prerequisites created ✓
+          - STEP 2: Stock SO with commission ✓
+          - STEP 3: GET SO detail returns commissions (CORE FIX) ✓
+          - STEP 4: Dropship SO with commission ✓
+          - STEP 5: Persistence check via dropshipper endpoint ✓
+          - STEP 6: Regression tests (pelanggan akhir + plain SO) ✓
+
   - task: "Settings key-value: whitelist 'pdf' for PDF component config"
     implemented: true
     working: true
@@ -4292,13 +4557,36 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Sales Order ↔ Inventory linkage testing complete"
-    - "All backend features tested and working"
+    - "Item #1B: Komisi Dropshipper ditampilkan di detail SO (GET /sales-orders/:id commissions field)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "main"
+    message: |
+      ITEM #1 BUGFIX (Komisi Dropshipper) — BACKEND TEST NEEDED.
+      Context: user reported "komisi muncul di form SO tapi tidak tercatat setelah SO dibuat".
+      Investigation: commission_records ARE created & persisted to Mongo correctly for BOTH stock &
+      dropship SO. Root cause of the perception = GET /sales-orders/:id did NOT return commission info,
+      so the SO detail page showed nothing. FIX: GET /sales-orders/:id now returns a `commissions` array
+      (each row enriched with { dropshipper: { id, code, displayName } }).
+      DB: MongoDB Atlas (user's cluster), db erp_prod. Login: admin@lpi.co.id / admin123.
+
+      PLEASE TEST (backend API only):
+      1) Create a Dropshipper contact (categories:['Dropshipper'], commissionType:'per_kg', commissionValue:1000),
+         a Customer, and a Product (basePrice>0).
+      2) STOCK SO with commission: POST /api/sales-orders { customerId, dropshipperId, commissionType:'per_kg',
+         commissionValue:1000, fulfillmentType:'stock', items:[{productId, quantity:10, weight:50, unitPrice:40000}] }.
+         Expect 201 + response.commission non-null.
+      3) GET /api/sales-orders/:id → response.data.commissions is an ARRAY length>=1; the row has
+         commissionAmount>0, status:'unpaid', and dropshipper:{code,displayName} populated. THIS IS THE FIX.
+      4) DROPSHIP SO with commission: create a Supplier, POST dropship SO (fulfillmentType:'dropship', supplierId,
+         items with buyPrice). Expect 201 + response.commission non-null; GET detail → commissions array length>=1.
+      5) GET /api/contacts/:dropshipperId/commissions → records reflect both SO commissions (persist to Mongo).
+      6) Regression: add "pelanggan akhir" to the Dropshipper (POST /api/contacts/:id/customers {name}) → 201,
+         then GET list returns it. Confirm no 500s. Also confirm a plain SO WITHOUT dropshipperId still works.
+
   - agent: "main"
     message: |
       PHASE 10 MIGRATION TO TEST (MongoDB-authoritative for the last 4 SQLite-only tables).
