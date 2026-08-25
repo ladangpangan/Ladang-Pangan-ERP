@@ -319,6 +319,11 @@ async function handleRoute(request, { params }) {
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
 
+  // Warm the in-memory notification-recipient cache in THIS module instance (boot.js primes a possibly
+  // different instance in dev/multi-bundle). Idempotent + cheap (only queries Mongo when empty) so
+  // createNotification() can reliably resolve supervisor/direktur recipients.
+  try { await authUsers.ensureUserCache(); } catch (e) { /* non-fatal */ }
+
   // ONE-TIME data fix (guarded by a mongo_migration marker): seed HPP onto existing stock & SO
   // allocations from product.base_price ("Harga Modal / HPP"). Runs directly on Mongo BEFORE the
   // hydration below, so the corrected cost basis flows into every replica's SQLite on hydrate and
