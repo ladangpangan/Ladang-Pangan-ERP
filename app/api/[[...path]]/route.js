@@ -5705,13 +5705,10 @@ async function handleRoute(request, { params }) {
         const retSum = db.select({ s: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
         totalAP += Math.max(0, Number(po.totalAmount) - Number(po.paidAmount || 0) - Number(retSum?.s || 0));
       }
-      // Inventory value (sum weight * hpp not tracked yet — use base_price of product as approx)
-      const stockRows = db.select({ productId: s.inventoryStock.productId, w: sql`sum(${s.inventoryStock.weight})` }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.productId).all();
-      let inventoryValue = 0;
-      for (const r of stockRows) {
-        const p = db.select({ price: s.products.basePrice }).from(s.products).where(eq(s.products.id, r.productId)).get();
-        inventoryValue += Number(r.w || 0) * Number(p?.price || 0);
-      }
+      // Inventory value — MUST match the Inventory module: sum of per-lot (hpp_per_kg * weight)
+      // for active stock (previously used product.basePrice which caused a mismatch with Inventory).
+      const invValRow = db.get(sql`SELECT COALESCE(SUM(hpp_per_kg * weight), 0) AS v FROM inventory_stock WHERE status = 'active' AND (archived_at IS NULL)`);
+      const inventoryValue = Number(invValRow?.v || 0);
       return json({ data: {
         todaySales: { count: Number(todaySalesRow?.count || 0), total: Number(todaySalesRow?.total || 0), paidToday: Number(todayPaidRow?.total || 0) },
         activeWo: activeWoStages.reduce((a, b) => ({ ...a, [b.status]: Number(b.count) }), {}),
