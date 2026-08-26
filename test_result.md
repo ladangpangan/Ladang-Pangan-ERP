@@ -109,6 +109,253 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "SO Penerimaan Customer: allow received weight to EXCEED shipped (surplus), +10% tolerance -> approval, add surplus to invoice, COGS unchanged"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (POST & DELETE /sales-orders/:id/receipts), /app/app/dashboard/sales-orders/[id]/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          FEATURE (user: 1b,2b,3ya). Penerimaan receipt previously locked receivedWeight <= shipped (susut only).
+          Now: cap removed (typo guard: reject only if > 2x shipped); shrinkageWeight signed (+susut/-kelebihan);
+          surplus % > 10% (or >500k) -> approval concern 'high_surplus'; applyToInvoice + surplus -> so.total_amount
+          += surplus (revenue up via SO_INV), COGS stays on shipped/tally (so_item_stocks untouched); DELETE receipt
+          reverses the bump. Frontend dialog: input max removed, signed "Selisih" columns, dynamic Tambah/Potong label.
+          TEST SAFELY on LIVE Atlas: use an existing Shipped SO, add receipt with received slightly > shipped +
+          applyToInvoice, verify total_amount increases & Neraca balanced with unchanged COGS, THEN DELETE receipt and
+          confirm total_amount restored (fully reversible). Remove any approval concern created.
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ SURPLUS FEATURE VERIFIED - ALL TESTS PASSED (10/10, 100%)
+          
+          Comprehensive backend testing completed for the NEW surplus feature in SO Penerimaan Customer.
+          The feature allows received weight to EXCEED shipped weight (weight gain during shipping),
+          with proper typo guard, invoice adjustment, and COGS protection.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
+          - Database: LIVE Production MongoDB Atlas (erp_prod)
+          - Test approach: FULLY REVERSIBLE (used existing SO, deleted receipt at end)
+          - SO tested: SO/202608/0002 (Shipped status)
+          - Product: Boneless Paha Kulit -BLPK (55.5 kg shipped, Rp 52,000/kg)
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as admin (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set: __Secure-better-auth.session_token ✓
+          
+          ✅ TEST 2 — Find existing Shipped SO (PASSED):
+             - GET /api/sales-orders → 200 OK, 2 sales orders ✓
+             - Found SO/202608/0002 (ID: 49092bd1-93af-4b85-ae3d-250451c19e2c) ✓
+             - Initial totalAmount: Rp 2,886,000 (baseline captured) ✓
+             - Item: 55.5 kg shipped, Rp 52,000/kg unit price ✓
+          
+          ✅ TEST 3 — Capture baseline financials (PASSED):
+             - GET /api/accounting/balance-sheet → 200 OK ✓
+             - Balanced: true ✓
+             - Total Assets: Rp 144,711,964 ✓
+             - GET /api/accounting/income-statement → 200 OK ✓
+             - Initial COGS (HPP): Rp 2,275,500 ✓
+             - Initial Revenue (Penjualan): Rp 6,325,800 ✓
+          
+          ✅ TEST 4 — **CORE FEATURE** — Create receipt with SURPLUS (PASSED):
+             - POST /api/sales-orders/:id/receipts
+             - Shipped weight: 55.5 kg
+             - Received weight: 56.5 kg (surplus: +1.0 kg)
+             - applyToInvoice: true
+             - Expected surplus value: Rp 52,000 (1.0 kg × Rp 52,000)
+             
+             **Response: 201 Created** ✓
+             - Receipt ID: 0382f149-5ffb-43c5-bb23-e7e397f30421
+             - Receipt Number: RCP/202608/0001
+             - Total Ordered Weight: 55.5 kg ✓
+             - Total Received Weight: 56.5 kg ✓
+             - Total Shrinkage Weight: -1 kg (NEGATIVE = surplus) ✓
+             - Total Shrinkage Value: Rp -52,000 (NEGATIVE = surplus) ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Receipt with surplus (received > shipped) was ACCEPTED (NOT rejected)
+             ✅ Negative shrinkage correctly represents surplus (weight gain)
+             ✅ Previously this would have been rejected with "melebihi berat SO"
+             ✅ Now surplus is allowed (only rejects if > 2x shipped)
+          
+          ✅ TEST 5 — Verify SO totalAmount INCREASED (PASSED):
+             - GET /api/sales-orders/:id → 200 OK ✓
+             - Initial totalAmount: Rp 2,886,000
+             - Current totalAmount: Rp 2,938,000
+             - **Difference: Rp 52,000** ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ totalAmount INCREASED by exactly the surplus value (Rp 52,000)
+             ✅ Surplus added to invoice (applyToInvoice=true worked)
+             ✅ Implementation at lines 4092-4099 in route.js working correctly
+          
+          ✅ TEST 6 — Verify COGS UNCHANGED (PASSED):
+             - GET /api/accounting/income-statement → 200 OK ✓
+             - Initial COGS: Rp 2,275,500
+             - Current COGS: Rp 2,275,500
+             - **Difference: Rp 0** ✓
+             
+             - Initial Revenue: Rp 6,325,800
+             - Current Revenue: Rp 6,377,800
+             - **Difference: Rp 52,000** ✓
+             
+             - GET /api/accounting/balance-sheet → 200 OK ✓
+             - Balance sheet balanced: true ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ COGS (HPP) UNCHANGED (difference < Rp 1)
+             ✅ Revenue INCREASED by Rp 52,000 (surplus added to revenue)
+             ✅ Balance sheet still BALANCED
+             ✅ COGS derives from so_item_stocks/tally (shipped weight), NOT from receipt
+             ✅ Surplus affects revenue only, not cost
+          
+          ✅ TEST 7 — TYPO GUARD: Reject received > 2x shipped (PASSED):
+             - POST /api/sales-orders/:id/receipts
+             - Shipped weight: 55.5 kg
+             - Attempting received weight: 166.5 kg (3x shipped)
+             
+             **Response: 400 Bad Request** ✓
+             - Error message: "Berat diterima (166.5 kg) tidak wajar (> 2x berat kirim 55.5 kg). Periksa kembali." ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Receipt REJECTED (status 400, NOT 201)
+             ✅ Error message mentions "tidak wajar" and "2x berat kirim"
+             ✅ Typo guard working correctly (lines 3987-3989 in route.js)
+             ✅ Prevents accidental data entry errors (e.g., 166.5 instead of 16.65)
+          
+          ✅ TEST 8 — CLEANUP: Delete receipt (PASSED):
+             - DELETE /api/sales-orders/:id/receipts/:receiptId → 200 OK ✓
+             - Receipt 0382f149-5ffb-43c5-bb23-e7e397f30421 deleted successfully ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Receipt deleted from LIVE production database
+             ✅ No test data left behind
+          
+          ✅ TEST 9 — Verify totalAmount RESTORED (PASSED):
+             - GET /api/sales-orders/:id → 200 OK ✓
+             - Initial totalAmount: Rp 2,886,000
+             - Final totalAmount: Rp 2,886,000
+             - **Difference: Rp 0** ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ totalAmount RESTORED to original value (difference < Rp 1)
+             ✅ DELETE receipt reversed the surplus bump (lines 4136-4140 in route.js)
+             ✅ Fully reversible operation confirmed
+          
+          ✅ TEST 10 — Verify Revenue RESTORED (PASSED):
+             - GET /api/accounting/income-statement → 200 OK ✓
+             - Initial Revenue: Rp 6,325,800
+             - Final Revenue: Rp 6,325,800
+             - **Difference: Rp 0** ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Revenue RESTORED to original value (difference < Rp 1)
+             ✅ Financial statements consistent after cleanup
+             ✅ No residual impact on LIVE production data
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature Verified (lines 3987-3989, 4092-4099 in route.js)**:
+             - Surplus allowed: received weight CAN exceed shipped weight
+             - Typo guard: rejects only if received > 2x shipped (not 1x as before)
+             - Negative shrinkage: shrinkageWeight = shipped - received (can be negative)
+             - Invoice adjustment: if applyToInvoice=true AND surplus, totalAmount += surplusValue
+             - COGS protection: COGS derives from so_item_stocks (shipped weight), NOT receipt
+             - Reversibility: DELETE receipt reverses the totalAmount bump
+          
+          ✅ **Surplus Calculation**:
+             - Shipped: 55.5 kg
+             - Received: 56.5 kg
+             - Surplus: 1.0 kg (received - shipped)
+             - Shrinkage: -1.0 kg (shipped - received, NEGATIVE)
+             - Surplus value: Rp 52,000 (1.0 kg × Rp 52,000/kg)
+             - totalAmount increase: Rp 52,000 (exactly matches surplus value)
+          
+          ✅ **Financial Impact**:
+             - Revenue increased by Rp 52,000 (surplus added to SO_INV)
+             - COGS unchanged at Rp 2,275,500 (derives from shipped weight)
+             - Balance sheet remained balanced (true before and after)
+             - Gross profit increased by Rp 52,000 (revenue up, COGS unchanged)
+          
+          ✅ **Typo Guard**:
+             - Implementation: `if (receivedWeight > pp.orderedWeight * 2 + 0.0001)`
+             - Rejects if received > 2x shipped (e.g., 166.5 kg vs 55.5 kg shipped)
+             - Error message: "Berat diterima (X kg) tidak wajar (> 2x berat kirim Y kg). Periksa kembali."
+             - Prevents accidental typos (e.g., 166.5 instead of 16.65)
+          
+          ✅ **Reversibility**:
+             - DELETE receipt successfully restored totalAmount to original
+             - Revenue restored to original value
+             - No residual impact on LIVE production data
+             - Fully reversible operation confirmed
+          
+          ✅ **Data Integrity**:
+             - All operations on LIVE production MongoDB Atlas
+             - No test data left behind (receipt deleted)
+             - Balance sheet remained balanced throughout
+             - COGS protection working (COGS unchanged despite surplus)
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Sales Order:
+          - SO Number: SO/202608/0002
+          - SO ID: 49092bd1-93af-4b85-ae3d-250451c19e2c
+          - Product: Boneless Paha Kulit -BLPK
+          - Shipped weight: 55.5 kg
+          - Unit price: Rp 52,000/kg
+          - Initial totalAmount: Rp 2,886,000
+          
+          Receipt (created and deleted):
+          - Receipt Number: RCP/202608/0001
+          - Receipt ID: 0382f149-5ffb-43c5-bb23-e7e397f30421
+          - Received weight: 56.5 kg (surplus: +1.0 kg)
+          - Shrinkage weight: -1.0 kg (negative = surplus)
+          - Shrinkage value: Rp -52,000 (negative = surplus)
+          
+          Financial Impact (during test):
+          - totalAmount: Rp 2,886,000 → Rp 2,938,000 (+Rp 52,000)
+          - Revenue: Rp 6,325,800 → Rp 6,377,800 (+Rp 52,000)
+          - COGS: Rp 2,275,500 → Rp 2,275,500 (UNCHANGED)
+          - Balance sheet: balanced=true (before and after)
+          
+          After Cleanup:
+          - totalAmount: Rp 2,886,000 (RESTORED)
+          - Revenue: Rp 6,325,800 (RESTORED)
+          - COGS: Rp 2,275,500 (UNCHANGED)
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All surplus feature tests passed.
+          Surplus (received > shipped) correctly allowed.
+          Typo guard (> 2x shipped) correctly rejects.
+          Invoice adjustment (totalAmount increase) working correctly.
+          COGS protection working (COGS unchanged).
+          Reversibility confirmed (DELETE restores totalAmount).
+          Balance sheet remained balanced throughout.
+          No residual impact on LIVE production data.
+          
+          Test Coverage: 10/10 tests passed (100%)
+          - TEST 1: Login as admin ✓
+          - TEST 2: Find existing Shipped SO ✓
+          - TEST 3: Capture baseline financials ✓
+          - TEST 4: Create receipt with surplus (CORE FEATURE) ✓
+          - TEST 5: Verify totalAmount increased ✓
+          - TEST 6: Verify COGS unchanged ✓
+          - TEST 7: Typo guard (reject > 2x shipped) ✓
+          - TEST 8: Cleanup (delete receipt) ✓
+          - TEST 9: Verify totalAmount restored ✓
+          - TEST 10: Verify revenue restored ✓
+
+
   - task: "Production login broken: MongoDB 'not authorized on erp_prod' — prefer ATLAS_MONGO_URL over platform-injected MONGO_URL"
     implemented: true
     working: true
@@ -29609,3 +29856,61 @@ agent_communication:
       
       Total: 23/23 tests passed (100%)
 
+
+
+    -agent: "testing"
+    -message: |
+      ✅ SO PENERIMAAN CUSTOMER SURPLUS FEATURE - ALL TESTS PASSED (10/10, 100%)
+      
+      Comprehensive backend testing completed for the NEW surplus feature (received weight > shipped weight).
+      All tests passed with FULL REVERSIBILITY on LIVE production MongoDB Atlas.
+      
+      === SUMMARY ===
+      
+      ✅ Surplus allowed: Received weight CAN exceed shipped weight (weight gain during shipping)
+      ✅ Typo guard working: Rejects only if received > 2x shipped (prevents accidental typos)
+      ✅ Invoice adjustment: totalAmount increased by surplus value when applyToInvoice=true
+      ✅ COGS protection: COGS unchanged (derives from shipped weight, not receipt)
+      ✅ Revenue increase: Revenue increased by surplus value (Rp 52,000)
+      ✅ Balance sheet: Remained balanced throughout (true before and after)
+      ✅ Reversibility: DELETE receipt restored totalAmount and revenue to original values
+      ✅ No residual impact: No test data left behind on LIVE production database
+      
+      === KEY TEST RESULTS ===
+      
+      Test SO: SO/202608/0002 (Shipped, 55.5 kg, Rp 52,000/kg)
+      - Initial totalAmount: Rp 2,886,000
+      - Initial COGS: Rp 2,275,500
+      - Initial Revenue: Rp 6,325,800
+      
+      Created receipt with surplus:
+      - Received: 56.5 kg (surplus: +1.0 kg)
+      - Shrinkage: -1.0 kg (NEGATIVE = surplus)
+      - Surplus value: Rp 52,000
+      
+      After receipt:
+      - totalAmount: Rp 2,938,000 (+Rp 52,000) ✓
+      - COGS: Rp 2,275,500 (UNCHANGED) ✓
+      - Revenue: Rp 6,377,800 (+Rp 52,000) ✓
+      - Balance sheet: balanced=true ✓
+      
+      Typo guard test:
+      - Attempted: 166.5 kg (3x shipped)
+      - Result: 400 Bad Request ✓
+      - Error: "tidak wajar (> 2x berat kirim)" ✓
+      
+      After cleanup (DELETE receipt):
+      - totalAmount: Rp 2,886,000 (RESTORED) ✓
+      - Revenue: Rp 6,325,800 (RESTORED) ✓
+      - COGS: Rp 2,275,500 (UNCHANGED) ✓
+      
+      === RECOMMENDATION ===
+      
+      Feature is working perfectly as designed. All acceptance criteria met:
+      1. Surplus (received > shipped) allowed ✓
+      2. Typo guard (> 2x) rejects ✓
+      3. Invoice adjustment working ✓
+      4. COGS unchanged ✓
+      5. Reversibility confirmed ✓
+      
+      Ready for production use. No issues found.

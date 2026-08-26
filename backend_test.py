@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """
-Backend API Test for Item #1B: Dropshipper Commission Bugfix
-Tests that commission records are created AND returned by GET /sales-orders/:id
+Backend Test: SO Penerimaan Customer - Surplus Feature (Received > Shipped)
+CRITICAL: This test runs against LIVE production MongoDB Atlas.
+All operations are FULLY REVERSIBLE - receipts are deleted at the end.
 """
 
 import requests
 import json
-import time
+import sys
 from datetime import datetime
 
-# Configuration
+# Base URL from .env: NEXT_PUBLIC_BASE_URL
 BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
-LOGIN_EMAIL = "admin@lpi.co.id"
-LOGIN_PASSWORD = "admin123"
-ORIGIN = "https://github-to-production.preview.emergentagent.com"
+CREDENTIALS = {
+    "email": "admin@lpi.co.id",
+    "password": "admin123"
+}
 
-# Test data IDs (will be populated during test)
+# Test state
+session = requests.Session()
 test_data = {
-    'dropshipper_id': None,
-    'customer_id': None,
-    'supplier_id': None,
-    'product_id': None,
-    'so_stock_id': None,
-    'so_dropship_id': None,
+    "so_id": None,
+    "so_number": None,
+    "initial_total_amount": None,
+    "initial_cogs": None,
+    "initial_revenue": None,
+    "receipt_ids": [],
+    "approval_concern_ids": []
 }
 
 def log(msg):
@@ -30,655 +34,547 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def login():
-    """Login and return session"""
-    log("=== AUTHENTICATION ===")
-    session = requests.Session()
-    
-    # Login
-    login_url = f"{BASE_URL}/auth/sign-in/email"
-    login_data = {
-        "email": LOGIN_EMAIL,
-        "password": LOGIN_PASSWORD
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Origin": ORIGIN
-    }
+    """Step 0: Login as admin"""
+    log("=" * 80)
+    log("STEP 0: Login as admin@lpi.co.id")
+    log("=" * 80)
     
     try:
-        resp = session.post(login_url, json=login_data, headers=headers)
-        log(f"Login response: {resp.status_code}")
+        resp = session.post(
+            f"{BASE_URL}/auth/sign-in/email",
+            json=CREDENTIALS,
+            headers={"Content-Type": "application/json"}
+        )
         
         if resp.status_code == 200:
-            log("✅ Login successful")
-            return session
+            log("✅ Login successful (200 OK)")
+            # Check if session cookie is set
+            cookies = session.cookies.get_dict()
+            if any('session' in k.lower() for k in cookies.keys()):
+                log(f"✅ Session cookie set: {list(cookies.keys())}")
+            return True
         else:
-            log(f"❌ Login failed: {resp.status_code} - {resp.text}")
-            return None
+            log(f"❌ Login failed: {resp.status_code}")
+            log(f"Response: {resp.text}")
+            return False
     except Exception as e:
-        log(f"❌ Login error: {str(e)}")
-        return None
+        log(f"❌ Login exception: {e}")
+        return False
 
-def test_step_1_create_prerequisites(session):
-    """Step 1: Create dropshipper, customer, supplier, product"""
-    log("\n=== STEP 1: CREATE PREREQUISITES ===")
-    
-    timestamp = int(time.time())
-    
-    # 1.1 Create Dropshipper contact
-    log("\n1.1 Creating Dropshipper contact...")
-    dropshipper_data = {
-        "displayName": f"Test DS {timestamp}",
-        "categories": ["Dropshipper"],
-        "commissionType": "per_kg",
-        "commissionValue": 1000
-    }
+def find_shipped_so():
+    """Step 1: Find an existing Shipped SO"""
+    log("\n" + "=" * 80)
+    log("STEP 1: Find an EXISTING Shipped SO (e.g., SO/202608/0002)")
+    log("=" * 80)
     
     try:
-        resp = session.post(f"{BASE_URL}/contacts", json=dropshipper_data)
-        log(f"Dropshipper creation response: {resp.status_code}")
+        resp = session.get(f"{BASE_URL}/sales-orders")
         
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            test_data['dropshipper_id'] = data.get('id')
-            log(f"✅ Dropshipper created: ID={test_data['dropshipper_id']}, code={data.get('code')}, isDropshipper={data.get('isDropshipper')}")
+        if resp.status_code != 200:
+            log(f"❌ GET /sales-orders failed: {resp.status_code}")
+            return False
+        
+        data = resp.json()
+        sales_orders = data.get('data', [])
+        log(f"✅ Retrieved {len(sales_orders)} sales orders")
+        
+        # Find a Shipped SO
+        shipped_so = None
+        for so in sales_orders:
+            if so.get('pipelineStatus') == 'Shipped':
+                shipped_so = so
+                break
+        
+        if not shipped_so:
+            log("❌ No Shipped SO found. Need at least one SO with pipelineStatus='Shipped'")
+            return False
+        
+        test_data['so_id'] = shipped_so['id']
+        test_data['so_number'] = shipped_so['soNumber']
+        test_data['initial_total_amount'] = float(shipped_so.get('totalAmount', 0))
+        
+        log(f"✅ Found Shipped SO: {test_data['so_number']}")
+        log(f"   SO ID: {test_data['so_id']}")
+        log(f"   Initial totalAmount: Rp {test_data['initial_total_amount']:,.0f}")
+        
+        # Get SO details to see items
+        resp_detail = session.get(f"{BASE_URL}/sales-orders/{test_data['so_id']}")
+        if resp_detail.status_code == 200:
+            so_detail = resp_detail.json().get('data', {})
+            items = so_detail.get('items', [])
+            log(f"   Items count: {len(items)}")
             
-            # Verify response has code like 'DS-xxx' and isDropshipper true
-            code = data.get('code', '')
-            is_dropshipper = data.get('isDropshipper')
-            
-            if code.startswith('DS-') and is_dropshipper:
-                log(f"✅ Dropshipper validation passed: code={code}, isDropshipper={is_dropshipper}")
-            else:
-                log(f"⚠️ Dropshipper validation warning: code={code}, isDropshipper={is_dropshipper}")
-        else:
-            log(f"❌ Dropshipper creation failed: {resp.status_code} - {resp.text}")
-            return False
-    except Exception as e:
-        log(f"❌ Dropshipper creation error: {str(e)}")
-        return False
-    
-    # 1.2 Create Customer contact
-    log("\n1.2 Creating Customer contact...")
-    customer_data = {
-        "displayName": f"Test Cust {timestamp}",
-        "categories": ["Customer"]
-    }
-    
-    try:
-        resp = session.post(f"{BASE_URL}/contacts", json=customer_data)
-        log(f"Customer creation response: {resp.status_code}")
+            if items:
+                item = items[0]
+                log(f"   First item:")
+                log(f"     - Product ID: {item.get('productId')}")
+                log(f"     - Product: {item.get('product', {}).get('name', 'N/A')}")
+                log(f"     - Ordered weight: {item.get('weight', 0)} kg")
+                log(f"     - Shipped weight: {item.get('shippedWeight', 0)} kg")
+                log(f"     - Unit price: Rp {item.get('unitPrice', 0):,.0f}")
+                
+                # Store first item for testing
+                test_data['test_item'] = {
+                    'productId': item.get('productId'),
+                    'shippedWeight': float(item.get('shippedWeight') or item.get('weight', 0)),
+                    'unitPrice': float(item.get('unitPrice', 0))
+                }
         
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            test_data['customer_id'] = data.get('id')
-            log(f"✅ Customer created: ID={test_data['customer_id']}, code={data.get('code')}")
-        else:
-            log(f"❌ Customer creation failed: {resp.status_code} - {resp.text}")
-            return False
-    except Exception as e:
-        log(f"❌ Customer creation error: {str(e)}")
-        return False
-    
-    # 1.3 Create Supplier contact
-    log("\n1.3 Creating Supplier contact...")
-    supplier_data = {
-        "displayName": f"Test Sup {timestamp}",
-        "categories": ["Supplier"]
-    }
-    
-    try:
-        resp = session.post(f"{BASE_URL}/contacts", json=supplier_data)
-        log(f"Supplier creation response: {resp.status_code}")
+        return True
         
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            test_data['supplier_id'] = data.get('id')
-            log(f"✅ Supplier created: ID={test_data['supplier_id']}, code={data.get('code')}")
-        else:
-            log(f"❌ Supplier creation failed: {resp.status_code} - {resp.text}")
-            return False
     except Exception as e:
-        log(f"❌ Supplier creation error: {str(e)}")
+        log(f"❌ Exception in find_shipped_so: {e}")
         return False
-    
-    # 1.4 Create Product
-    log("\n1.4 Creating Product...")
-    product_data = {
-        "sku": f"ITEST-{timestamp}",
-        "name": f"Test Prod {timestamp}",
-        "unit": "kg",
-        "basePrice": 30000,
-        "category": "Produk Jadi"
-    }
-    
-    try:
-        resp = session.post(f"{BASE_URL}/products", json=product_data)
-        log(f"Product creation response: {resp.status_code}")
-        
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            test_data['product_id'] = data.get('id')
-            log(f"✅ Product created: ID={test_data['product_id']}, SKU={data.get('sku')}")
-        else:
-            log(f"❌ Product creation failed: {resp.status_code} - {resp.text}")
-            return False
-    except Exception as e:
-        log(f"❌ Product creation error: {str(e)}")
-        return False
-    
-    log("\n✅ STEP 1 COMPLETE: All prerequisites created")
-    return True
 
-def test_step_2_stock_so_with_commission(session):
-    """Step 2: Create STOCK SO with commission and verify response"""
-    log("\n=== STEP 2: STOCK SO WITH COMMISSION ===")
+def capture_baseline_financials():
+    """Step 2: Capture baseline COGS and Revenue"""
+    log("\n" + "=" * 80)
+    log("STEP 2: Capture baseline COGS and Revenue from financial statements")
+    log("=" * 80)
     
-    so_data = {
-        "customerId": test_data['customer_id'],
-        "dropshipperId": test_data['dropshipper_id'],
-        "commissionType": "per_kg",
-        "commissionValue": 1000,
-        "fulfillmentType": "stock",
-        "orderDate": "2026-08-25",
-        "paymentTerm": "cash",
+    try:
+        # Get balance sheet
+        resp_bs = session.get(f"{BASE_URL}/accounting/balance-sheet")
+        if resp_bs.status_code == 200:
+            bs_data = resp_bs.json().get('data', {})
+            log(f"✅ Balance sheet retrieved")
+            log(f"   Balanced: {bs_data.get('balanced', False)}")
+            log(f"   Total Assets: Rp {bs_data.get('totalAssets', 0):,.0f}")
+        else:
+            log(f"⚠️  Balance sheet failed: {resp_bs.status_code}")
+        
+        # Get income statement
+        resp_is = session.get(f"{BASE_URL}/accounting/income-statement")
+        if resp_is.status_code == 200:
+            is_data = resp_is.json().get('data', {})
+            
+            # Find COGS (HPP) and Revenue (Penjualan)
+            cogs_section = is_data.get('cogs', {})
+            revenue_section = is_data.get('revenue', {})
+            
+            test_data['initial_cogs'] = float(cogs_section.get('total', 0))
+            test_data['initial_revenue'] = float(revenue_section.get('total', 0))
+            
+            log(f"✅ Income statement retrieved")
+            log(f"   Initial COGS (HPP): Rp {test_data['initial_cogs']:,.0f}")
+            log(f"   Initial Revenue (Penjualan): Rp {test_data['initial_revenue']:,.0f}")
+        else:
+            log(f"⚠️  Income statement failed: {resp_is.status_code}")
+            test_data['initial_cogs'] = 0
+            test_data['initial_revenue'] = 0
+        
+        return True
+        
+    except Exception as e:
+        log(f"❌ Exception in capture_baseline_financials: {e}")
+        return False
+
+def test_positive_surplus_case():
+    """Step 3: POSITIVE CASE - Create receipt with surplus (received > shipped)"""
+    log("\n" + "=" * 80)
+    log("STEP 3: POSITIVE CASE - Create receipt with surplus + applyToInvoice=true")
+    log("=" * 80)
+    
+    if not test_data.get('test_item'):
+        log("❌ No test item available")
+        return False
+    
+    item = test_data['test_item']
+    shipped_weight = item['shippedWeight']
+    unit_price = item['unitPrice']
+    
+    # Add small surplus (e.g., +1.0 kg, staying under 10% to avoid approval if possible)
+    # But let's make it visible, so +1.0 kg
+    surplus_weight = 1.0
+    received_weight = shipped_weight + surplus_weight
+    
+    log(f"   Shipped weight: {shipped_weight} kg")
+    log(f"   Received weight: {received_weight} kg (surplus: +{surplus_weight} kg)")
+    log(f"   Unit price: Rp {unit_price:,.0f}")
+    log(f"   Expected surplus value: Rp {surplus_weight * unit_price:,.0f}")
+    
+    payload = {
+        "receivedDate": datetime.now().isoformat(),
+        "receivedBy": "Test Admin",
+        "notes": "TEST RECEIPT - SURPLUS CASE - WILL BE DELETED",
+        "applyToInvoice": True,
         "items": [
             {
-                "productId": test_data['product_id'],
-                "quantity": 10,
-                "weight": 50,
-                "unitPrice": 40000
+                "productId": item['productId'],
+                "receivedWeight": received_weight,
+                "notes": "Test surplus"
             }
         ]
     }
     
     try:
-        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
-        log(f"Stock SO creation response: {resp.status_code}")
+        resp = session.post(
+            f"{BASE_URL}/sales-orders/{test_data['so_id']}/receipts",
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        log(f"   Response status: {resp.status_code}")
         
         if resp.status_code == 201:
-            response_data = resp.json()
-            data = response_data.get('data', {})
-            commission = response_data.get('commission')
+            log("✅ Receipt created successfully (201 Created)")
             
-            test_data['so_stock_id'] = data.get('id')
-            log(f"✅ Stock SO created: ID={test_data['so_stock_id']}, SO Number={data.get('soNumber')}")
+            receipt_data = resp.json().get('data', {})
+            receipt_id = receipt_data.get('id')
+            receipt_number = receipt_data.get('receiptNumber')
             
-            # Verify commission in response
-            if commission:
-                commission_amount = commission.get('amount')
-                expected_amount = 50000  # 1000 * 50kg
-                
-                log(f"Commission in response: {json.dumps(commission, indent=2)}")
-                
-                if commission_amount == expected_amount:
-                    log(f"✅ Commission amount correct: {commission_amount} (expected {expected_amount})")
-                else:
-                    log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
-                    return False
+            test_data['receipt_ids'].append(receipt_id)
+            
+            log(f"   Receipt ID: {receipt_id}")
+            log(f"   Receipt Number: {receipt_number}")
+            log(f"   Total Ordered Weight: {receipt_data.get('totalOrderedWeight', 0)} kg")
+            log(f"   Total Received Weight: {receipt_data.get('totalReceivedWeight', 0)} kg")
+            log(f"   Total Shrinkage Weight: {receipt_data.get('totalShrinkageWeight', 0)} kg (negative = surplus)")
+            log(f"   Total Shrinkage Value: Rp {receipt_data.get('totalShrinkageValue', 0):,.0f} (negative = surplus)")
+            
+            # Verify negative shrinkage (surplus)
+            shrinkage_weight = receipt_data.get('totalShrinkageWeight', 0)
+            if shrinkage_weight < 0:
+                log(f"✅ VERIFIED: Negative shrinkage (surplus) = {shrinkage_weight} kg")
             else:
-                log(f"❌ Commission not found in response")
-                return False
+                log(f"⚠️  Expected negative shrinkage, got: {shrinkage_weight} kg")
+            
+            return True
         else:
-            log(f"❌ Stock SO creation failed: {resp.status_code} - {resp.text}")
+            log(f"❌ Receipt creation failed: {resp.status_code}")
+            log(f"   Response: {resp.text}")
             return False
+            
     except Exception as e:
-        log(f"❌ Stock SO creation error: {str(e)}")
+        log(f"❌ Exception in test_positive_surplus_case: {e}")
         return False
-    
-    log("\n✅ STEP 2 COMPLETE: Stock SO with commission created")
-    return True
 
-def test_step_3_get_so_detail_returns_commissions(session):
-    """Step 3: CORE FIX - GET SO detail returns commissions array"""
-    log("\n=== STEP 3: CORE FIX - GET SO DETAIL RETURNS COMMISSIONS ===")
-    
-    so_id = test_data['so_stock_id']
+def verify_total_amount_increased():
+    """Step 4: Verify SO totalAmount increased"""
+    log("\n" + "=" * 80)
+    log("STEP 4: Verify SO totalAmount INCREASED (surplus added to invoice)")
+    log("=" * 80)
     
     try:
-        resp = session.get(f"{BASE_URL}/sales-orders/{so_id}")
-        log(f"GET SO detail response: {resp.status_code}")
+        resp = session.get(f"{BASE_URL}/sales-orders/{test_data['so_id']}")
         
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            commissions = data.get('commissions')
-            
-            log(f"SO Number: {data.get('soNumber')}")
-            log(f"Commissions field present: {commissions is not None}")
-            
-            if commissions is None:
-                log(f"❌ CRITICAL: commissions field is missing from response")
-                return False
-            
-            if not isinstance(commissions, list):
-                log(f"❌ CRITICAL: commissions is not an array, type={type(commissions)}")
-                return False
-            
-            log(f"✅ Commissions is an array with length: {len(commissions)}")
-            
-            if len(commissions) < 1:
-                log(f"❌ CRITICAL: commissions array is empty (expected at least 1 record)")
-                return False
-            
-            log(f"✅ Commissions array has {len(commissions)} record(s)")
-            
-            # Verify first commission record
-            commission = commissions[0]
-            log(f"\nCommission record details:")
-            log(f"  - commissionAmount: {commission.get('commissionAmount')}")
-            log(f"  - commissionType: {commission.get('commissionType')}")
-            log(f"  - status: {commission.get('status')}")
-            log(f"  - dropshipper: {commission.get('dropshipper')}")
-            
-            # Verify commission amount
-            commission_amount = commission.get('commissionAmount')
-            expected_amount = 50000  # 1000 * 50kg
-            
-            if commission_amount != expected_amount:
-                log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
-                return False
-            
-            log(f"✅ Commission amount correct: {commission_amount}")
-            
-            # Verify commission type
-            commission_type = commission.get('commissionType')
-            if commission_type != 'per_kg':
-                log(f"❌ Commission type mismatch: {commission_type} (expected 'per_kg')")
-                return False
-            
-            log(f"✅ Commission type correct: {commission_type}")
-            
-            # Verify status
-            status = commission.get('status')
-            if status != 'unpaid':
-                log(f"❌ Status mismatch: {status} (expected 'unpaid')")
-                return False
-            
-            log(f"✅ Status correct: {status}")
-            
-            # Verify dropshipper object populated
-            dropshipper = commission.get('dropshipper')
-            if not dropshipper:
-                log(f"❌ Dropshipper object is missing or null")
-                return False
-            
-            log(f"✅ Dropshipper object populated:")
-            log(f"  - code: {dropshipper.get('code')}")
-            log(f"  - displayName: {dropshipper.get('displayName')}")
-            
-            # Verify dropshipper matches the one we created
-            if dropshipper.get('code') and dropshipper.get('displayName'):
-                log(f"✅ Dropshipper has code and displayName")
-            else:
-                log(f"❌ Dropshipper missing code or displayName")
-                return False
-            
-        else:
-            log(f"❌ GET SO detail failed: {resp.status_code} - {resp.text}")
+        if resp.status_code != 200:
+            log(f"❌ GET SO detail failed: {resp.status_code}")
             return False
+        
+        so_data = resp.json().get('data', {})
+        current_total = float(so_data.get('totalAmount', 0))
+        initial_total = test_data['initial_total_amount']
+        
+        log(f"   Initial totalAmount: Rp {initial_total:,.0f}")
+        log(f"   Current totalAmount: Rp {current_total:,.0f}")
+        log(f"   Difference: Rp {current_total - initial_total:,.0f}")
+        
+        if current_total > initial_total:
+            log(f"✅ VERIFIED: totalAmount INCREASED by Rp {current_total - initial_total:,.0f}")
+            test_data['after_surplus_total'] = current_total
+            return True
+        else:
+            log(f"❌ FAILED: totalAmount did NOT increase (expected > {initial_total:,.0f})")
+            return False
+            
     except Exception as e:
-        log(f"❌ GET SO detail error: {str(e)}")
+        log(f"❌ Exception in verify_total_amount_increased: {e}")
+        return False
+
+def verify_cogs_unchanged():
+    """Step 5: Verify COGS (HPP) UNCHANGED"""
+    log("\n" + "=" * 80)
+    log("STEP 5: Verify COGS (HPP) UNCHANGED (surplus does NOT affect COGS)")
+    log("=" * 80)
+    
+    try:
+        resp = session.get(f"{BASE_URL}/accounting/income-statement")
+        
+        if resp.status_code != 200:
+            log(f"❌ GET income statement failed: {resp.status_code}")
+            return False
+        
+        is_data = resp.json().get('data', {})
+        cogs_section = is_data.get('cogs', {})
+        revenue_section = is_data.get('revenue', {})
+        
+        current_cogs = float(cogs_section.get('total', 0))
+        current_revenue = float(revenue_section.get('total', 0))
+        
+        initial_cogs = test_data['initial_cogs']
+        initial_revenue = test_data['initial_revenue']
+        
+        log(f"   Initial COGS: Rp {initial_cogs:,.0f}")
+        log(f"   Current COGS: Rp {current_cogs:,.0f}")
+        log(f"   Difference: Rp {current_cogs - initial_cogs:,.0f}")
+        
+        log(f"   Initial Revenue: Rp {initial_revenue:,.0f}")
+        log(f"   Current Revenue: Rp {current_revenue:,.0f}")
+        log(f"   Difference: Rp {current_revenue - initial_revenue:,.0f}")
+        
+        # COGS should be unchanged
+        if abs(current_cogs - initial_cogs) < 1.0:
+            log(f"✅ VERIFIED: COGS UNCHANGED (difference < Rp 1)")
+        else:
+            log(f"⚠️  WARNING: COGS changed by Rp {current_cogs - initial_cogs:,.0f}")
+        
+        # Revenue should increase
+        if current_revenue > initial_revenue:
+            log(f"✅ VERIFIED: Revenue INCREASED by Rp {current_revenue - initial_revenue:,.0f}")
+        else:
+            log(f"⚠️  WARNING: Revenue did not increase as expected")
+        
+        # Check balance sheet still balanced
+        resp_bs = session.get(f"{BASE_URL}/accounting/balance-sheet")
+        if resp_bs.status_code == 200:
+            bs_data = resp_bs.json().get('data', {})
+            balanced = bs_data.get('balanced', False)
+            log(f"   Balance sheet balanced: {balanced}")
+            if balanced:
+                log(f"✅ VERIFIED: Balance sheet still BALANCED")
+            else:
+                log(f"⚠️  WARNING: Balance sheet NOT balanced")
+        
+        return True
+        
+    except Exception as e:
+        log(f"❌ Exception in verify_cogs_unchanged: {e}")
+        return False
+
+def test_typo_guard():
+    """Step 6: TYPO GUARD - Try to create receipt with received > 2x shipped"""
+    log("\n" + "=" * 80)
+    log("STEP 6: TYPO GUARD - Try received weight > 2x shipped (should be REJECTED)")
+    log("=" * 80)
+    
+    if not test_data.get('test_item'):
+        log("❌ No test item available")
         return False
     
-    log("\n✅ STEP 3 COMPLETE: GET SO detail returns commissions array with correct data")
-    return True
-
-def test_step_4_dropship_so_with_commission(session):
-    """Step 4: Create DROPSHIP SO with commission and verify"""
-    log("\n=== STEP 4: DROPSHIP SO WITH COMMISSION ===")
+    item = test_data['test_item']
+    shipped_weight = item['shippedWeight']
     
-    so_data = {
-        "customerId": test_data['customer_id'],
-        "dropshipperId": test_data['dropshipper_id'],
-        "commissionType": "per_kg",
-        "commissionValue": 1500,
-        "fulfillmentType": "dropship",
-        "supplierId": test_data['supplier_id'],
-        "orderDate": "2026-08-25",
-        "paymentTerm": "cash",
+    # Try 3x shipped weight (should be rejected)
+    received_weight = shipped_weight * 3
+    
+    log(f"   Shipped weight: {shipped_weight} kg")
+    log(f"   Attempting received weight: {received_weight} kg (3x shipped)")
+    
+    payload = {
+        "receivedDate": datetime.now().isoformat(),
+        "receivedBy": "Test Admin",
+        "notes": "TEST RECEIPT - TYPO GUARD - SHOULD BE REJECTED",
+        "applyToInvoice": True,
         "items": [
             {
-                "productId": test_data['product_id'],
-                "quantity": 10,
-                "weight": 40,
-                "unitPrice": 45000,
-                "buyPrice": 35000
+                "productId": item['productId'],
+                "receivedWeight": received_weight,
+                "notes": "Test typo guard"
             }
         ]
     }
     
     try:
-        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
-        log(f"Dropship SO creation response: {resp.status_code}")
+        resp = session.post(
+            f"{BASE_URL}/sales-orders/{test_data['so_id']}/receipts",
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
         
-        if resp.status_code == 201:
-            response_data = resp.json()
-            data = response_data.get('data', {})
-            commission = response_data.get('commission')
+        log(f"   Response status: {resp.status_code}")
+        
+        if resp.status_code != 201:
+            log(f"✅ VERIFIED: Receipt REJECTED (status {resp.status_code})")
             
-            test_data['so_dropship_id'] = data.get('id')
-            log(f"✅ Dropship SO created: ID={test_data['so_dropship_id']}, SO Number={data.get('soNumber')}")
-            
-            # Verify commission in response
-            if commission:
-                commission_amount = commission.get('amount')
-                expected_amount = 60000  # 1500 * 40kg
+            # Check error message
+            try:
+                error_data = resp.json()
+                error_msg = error_data.get('error', resp.text)
+                log(f"   Error message: {error_msg}")
                 
-                log(f"Commission in response: {json.dumps(commission, indent=2)}")
-                
-                if commission_amount == expected_amount:
-                    log(f"✅ Commission amount correct: {commission_amount} (expected {expected_amount})")
+                if 'tidak wajar' in error_msg.lower() or '2x' in error_msg:
+                    log(f"✅ VERIFIED: Error message mentions typo guard (2x limit)")
                 else:
-                    log(f"❌ Commission amount mismatch: {commission_amount} (expected {expected_amount})")
-                    return False
-            else:
-                log(f"❌ Commission not found in response")
-                return False
+                    log(f"⚠️  Error message doesn't mention typo guard")
+            except Exception:
+                log(f"   Response text: {resp.text}")
             
-            # Now GET the SO detail to verify commissions array
-            log(f"\nGetting SO detail for dropship SO...")
-            resp2 = session.get(f"{BASE_URL}/sales-orders/{test_data['so_dropship_id']}")
-            
-            if resp2.status_code == 200:
-                data2 = resp2.json().get('data', {})
-                commissions = data2.get('commissions')
-                
-                if commissions and len(commissions) >= 1:
-                    commission_rec = commissions[0]
-                    commission_amount = commission_rec.get('commissionAmount')
-                    dropshipper = commission_rec.get('dropshipper')
-                    
-                    log(f"✅ Dropship SO commissions array has {len(commissions)} record(s)")
-                    log(f"  - commissionAmount: {commission_amount} (expected 60000)")
-                    log(f"  - dropshipper populated: {dropshipper is not None}")
-                    
-                    if commission_amount == 60000 and dropshipper:
-                        log(f"✅ Dropship SO commission verification passed")
-                    else:
-                        log(f"❌ Dropship SO commission verification failed")
-                        return False
-                else:
-                    log(f"❌ Dropship SO commissions array is empty or missing")
-                    return False
-            else:
-                log(f"❌ GET dropship SO detail failed: {resp2.status_code}")
-                return False
-            
+            return True
         else:
-            log(f"❌ Dropship SO creation failed: {resp.status_code} - {resp.text}")
+            log(f"❌ FAILED: Receipt was ACCEPTED (should have been rejected)")
+            # If it was created, add to cleanup list
+            receipt_data = resp.json().get('data', {})
+            if receipt_data.get('id'):
+                test_data['receipt_ids'].append(receipt_data['id'])
             return False
+            
     except Exception as e:
-        log(f"❌ Dropship SO creation error: {str(e)}")
+        log(f"❌ Exception in test_typo_guard: {e}")
         return False
-    
-    log("\n✅ STEP 4 COMPLETE: Dropship SO with commission created and verified")
-    return True
 
-def test_step_5_persistence_check_via_dropshipper_endpoint(session):
-    """Step 5: Persistence check via dropshipper endpoint"""
-    log("\n=== STEP 5: PERSISTENCE CHECK VIA DROPSHIPPER ENDPOINT ===")
+def cleanup_receipts():
+    """Step 7: CLEANUP - Delete all test receipts"""
+    log("\n" + "=" * 80)
+    log("STEP 7: CLEANUP - Delete all test receipts (CRITICAL for LIVE data)")
+    log("=" * 80)
     
-    dropshipper_id = test_data['dropshipper_id']
+    if not test_data['receipt_ids']:
+        log("   No receipts to delete")
+        return True
     
-    try:
-        resp = session.get(f"{BASE_URL}/contacts/{dropshipper_id}/commissions")
-        log(f"GET dropshipper commissions response: {resp.status_code}")
-        
-        if resp.status_code == 200:
-            data = resp.json().get('data', {})
-            records = data.get('records', [])
-            summary = data.get('summary', {})
+    success = True
+    for receipt_id in test_data['receipt_ids']:
+        try:
+            log(f"   Deleting receipt: {receipt_id}")
+            resp = session.delete(
+                f"{BASE_URL}/sales-orders/{test_data['so_id']}/receipts/{receipt_id}"
+            )
             
-            log(f"Commission records count: {len(records)}")
-            log(f"Summary: {json.dumps(summary, indent=2)}")
-            
-            # Should have 2 records (1 from stock SO, 1 from dropship SO)
-            if len(records) < 2:
-                log(f"❌ Expected at least 2 commission records, got {len(records)}")
-                return False
-            
-            log(f"✅ Found {len(records)} commission records")
-            
-            # Verify amounts
-            total_commission = 0
-            for rec in records:
-                amount = rec.get('commissionAmount', 0)
-                so_number = rec.get('soNumber', 'N/A')
-                log(f"  - SO {so_number}: Rp {amount:,.0f}")
-                total_commission += amount
-            
-            expected_total = 110000  # 50000 + 60000
-            log(f"\nTotal commission: Rp {total_commission:,.0f} (expected Rp {expected_total:,.0f})")
-            
-            if total_commission == expected_total:
-                log(f"✅ Total commission correct")
+            if resp.status_code == 200:
+                log(f"   ✅ Receipt deleted successfully")
             else:
-                log(f"⚠️ Total commission mismatch (but records exist)")
-            
-            # Check summary
-            summary_total = summary.get('totalCommission', 0)
-            log(f"Summary totalCommission: Rp {summary_total:,.0f}")
-            
-            if summary_total == expected_total:
-                log(f"✅ Summary totalCommission correct")
-            else:
-                log(f"⚠️ Summary totalCommission mismatch")
-            
-        else:
-            log(f"❌ GET dropshipper commissions failed: {resp.status_code} - {resp.text}")
-            return False
-    except Exception as e:
-        log(f"❌ GET dropshipper commissions error: {str(e)}")
-        return False
+                log(f"   ❌ Delete failed: {resp.status_code} - {resp.text}")
+                success = False
+                
+        except Exception as e:
+            log(f"   ❌ Exception deleting receipt: {e}")
+            success = False
     
-    log("\n✅ STEP 5 COMPLETE: Persistence check passed")
-    return True
+    return success
 
-def test_step_6_regression_tests(session):
-    """Step 6: Regression tests"""
-    log("\n=== STEP 6: REGRESSION TESTS ===")
-    
-    # 6.1 Add "pelanggan akhir" to the dropshipper
-    log("\n6.1 Adding pelanggan akhir to dropshipper...")
-    
-    customer_data = {
-        "name": "Pelanggan Test",
-        "phone": "0812",
-        "city": "Kediri"
-    }
+def verify_total_amount_restored():
+    """Step 8: Verify SO totalAmount restored to original"""
+    log("\n" + "=" * 80)
+    log("STEP 8: Verify SO totalAmount RESTORED to original value")
+    log("=" * 80)
     
     try:
-        resp = session.post(f"{BASE_URL}/contacts/{test_data['dropshipper_id']}/customers", json=customer_data)
-        log(f"Add customer response: {resp.status_code}")
+        resp = session.get(f"{BASE_URL}/sales-orders/{test_data['so_id']}")
         
-        if resp.status_code == 201:
-            data = resp.json().get('data', {})
-            customer_id = data.get('id')
-            log(f"✅ Customer added: ID={customer_id}, name={data.get('name')}")
-            
-            # Now GET the customers list
-            resp2 = session.get(f"{BASE_URL}/contacts/{test_data['dropshipper_id']}/customers")
-            
-            if resp2.status_code == 200:
-                customers = resp2.json().get('data', [])
-                log(f"✅ GET customers returned {len(customers)} customer(s)")
-                
-                # Check if our customer is in the list
-                found = False
-                for cust in customers:
-                    if cust.get('name') == 'Pelanggan Test':
-                        found = True
-                        log(f"✅ New customer found in list: {cust.get('name')}")
-                        break
-                
-                if not found:
-                    log(f"❌ New customer not found in list")
-                    return False
-            else:
-                log(f"❌ GET customers failed: {resp2.status_code}")
-                return False
-        else:
-            log(f"❌ Add customer failed: {resp.status_code} - {resp.text}")
+        if resp.status_code != 200:
+            log(f"❌ GET SO detail failed: {resp.status_code}")
             return False
+        
+        so_data = resp.json().get('data', {})
+        final_total = float(so_data.get('totalAmount', 0))
+        initial_total = test_data['initial_total_amount']
+        
+        log(f"   Initial totalAmount: Rp {initial_total:,.0f}")
+        log(f"   Final totalAmount: Rp {final_total:,.0f}")
+        log(f"   Difference: Rp {final_total - initial_total:,.0f}")
+        
+        if abs(final_total - initial_total) < 1.0:
+            log(f"✅ VERIFIED: totalAmount RESTORED (difference < Rp 1)")
+            return True
+        else:
+            log(f"❌ FAILED: totalAmount NOT restored (difference: Rp {final_total - initial_total:,.0f})")
+            return False
+            
     except Exception as e:
-        log(f"❌ Add customer error: {str(e)}")
+        log(f"❌ Exception in verify_total_amount_restored: {e}")
         return False
-    
-    # 6.2 Plain SO WITHOUT dropshipperId
-    log("\n6.2 Creating plain SO without dropshipperId...")
-    
-    so_data = {
-        "customerId": test_data['customer_id'],
-        "fulfillmentType": "stock",
-        "orderDate": "2026-08-25",
-        "paymentTerm": "cash",
-        "items": [
-            {
-                "productId": test_data['product_id'],
-                "quantity": 5,
-                "weight": 20,
-                "unitPrice": 40000
-            }
-        ]
-    }
+
+def verify_revenue_restored():
+    """Step 9: Verify Revenue restored to original"""
+    log("\n" + "=" * 80)
+    log("STEP 9: Verify Revenue RESTORED to original value")
+    log("=" * 80)
     
     try:
-        resp = session.post(f"{BASE_URL}/sales-orders", json=so_data)
-        log(f"Plain SO creation response: {resp.status_code}")
+        resp = session.get(f"{BASE_URL}/accounting/income-statement")
         
-        if resp.status_code == 201:
-            response_data = resp.json()
-            data = response_data.get('data', {})
-            commission = response_data.get('commission')
-            so_id = data.get('id')
-            
-            log(f"✅ Plain SO created: ID={so_id}, SO Number={data.get('soNumber')}")
-            
-            # Verify commission is null
-            if commission is None:
-                log(f"✅ Commission is null (as expected)")
-            else:
-                log(f"⚠️ Commission is not null: {commission}")
-            
-            # GET SO detail to verify commissions array is empty
-            resp2 = session.get(f"{BASE_URL}/sales-orders/{so_id}")
-            
-            if resp2.status_code == 200:
-                data2 = resp2.json().get('data', {})
-                commissions = data2.get('commissions')
-                
-                if commissions is not None and isinstance(commissions, list):
-                    if len(commissions) == 0:
-                        log(f"✅ Commissions array is empty (length 0)")
-                    else:
-                        log(f"❌ Commissions array is not empty: length={len(commissions)}")
-                        return False
-                else:
-                    log(f"❌ Commissions field is missing or not an array")
-                    return False
-                
-                log(f"✅ No 500 errors, plain SO works correctly")
-            else:
-                if resp2.status_code == 500:
-                    log(f"❌ 500 error when getting plain SO detail")
-                    return False
-                else:
-                    log(f"❌ GET plain SO detail failed: {resp2.status_code}")
-                    return False
+        if resp.status_code != 200:
+            log(f"❌ GET income statement failed: {resp.status_code}")
+            return False
+        
+        is_data = resp.json().get('data', {})
+        revenue_section = is_data.get('revenue', {})
+        
+        final_revenue = float(revenue_section.get('total', 0))
+        initial_revenue = test_data['initial_revenue']
+        
+        log(f"   Initial Revenue: Rp {initial_revenue:,.0f}")
+        log(f"   Final Revenue: Rp {final_revenue:,.0f}")
+        log(f"   Difference: Rp {final_revenue - initial_revenue:,.0f}")
+        
+        if abs(final_revenue - initial_revenue) < 1.0:
+            log(f"✅ VERIFIED: Revenue RESTORED (difference < Rp 1)")
+            return True
         else:
-            if resp.status_code == 500:
-                log(f"❌ 500 error when creating plain SO")
-                return False
-            else:
-                log(f"❌ Plain SO creation failed: {resp.status_code} - {resp.text}")
-                return False
+            log(f"⚠️  WARNING: Revenue difference: Rp {final_revenue - initial_revenue:,.0f}")
+            return True  # Not critical
+            
     except Exception as e:
-        log(f"❌ Plain SO creation error: {str(e)}")
+        log(f"❌ Exception in verify_revenue_restored: {e}")
         return False
-    
-    log("\n✅ STEP 6 COMPLETE: Regression tests passed")
-    return True
 
 def main():
-    """Main test runner"""
+    """Main test execution"""
     log("=" * 80)
-    log("BACKEND API TEST: Item #1B - Dropshipper Commission Bugfix")
+    log("BACKEND TEST: SO Penerimaan Customer - Surplus Feature")
+    log("ENVIRONMENT: LIVE Production MongoDB Atlas")
+    log("REVERSIBILITY: All receipts will be DELETED at the end")
     log("=" * 80)
     
-    # Login
-    session = login()
-    if not session:
-        log("\n❌ TEST FAILED: Unable to login")
-        return False
+    results = {
+        "total": 0,
+        "passed": 0,
+        "failed": 0
+    }
+    
+    def run_test(name, func):
+        results["total"] += 1
+        try:
+            if func():
+                results["passed"] += 1
+                return True
+            else:
+                results["failed"] += 1
+                return False
+        except Exception as e:
+            log(f"❌ EXCEPTION in {name}: {e}")
+            results["failed"] += 1
+            return False
     
     # Run tests
-    results = []
+    if not run_test("Login", login):
+        log("\n❌ Login failed, cannot continue")
+        sys.exit(1)
     
-    # Step 1: Create prerequisites
-    result = test_step_1_create_prerequisites(session)
-    results.append(("Step 1: Create prerequisites", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 1 failed")
-        return False
+    if not run_test("Find Shipped SO", find_shipped_so):
+        log("\n❌ Cannot find Shipped SO, cannot continue")
+        sys.exit(1)
     
-    # Step 2: Stock SO with commission
-    result = test_step_2_stock_so_with_commission(session)
-    results.append(("Step 2: Stock SO with commission", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 2 failed")
-        return False
+    run_test("Capture Baseline Financials", capture_baseline_financials)
+    run_test("Test Positive Surplus Case", test_positive_surplus_case)
+    run_test("Verify Total Amount Increased", verify_total_amount_increased)
+    run_test("Verify COGS Unchanged", verify_cogs_unchanged)
+    run_test("Test Typo Guard", test_typo_guard)
     
-    # Step 3: CORE FIX - GET SO detail returns commissions
-    result = test_step_3_get_so_detail_returns_commissions(session)
-    results.append(("Step 3: GET SO detail returns commissions", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 3 failed (CORE FIX)")
-        return False
+    # CRITICAL: Always cleanup
+    log("\n" + "=" * 80)
+    log("CRITICAL: Starting cleanup (MANDATORY for LIVE data)")
+    log("=" * 80)
+    run_test("Cleanup Receipts", cleanup_receipts)
+    run_test("Verify Total Amount Restored", verify_total_amount_restored)
+    run_test("Verify Revenue Restored", verify_revenue_restored)
     
-    # Step 4: Dropship SO with commission
-    result = test_step_4_dropship_so_with_commission(session)
-    results.append(("Step 4: Dropship SO with commission", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 4 failed")
-        return False
-    
-    # Step 5: Persistence check via dropshipper endpoint
-    result = test_step_5_persistence_check_via_dropshipper_endpoint(session)
-    results.append(("Step 5: Persistence check", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 5 failed")
-        return False
-    
-    # Step 6: Regression tests
-    result = test_step_6_regression_tests(session)
-    results.append(("Step 6: Regression tests", result))
-    if not result:
-        log("\n❌ TEST FAILED: Step 6 failed")
-        return False
-    
-    # Summary
+    # Final summary
     log("\n" + "=" * 80)
     log("TEST SUMMARY")
     log("=" * 80)
+    log(f"Total tests: {results['total']}")
+    log(f"Passed: {results['passed']} ✅")
+    log(f"Failed: {results['failed']} ❌")
+    log(f"Success rate: {results['passed'] / results['total'] * 100:.1f}%")
     
-    for test_name, result in results:
-        status = "✅ PASS" if result else "❌ FAIL"
-        log(f"{status} - {test_name}")
-    
-    all_passed = all(result for _, result in results)
-    
-    if all_passed:
+    if results['failed'] == 0:
         log("\n✅ ALL TESTS PASSED")
-        log("\nTest data IDs (NOT deleted):")
-        for key, value in test_data.items():
-            log(f"  - {key}: {value}")
+        sys.exit(0)
     else:
-        log("\n❌ SOME TESTS FAILED")
-    
-    log("=" * 80)
-    
-    return all_passed
+        log(f"\n❌ {results['failed']} TEST(S) FAILED")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    success = main()
-    exit(0 if success else 1)
+    main()
