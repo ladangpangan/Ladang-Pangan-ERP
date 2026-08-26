@@ -3982,10 +3982,12 @@ async function handleRoute(request, { params }) {
         if (!pp) return err(`Produk ${ri.productId} tidak ada di SO`);
         const receivedWeight = Number(ri.receivedWeight || 0);
         if (receivedWeight < 0) return err('receivedWeight tidak boleh negatif');
-        if (receivedWeight > pp.orderedWeight + 0.0001) {
-          return err(`Berat diterima (${receivedWeight} kg) melebihi berat SO (${pp.orderedWeight} kg) untuk produk ini`);
+        // Berat terima BOLEH melebihi berat kirim (mis. penambahan berat saat pengiriman produk beku).
+        // Guard typo: tolak hanya jika > 2x berat kirim. Selisih (susut/kelebihan) diproses di bawah.
+        if (pp.orderedWeight > 0 && receivedWeight > pp.orderedWeight * 2 + 0.0001) {
+          return err(`Berat diterima (${receivedWeight} kg) tidak wajar (> 2x berat kirim ${pp.orderedWeight} kg). Periksa kembali.`);
         }
-        const shrinkageWeight = pp.orderedWeight - receivedWeight;
+        const shrinkageWeight = pp.orderedWeight - receivedWeight; // + susut, - kelebihan
         const shrinkagePct = pp.orderedWeight > 0 ? (shrinkageWeight / pp.orderedWeight) * 100 : 0;
         const shrinkageValue = shrinkageWeight * pp.avgUnitPrice;
         totalOrdered += pp.orderedWeight;
@@ -4048,6 +4050,24 @@ async function handleRoute(request, { params }) {
         });
       }
 
+      // Kelebihan berat (surplus) di atas toleransi +10% -> minta approval (mirror susut tinggi).
+      const surplusPct = -totalShrinkagePct;                    // positif bila terima > kirim
+      const surplusValueTotal = Math.max(0, -totalShrinkageValue);
+      if (surplusPct > 10 || surplusValueTotal > 500_000) {
+        createApproval({
+          concernType: 'high_surplus',
+          entityType: 'RCP',
+          entityId: rec.id,
+          entityNumber: rec.receiptNumber,
+          title: `Kelebihan Berat ${surplusPct.toFixed(2)}% pada ${so.soNumber}`,
+          description: `Penerimaan ${rec.receiptNumber} · Kelebihan ${(-totalShrinkage).toFixed(2)} kg dari ${totalOrdered.toFixed(2)} kg · Nilai Rp ${Math.round(surplusValueTotal).toLocaleString('id-ID')}${applyToInvoice ? ' · ditambahkan ke invoice' : ''}`,
+          priority: surplusPct > 20 ? 'urgent' : 'high',
+          amount: surplusValueTotal,
+          metadata: { soId: id, soNumber: so.soNumber, surplusPct, surplusWeight: -totalShrinkage, applyToInvoice },
+          createdBy: session.user.email,
+        });
+      }
+
       // If applyToInvoice, treat shrinkageValue as an implicit return (potong outstanding via recompute)
       // We track this via `paymentStatus` recomputation which considers salesReturns; for MVP,
       // we auto-create a "shadow" sales return record so outstanding decreases.
@@ -4066,6 +4086,15 @@ async function handleRoute(request, { params }) {
           createdBy: session.user.email,
           createdAt: new Date(),
         }).run();
+        recomputeSoPaymentStatus(id);
+      }
+
+      // Kelebihan berat (surplus) + applyToInvoice: tambahkan nilai kelebihan ke tagihan SO.
+      // Pendapatan naik (SO_INV memakai total_amount); COGS TETAP pada berat kirim (so_item_stocks).
+      if (applyToInvoice && totalShrinkageValue < -0.001) {
+        const addVal = Math.round(-totalShrinkageValue);
+        const soRow = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+        db.update(s.salesOrder).set({ totalAmount: Number(soRow.totalAmount || 0) + addVal, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
         recomputeSoPaymentStatus(id);
       }
 
@@ -4103,6 +4132,12 @@ async function handleRoute(request, { params }) {
           eq(s.salesReturns.salesOrderId, soId),
           like(s.salesReturns.notes, `Auto-generated dari Receipt ${rec.receiptNumber}%`),
         )).run();
+        // Balikkan penambahan tagihan dari kelebihan berat (surplus) bila ada
+        if (Number(rec.totalShrinkageValue || 0) < 0) {
+          const soRow = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+          const back = Math.round(-Number(rec.totalShrinkageValue));
+          db.update(s.salesOrder).set({ totalAmount: Math.max(0, Number(soRow.totalAmount || 0) - back), updatedAt: new Date() }).where(eq(s.salesOrder.id, soId)).run();
+        }
       }
       db.delete(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.id, receiptId)).run();
       recomputeSoPaymentStatus(soId);

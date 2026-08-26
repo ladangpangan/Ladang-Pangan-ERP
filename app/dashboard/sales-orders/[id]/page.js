@@ -1060,22 +1060,23 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
   const updItem = (idx, patch) => setItems(items.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
 
   const totals = items.reduce((acc, it) => {
-    const shrinkageW = Math.max(0, it.orderedWeight - Number(it.receivedWeight || 0));
-    const shrinkageV = shrinkageW * it.avgUnitPrice;
+    const diffW = it.orderedWeight - Number(it.receivedWeight || 0); // + = susut, - = kelebihan
+    const diffV = diffW * it.avgUnitPrice;
     acc.ordered += it.orderedWeight;
     acc.received += Number(it.receivedWeight || 0);
-    acc.shrinkageW += shrinkageW;
-    acc.shrinkageV += shrinkageV;
+    acc.shrinkageW += diffW;
+    acc.shrinkageV += diffV;
     return acc;
   }, { ordered: 0, received: 0, shrinkageW: 0, shrinkageV: 0 });
 
   const totalShrinkagePct = totals.ordered > 0 ? (totals.shrinkageW / totals.ordered) * 100 : 0;
+  const isNetSurplus = totals.shrinkageV < -0.001;
 
   const submit = async () => {
     if (items.length === 0) return toast.error('Tidak ada produk untuk diterima');
     for (const it of items) {
-      if (Number(it.receivedWeight || 0) > it.orderedWeight + 0.0001) {
-        return toast.error(`Berat diterima melebihi SO pada ${it.productName}`);
+      if (it.orderedWeight > 0 && Number(it.receivedWeight || 0) > it.orderedWeight * 2 + 0.0001) {
+        return toast.error(`Berat diterima tidak wajar (> 2x kirim) pada ${it.productName}. Periksa kembali.`);
       }
     }
     setSaving(true);
@@ -1098,7 +1099,9 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
-      toast.success(`Penerimaan tercatat: ${j.data.receiptNumber} (susut ${j.data.totalShrinkageWeight?.toFixed?.(2) || 0} kg)`);
+      const sw = Number(j.data.totalShrinkageWeight || 0);
+      const lbl = sw < -0.001 ? `kelebihan ${(-sw).toFixed(2)} kg` : `susut ${sw.toFixed(2)} kg`;
+      toast.success(`Penerimaan tercatat: ${j.data.receiptNumber} (${lbl})`);
       setOpen(false);
       onSaved?.();
     } catch (e) {
@@ -1129,7 +1132,7 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
           <CardTitle className="text-base flex items-center gap-2">
             <PackageCheck className="w-4 h-4" /> Penerimaan Customer
           </CardTitle>
-          <CardDescription>Catat berat diterima customer per <b>produk</b>, sistem otomatis hitung penyusutan (susut) dan nilai kerugian.</CardDescription>
+          <CardDescription>Catat berat diterima customer per <b>produk</b>. Sistem otomatis hitung selisih vs berat kirim — <b>susut</b> (kurang) atau <b>kelebihan</b> (lebih, mis. tambah berat saat pengiriman).</CardDescription>
         </div>
         {canOperate && shipped && (
           <Dialog open={open} onOpenChange={setOpen}>
@@ -1142,7 +1145,7 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
               <DialogHeader>
                 <DialogTitle>Catat Penerimaan Customer</DialogTitle>
                 <DialogDescription>
-                  Masukkan <b>berat aktual yang diterima</b> customer per produk. Selisih vs berat SO otomatis jadi penyusutan.
+                  Masukkan <b>berat aktual yang diterima</b> customer per produk. Selisih vs berat kirim otomatis dihitung: kurang = <b>susut</b>, lebih = <b>kelebihan</b> (boleh melebihi berat kirim).
                 </DialogDescription>
               </DialogHeader>
 
@@ -1166,17 +1169,19 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                         <TableHead>Produk</TableHead>
                         <TableHead className="text-right">Ordered (kg)</TableHead>
                         <TableHead className="text-right">Diterima (kg) *</TableHead>
-                        <TableHead className="text-right">Susut (kg)</TableHead>
-                        <TableHead className="text-right">Susut (%)</TableHead>
-                        <TableHead className="text-right">Nilai Susut</TableHead>
+                        <TableHead className="text-right">Selisih (kg)</TableHead>
+                        <TableHead className="text-right">Selisih (%)</TableHead>
+                        <TableHead className="text-right">Nilai</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {items.map((it, i) => {
-                        const shrinkageW = Math.max(0, it.orderedWeight - Number(it.receivedWeight || 0));
-                        const shrinkageP = it.orderedWeight > 0 ? (shrinkageW / it.orderedWeight) * 100 : 0;
-                        const shrinkageV = shrinkageW * it.avgUnitPrice;
-                        const isBig = shrinkageP > 2;
+                        const diffW = it.orderedWeight - Number(it.receivedWeight || 0); // + susut, - kelebihan
+                        const isSurplus = diffW < -0.0001;
+                        const shrinkageW = diffW;
+                        const shrinkageP = it.orderedWeight > 0 ? (diffW / it.orderedWeight) * 100 : 0;
+                        const shrinkageV = diffW * it.avgUnitPrice;
+                        const isBig = Math.abs(shrinkageP) > (isSurplus ? 10 : 2);
                         return (
                           <TableRow key={i}>
                             <TableCell>
@@ -1191,22 +1196,21 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                                 step="0.01"
                                 className="w-24 ml-auto text-right font-semibold"
                                 value={it.receivedWeight}
-                                max={it.orderedWeight}
                                 onChange={e => updItem(i, { receivedWeight: Number(e.target.value) })}
                               />
                             </TableCell>
                             <TableCell className="text-right">
-                              <span className={cn('font-semibold', isBig ? 'text-red-600' : 'text-amber-600')}>
-                                {shrinkageW.toFixed(2)}
+                              <span className={cn('font-semibold', isSurplus ? 'text-emerald-600' : isBig ? 'text-red-600' : 'text-amber-600')}>
+                                {isSurplus ? `+${(-shrinkageW).toFixed(2)}` : shrinkageW.toFixed(2)}
                               </span>
                             </TableCell>
                             <TableCell className="text-right">
-                              <Badge variant="outline" className={cn(shrinkageP > 5 ? 'bg-red-50 text-red-700 border-red-200' : shrinkageP > 2 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200')}>
-                                {shrinkageP.toFixed(2)}%
+                              <Badge variant="outline" className={cn(isSurplus ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : shrinkageP > 5 ? 'bg-red-50 text-red-700 border-red-200' : shrinkageP > 2 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200')}>
+                                {shrinkageP >= 0 ? shrinkageP.toFixed(2) : `+${(-shrinkageP).toFixed(2)}`}%
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-right font-semibold text-red-600">
-                              Rp {Math.round(shrinkageV).toLocaleString('id-ID')}
+                            <TableCell className={cn('text-right font-semibold', isSurplus ? 'text-emerald-600' : 'text-red-600')}>
+                              {isSurplus ? '+' : ''}Rp {Math.round(Math.abs(shrinkageV)).toLocaleString('id-ID')}
                             </TableCell>
                           </TableRow>
                         );
@@ -1215,13 +1219,13 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                         <TableCell>TOTAL</TableCell>
                         <TableCell className="text-right">{totals.ordered.toFixed(2)}</TableCell>
                         <TableCell className="text-right">{totals.received.toFixed(2)}</TableCell>
-                        <TableCell className="text-right text-red-600">{totals.shrinkageW.toFixed(2)}</TableCell>
+                        <TableCell className={cn('text-right', isNetSurplus ? 'text-emerald-600' : 'text-red-600')}>{isNetSurplus ? `+${(-totals.shrinkageW).toFixed(2)}` : totals.shrinkageW.toFixed(2)}</TableCell>
                         <TableCell className="text-right">
-                          <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
-                            {totalShrinkagePct.toFixed(2)}%
+                          <Badge variant="outline" className={isNetSurplus ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}>
+                            {totalShrinkagePct >= 0 ? totalShrinkagePct.toFixed(2) : `+${(-totalShrinkagePct).toFixed(2)}`}%
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right text-red-600">Rp {Math.round(totals.shrinkageV).toLocaleString('id-ID')}</TableCell>
+                        <TableCell className={cn('text-right', isNetSurplus ? 'text-emerald-600' : 'text-red-600')}>{isNetSurplus ? '+' : ''}Rp {Math.round(Math.abs(totals.shrinkageV)).toLocaleString('id-ID')}</TableCell>
                       </TableRow>
                     </TableBody>
                   </Table>
@@ -1241,9 +1245,11 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                   className="mt-1"
                 />
                 <label htmlFor="applyToInvoice" className="text-sm flex-1 cursor-pointer">
-                  <div className="font-semibold">Potong Invoice sesuai penyusutan?</div>
+                  <div className="font-semibold">{isNetSurplus ? 'Tambah Invoice sesuai kelebihan berat?' : 'Potong Invoice sesuai penyusutan?'}</div>
                   <div className="text-xs text-muted-foreground">
-                    Jika dicentang, sistem otomatis membuat catatan retur senilai Rp {Math.round(totals.shrinkageV).toLocaleString('id-ID')} untuk memotong outstanding customer. Cocok untuk kesepakatan potong berat susut.
+                    {isNetSurplus
+                      ? <>Jika dicentang, sistem otomatis <b>menambah tagihan</b> senilai Rp {Math.round(Math.abs(totals.shrinkageV)).toLocaleString('id-ID')} (kelebihan berat saat pengiriman). HPP/modal tetap pada berat kirim.</>
+                      : <>Jika dicentang, sistem otomatis membuat catatan retur senilai Rp {Math.round(totals.shrinkageV).toLocaleString('id-ID')} untuk memotong outstanding customer. Cocok untuk kesepakatan potong berat susut.</>}
                   </div>
                 </label>
               </div>
