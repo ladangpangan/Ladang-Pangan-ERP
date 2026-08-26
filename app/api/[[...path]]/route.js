@@ -5940,30 +5940,39 @@ async function handleRoute(request, { params }) {
     if (route === '/inventory-reports/by-cs' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
-      const rows = db.select({
-        coldStorageId: s.inventoryStock.coldStorageId,
-        rowCount: sql`count(*)`,
-        totalWeight: sql`coalesce(sum(${s.inventoryStock.weight}), 0)`,
-        totalQty: sql`coalesce(sum(${s.inventoryStock.quantity}), 0)`,
-      }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.coldStorageId).all();
-      const enriched = rows.map(r => {
-        const cs = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
-        return { ...r, coldStorage: cs, utilization: cs?.capacityKg > 0 ? (Number(r.totalWeight) / Number(cs.capacityKg)) * 100 : 0 };
+      // Read DIRECTLY from MongoDB (source of truth) => identical across all replicas.
+      const mdb = getMongoDb();
+      const agg = await mdb.collection('inventory_stock').aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: '$cold_storage_id', rowCount: { $sum: 1 }, totalWeight: { $sum: { $ifNull: ['$weight', 0] } }, totalQty: { $sum: { $ifNull: ['$quantity', 0] } } } },
+      ]).toArray();
+      const csIds = agg.map(a => a._id).filter(Boolean);
+      const css = csIds.length ? await mdb.collection('cold_storages').find({ _id: { $in: csIds } }).toArray() : [];
+      const cmap = {}; for (const cc of css) cmap[cc._id] = cc;
+      const enriched = agg.map(r => {
+        const cs = cmap[r._id] || null;
+        const coldStorage = cs ? { id: cs._id, code: cs.code, name: cs.name, capacityKg: Number(cs.capacityKg || 0) } : null;
+        return { coldStorageId: r._id, rowCount: r.rowCount, totalWeight: Number(r.totalWeight || 0), totalQty: Number(r.totalQty || 0), coldStorage, utilization: coldStorage?.capacityKg > 0 ? (Number(r.totalWeight) / Number(coldStorage.capacityKg)) * 100 : 0 };
       });
       return json({ data: enriched });
     }
     if (route === '/inventory-reports/by-product' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
-      const rows = db.select({
-        productId: s.inventoryStock.productId,
-        rowCount: sql`count(*)`,
-        totalWeight: sql`coalesce(sum(${s.inventoryStock.weight}), 0)`,
-        totalQty: sql`coalesce(sum(${s.inventoryStock.quantity}), 0)`,
-      }).from(s.inventoryStock).where(eq(s.inventoryStock.status, 'active')).groupBy(s.inventoryStock.productId).all();
-      const enriched = rows.map(r => {
-        const p = db.select().from(s.products).where(eq(s.products.id, r.productId)).get();
-        return { ...r, product: p, minStock: Number(p?.minStock || 0), lowStock: Number(r.totalWeight) < Number(p?.minStock || 0), estimatedValue: Number(r.totalWeight) * Number(p?.basePrice || 0) };
+      // Read DIRECTLY from MongoDB (source of truth) so results are IDENTICAL across all replicas
+      // (avoids per-pod SQLite cache divergence that made this report fluctuate on refresh).
+      const mdb = getMongoDb();
+      const agg = await mdb.collection('inventory_stock').aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: '$product_id', rowCount: { $sum: 1 }, totalWeight: { $sum: { $ifNull: ['$weight', 0] } }, totalQty: { $sum: { $ifNull: ['$quantity', 0] } } } },
+      ]).toArray();
+      const prodIds = agg.map(a => a._id).filter(Boolean);
+      const prods = prodIds.length ? await mdb.collection('products').find({ _id: { $in: prodIds } }).toArray() : [];
+      const pmap = {}; for (const p of prods) pmap[p._id] = p;
+      const enriched = agg.map(r => {
+        const p = pmap[r._id] || null;
+        const product = p ? { id: p._id, sku: p.sku, name: p.name, unit: p.unit, category: p.category, basePrice: Number(p.basePrice || 0), minStock: Number(p.minStock || 0) } : null;
+        return { productId: r._id, rowCount: r.rowCount, totalWeight: Number(r.totalWeight || 0), totalQty: Number(r.totalQty || 0), product, minStock: Number(p?.minStock || 0), lowStock: Number(r.totalWeight) < Number(p?.minStock || 0), estimatedValue: Number(r.totalWeight) * Number(p?.basePrice || 0) };
       }).sort((a, b) => Number(b.totalWeight) - Number(a.totalWeight));
       return json({ data: enriched });
     }
