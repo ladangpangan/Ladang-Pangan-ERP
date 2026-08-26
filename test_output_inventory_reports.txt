@@ -1,0 +1,171 @@
+
+================================================================================
+BACKEND TEST: FLUCTUATING INVENTORY REPORTS BUGFIX
+================================================================================
+Base URL: https://github-to-production.preview.emergentagent.com
+API Base: https://github-to-production.preview.emergentagent.com/api
+Credentials: admin@lpi.co.id / admin123
+================================================================================
+================================================================================
+TEST 1: Login as admin
+================================================================================
+✅ Login successful (status: 200)
+   Cookies received: ['__Secure-better-auth.session_token', '__cf_bm']
+   Session cookie set: True
+
+================================================================================
+TEST 2: STABILITY TEST - /api/inventory-reports/by-product (5 calls)
+================================================================================
+
+Call 1:
+  - Product groups: 30
+  - Total weight: 5309.8 kg
+
+Call 2:
+  - Product groups: 30
+  - Total weight: 5309.8 kg
+
+Call 3:
+  - Product groups: 30
+  - Total weight: 5309.8 kg
+
+Call 4:
+  - Product groups: 30
+  - Total weight: 5309.8 kg
+
+Call 5:
+  - Product groups: 30
+  - Total weight: 5309.8 kg
+
+--------------------------------------------------------------------------------
+STABILITY VERIFICATION:
+--------------------------------------------------------------------------------
+✅ ALL 5 CALLS IDENTICAL:
+   - Product groups: 30 (expected ~30)
+   - Total weight: 5309.8 kg (expected 5309.8 kg)
+✅ Total weight matches expected value (5309.8 kg)
+✅ Product group count in expected range (~30)
+
+================================================================================
+TEST 3: STABILITY TEST - /api/inventory-reports/by-cs (5 calls)
+================================================================================
+
+Call 1:
+  - Cold storage groups: 1
+  - Total weight: 5309.8 kg
+  - CS: CS Surabaya (code: CS-01)
+
+Call 2:
+  - Cold storage groups: 1
+  - Total weight: 5309.8 kg
+  - CS: CS Surabaya (code: CS-01)
+
+Call 3:
+  - Cold storage groups: 1
+  - Total weight: 5309.8 kg
+  - CS: CS Surabaya (code: CS-01)
+
+Call 4:
+  - Cold storage groups: 1
+  - Total weight: 5309.8 kg
+  - CS: CS Surabaya (code: CS-01)
+
+Call 5:
+  - Cold storage groups: 1
+  - Total weight: 5309.8 kg
+  - CS: CS Surabaya (code: CS-01)
+
+--------------------------------------------------------------------------------
+STABILITY VERIFICATION:
+--------------------------------------------------------------------------------
+✅ ALL 5 CALLS IDENTICAL:
+   - Cold storage groups: 1 (expected 1)
+   - Total weight: 5309.8 kg (expected 5309.8 kg)
+✅ Total weight matches expected value (5309.8 kg)
+✅ All coldStorage objects populated with name
+
+================================================================================
+TEST 4: DATA CORRECTNESS - /api/inventory-reports/by-product
+================================================================================
+Checking 30 product groups...
+
+Item 1:
+  ✅ product object complete: Kerongkong (KRG-01)
+  ✅ totalWeight: 525.35 kg
+  ✅ totalQty: 29
+  ✅ estimatedValue: Rp 6,304,200
+  ✅ lowStock: False
+
+Item 2:
+  ✅ product object complete: Boneless Paha - Premium (BLP-01)
+  ✅ totalWeight: 478.25 kg
+  ✅ totalQty: 32
+  ✅ estimatedValue: Rp 18,699,575
+  ✅ lowStock: False
+
+Item 3:
+  ✅ product object complete: Karkas 0,9 (Premium) (KRK-09)
+  ✅ totalWeight: 415 kg
+  ✅ totalQty: 27
+  ✅ estimatedValue: Rp 14,525,000
+  ✅ lowStock: False
+
+Item 4:
+  ✅ product object complete: Parting 12 (80gr) (CUT12-80)
+  ✅ totalWeight: 396.3 kg
+  ✅ totalQty: 22
+  ✅ estimatedValue: Rp 13,474,200
+  ✅ lowStock: False
+
+Item 5:
+  ✅ product object complete: Karkas 1,0 (Premium) (KRK-10)
+  ✅ totalWeight: 364.4 kg
+  ✅ totalQty: 29
+  ✅ estimatedValue: Rp 12,754,000
+  ✅ lowStock: False
+
+✅ All data correctness checks passed
+✅ Items sorted by totalWeight descending
+
+================================================================================
+TEST 5: HTTP STATUS & JSON VALIDATION
+================================================================================
+
+Testing /inventory-reports/by-product...
+  ✅ Status: 200 OK
+  ✅ Valid JSON response
+  ✅ No error messages detected
+
+Testing /inventory-reports/by-cs...
+  ✅ Status: 200 OK
+  ✅ Valid JSON response
+  ✅ No error messages detected
+
+================================================================================
+TEST 6: REGRESSION - near-expired & damage-recap endpoints
+================================================================================
+
+Testing /inventory-reports/near-expired...
+  ✅ Status: 200 OK
+  ✅ Valid JSON response
+
+Testing /inventory-reports/damage-recap...
+  ✅ Status: 200 OK
+  ✅ Valid JSON response
+
+================================================================================
+TEST SUMMARY
+================================================================================
+login                         : ✅ PASSED
+by_product_stability          : ✅ PASSED
+by_cs_stability               : ✅ PASSED
+by_product_correctness        : ✅ PASSED
+http_status                   : ✅ PASSED
+regression                    : ✅ PASSED
+================================================================================
+TOTAL: 6/6 tests passed (100%)
+================================================================================
+
+✅ ALL TESTS PASSED - BUGFIX VERIFIED
+   The inventory reports are now STABLE and CONSISTENT across multiple calls.
+   No fluctuation detected - MongoDB direct read is working correctly.
