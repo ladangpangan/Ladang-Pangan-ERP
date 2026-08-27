@@ -459,6 +459,48 @@ async function handleRoute(request, { params }) {
   try {
     // Health
     if (route === '/' || route === '/root') return json({ ok: true, service: 'LPI ERP API' });
+    
+    // One-time endpoint to seed Akuntan user in production (can be called without auth)
+    // DELETE this endpoint after use for security
+    if (route === '/seed-akuntan-once' && method === 'POST') {
+      try {
+        const mdb = getMongoDb();
+        const users = mdb.collection('user');
+        
+        // Check if akuntan already exists
+        const existing = await users.findOne({ email: 'akuntan@lpi.co.id' });
+        if (existing) {
+          return json({ ok: false, message: 'User Akuntan sudah ada' });
+        }
+        
+        // Create akuntan user
+        const auth = getAuth();
+        await auth.api.signUpEmail({ 
+          body: { 
+            email: 'akuntan@lpi.co.id', 
+            password: 'akuntan123', 
+            name: 'Akuntan' 
+          } 
+        });
+        
+        await users.updateOne(
+          { email: 'akuntan@lpi.co.id' },
+          { $set: { role: 'akuntan', status: 'active', emailVerified: true, updatedAt: new Date() } }
+        );
+        
+        return json({ 
+          ok: true, 
+          message: 'User Akuntan berhasil dibuat!',
+          credentials: {
+            email: 'akuntan@lpi.co.id',
+            password: 'akuntan123',
+            role: 'akuntan'
+          }
+        });
+      } catch (e) {
+        return json({ ok: false, error: e.message }, { status: 500 });
+      }
+    }
 
     // ---------- ARCHIVE (soft-archive) generic handlers ----------
     // Resource map: URL segment -> { table, roles allowed to archive/restore }
