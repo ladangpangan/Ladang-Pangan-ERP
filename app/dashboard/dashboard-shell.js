@@ -24,12 +24,12 @@ import { setPdfCompany, setPdfSettings } from '@/lib/pdf/invoice';
 import { applyAccent } from '@/lib/themes';
 
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','operator'] },
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','akuntan','operator'] },
   {
     section: 'Master Data',
     items: [
-      { href: '/dashboard/contacts', label: 'Contacts', icon: Users, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/products', label: 'Products', icon: Package, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/contacts', label: 'Contacts', icon: Users, roles: ['admin','supervisor','direktur','akuntan'] },
+      { href: '/dashboard/products', label: 'Products', icon: Package, roles: ['admin','supervisor','direktur','akuntan'] },
       { href: '/dashboard/cold-storage', label: 'Cold Storage & Zones', icon: Warehouse, roles: ['admin','supervisor','direktur'] },
       { href: '/dashboard/masters/wo-stages', label: 'WO Stages', icon: Layers, roles: ['admin','supervisor','direktur'] },
     ],
@@ -46,23 +46,23 @@ const NAV = [
   {
     section: 'Laporan',
     items: [
-      { href: '/dashboard/sales-reports', label: 'Laporan Penjualan', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/sales-reports', label: 'Laporan Penjualan', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
+      { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
       { href: '/dashboard/production-reports', label: 'Laporan Produksi', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
     ],
   },
   {
     section: 'Akuntansi',
     items: [
-      { href: '/dashboard/accounting', label: 'Ringkasan Akuntansi', icon: Landmark, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/cashbook', label: 'Pencatatan Cepat', icon: Receipt, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/coa', label: 'Chart of Account', icon: BookOpen, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/journals', label: 'Jurnal Umum', icon: Calculator, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/ledger', label: 'Buku Besar', icon: Wallet, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/fixed-assets', label: 'Aset Tetap', icon: Building, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/closing', label: 'Tutup Buku', icon: Lock, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/accounting/reports', label: 'Laporan Keuangan', icon: Scale, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/accounting', label: 'Ringkasan Akuntansi', icon: Landmark, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/cashbook', label: 'Pencatatan Cepat', icon: Receipt, roles: ['admin','supervisor','akuntan','direktur'] },
+      { href: '/dashboard/accounting/coa', label: 'Chart of Account', icon: BookOpen, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/journals', label: 'Jurnal Umum', icon: Calculator, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/ledger', label: 'Buku Besar', icon: Wallet, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/fixed-assets', label: 'Aset Tetap', icon: Building, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/closing', label: 'Tutup Buku', icon: Lock, roles: ['akuntan','direktur'] },
+      { href: '/dashboard/accounting/reports', label: 'Laporan Keuangan', icon: Scale, roles: ['akuntan','direktur'] },
     ],
   },
   {
@@ -75,11 +75,11 @@ const NAV = [
   {
     section: 'Sistem',
     items: [
-      { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur'] },
+      { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
       { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur'] },
       { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['supervisor', 'direktur'] },
-      { href: '/dashboard/import-export', label: 'Impor & Ekspor', icon: Database, roles: ['admin', 'supervisor', 'direktur'] },
-      { href: '/dashboard/settings', label: 'Setting', icon: Settings, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/import-export', label: 'Impor & Ekspor', icon: Database, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
+      { href: '/dashboard/settings', label: 'Setting', icon: Settings, roles: ['admin', 'supervisor', 'direktur', 'akuntan', 'operator'] },
     ],
   },
 ];
@@ -89,6 +89,7 @@ const ROLE_COLOR = {
   supervisor: 'bg-blue-100 text-blue-700 border-blue-200',
   direktur: 'bg-purple-100 text-purple-700 border-purple-200',
   operator: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  akuntan: 'bg-amber-100 text-amber-700 border-amber-200',
 };
 
 export default function DashboardShell({ user, children }) {
@@ -197,7 +198,7 @@ export default function DashboardShell({ user, children }) {
       </div>
 
       {/* Floating AI Assistant — for management roles, hidden on the full AI page */}
-      {['admin', 'supervisor', 'direktur'].includes(role) && pathname !== '/dashboard/ai-assistant' && (
+      {['admin', 'supervisor', 'direktur', 'akuntan'].includes(role) && pathname !== '/dashboard/ai-assistant' && (
         <FloatingAIAssistant />
       )}
     </div>
