@@ -557,9 +557,26 @@ async function handleRoute(request, { params }) {
     // ================= ACCOUNTING MODULE (SAK EP) =================
     if (path[0] === 'accounting') {
       const { session, error } = await requireAuth(); if (error) return error;
-      const READ = ['admin', 'supervisor', 'direktur'];
-      const WRITE = ['admin', 'supervisor'];
-      if (!requireRole(session, READ)) return err('Forbidden', 403);
+      const userRole = session.user?.role;
+      
+      // Permission tiers for accounting module:
+      // - akuntan, direktur: FULL access to ALL accounting features (COA, journals, reports, cashbook + DELETE)
+      // - admin, supervisor: ONLY cashbook access (read/write, NO delete)
+      // - operator: no access
+      const FULL_ACCESS = ['akuntan', 'direktur'];
+      const CASHBOOK_ONLY = ['admin', 'supervisor'].includes(userRole);
+      const CAN_DELETE_CASHBOOK = FULL_ACCESS; // Only akuntan & direktur can delete cashbook entries
+      
+      // Admin & Supervisor can ONLY access cashbook
+      if (CASHBOOK_ONLY && path[1] !== 'cashbook') {
+        return err('Admin dan Supervisor hanya dapat mengakses Pencatatan Keuangan Cepat', 403);
+      }
+      
+      // Check general read permission (all accounting paths except cashbook-only users)
+      if (!CASHBOOK_ONLY && !requireRole(session, FULL_ACCESS)) {
+        return err('Forbidden', 403);
+      }
+      
       const raw = getRawSqlite();
       
       // 10-second TTL cache for accounting hydrations (GET/HEAD only, mutations bypass cache).
@@ -634,7 +651,7 @@ async function handleRoute(request, { params }) {
         }
         // create
         if (path.length === 2 && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           const code = String(b.code || '').trim();
           const name = String(b.name || '').trim();
@@ -655,7 +672,7 @@ async function handleRoute(request, { params }) {
         // update / archive / restore / delete
         const id = path[2];
         if (id && path.length === 3 && method === 'PATCH') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           const b = await request.json().catch(() => ({}));
@@ -683,7 +700,7 @@ async function handleRoute(request, { params }) {
           } catch (e) { return err('Gagal memperbarui akun: ' + (e?.message || e), 400); }
         }
         if (id && path.length === 4 && (path[3] === 'archive' || path[3] === 'restore') && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           if (cur.is_system && path[3] === 'archive') return err('Akun sistem tidak dapat diarsipkan', 400);
@@ -692,7 +709,7 @@ async function handleRoute(request, { params }) {
           return json({ ok: true });
         }
         if (id && path.length === 3 && method === 'DELETE') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const cur = await coaMongo.coaGetById(id);
           if (!cur) return err('Akun tidak ditemukan', 404);
           if (cur.is_system) return err('Akun sistem tidak dapat dihapus (arsipkan saja)', 400);
@@ -708,7 +725,7 @@ async function handleRoute(request, { params }) {
       if (sub === 'mapping') {
         if (method === 'GET') return json({ data: acct.getMapping(raw), labels: acct.MAPPING_LABELS });
         if (method === 'PUT') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           return json({ data: acct.setMapping(raw, b.mapping || b) });
         }
@@ -718,7 +735,7 @@ async function handleRoute(request, { params }) {
       if (sub === 'settings') {
         if (method === 'GET') return json({ data: acct.getAcctSettings(raw) });
         if (method === 'PUT') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           return json({ data: acct.setAcctSettings(raw, b.settings || b) });
         }
@@ -740,7 +757,7 @@ async function handleRoute(request, { params }) {
           return json({ data: rows });
         }
         if (path.length === 2 && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           const r = acct.createManualJournal(raw, { date: b.date, description: b.description, lines: b.lines || [], createdBy: uid });
           if (r.error) return err(r.error, 400);
@@ -754,7 +771,7 @@ async function handleRoute(request, { params }) {
           return json({ data: j });
         }
         if (jid && path.length === 3 && method === 'DELETE') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const j = raw.prepare('SELECT * FROM journal_entries WHERE id=?').get(jid);
           if (!j) return err('Jurnal tidak ditemukan', 404);
           if (j.is_auto) return err('Jurnal otomatis tidak dapat dihapus manual (ubah dokumen sumbernya)', 400);
@@ -785,7 +802,7 @@ async function handleRoute(request, { params }) {
           return json({ data });
         }
         if (path.length === 2 && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           if (!b.name) return err('Nama aset wajib diisi', 400);
           const acqDate = acct.toSec(b.acquisitionDate) || Math.floor(Date.now() / 1000);
@@ -799,7 +816,7 @@ async function handleRoute(request, { params }) {
         }
         const id = path[2];
         if (id && path.length === 3 && method === 'PATCH') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const cur = raw.prepare('SELECT * FROM fixed_assets WHERE id=?').get(id);
           if (!cur) return err('Aset tidak ditemukan', 404);
           const b = await request.json().catch(() => ({}));
@@ -816,19 +833,19 @@ async function handleRoute(request, { params }) {
           return json({ data: raw.prepare('SELECT * FROM fixed_assets WHERE id=?').get(id) });
         }
         if (id && path.length === 4 && (path[3] === 'archive' || path[3] === 'restore') && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           raw.prepare('UPDATE fixed_assets SET archived_at=?, updated_at=unixepoch() WHERE id=?').run(path[3] === 'archive' ? Math.floor(Date.now() / 1000) : null, id);
           return json({ ok: true });
         }
         if (id && path.length === 4 && path[3] === 'dispose' && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           const dd = acct.toSec(b.disposedDate) || Math.floor(Date.now() / 1000);
           raw.prepare('UPDATE fixed_assets SET status=?, disposed_date=?, updated_at=unixepoch() WHERE id=?').run(b.restore ? 'active' : 'disposed', b.restore ? null : dd, id);
           return json({ ok: true });
         }
         if (id && path.length === 3 && method === 'DELETE') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           raw.prepare(`DELETE FROM journal_entries WHERE source_type='DEPR' AND source_id=?`).run(id);
           raw.prepare('DELETE FROM fixed_assets WHERE id=?').run(id);
           return json({ ok: true });
@@ -839,7 +856,7 @@ async function handleRoute(request, { params }) {
       if (sub === 'closings') {
         if (path.length === 2 && method === 'GET') return json({ data: acct.listClosings(raw) });
         if (path.length === 2 && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('closing sync', e?.message); }
           const r = acct.createClosing(raw, { period: b.period, createdBy: uid });
@@ -850,7 +867,7 @@ async function handleRoute(request, { params }) {
         }
         const id = path[2];
         if (id && path.length === 3 && method === 'DELETE') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          if (!requireRole(session, FULL_ACCESS)) return err('Forbidden', 403);
           const clRow = raw.prepare('SELECT * FROM period_closings WHERE id=?').get(id);
           const r = acct.deleteClosing(raw, id);
           if (r.error) return err(r.error, 400);
@@ -876,7 +893,8 @@ async function handleRoute(request, { params }) {
           return json({ data: rows });
         }
         if (path.length === 2 && method === 'POST') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          // Admin, supervisor, akuntan, direktur can create cashbook entries
+          if (!requireRole(session, [...FULL_ACCESS, 'admin', 'supervisor'])) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           const r = acct.createQuickEntry(raw, { ...b, createdBy: uid });
           if (r.error) return err(r.error, 400);
@@ -885,7 +903,8 @@ async function handleRoute(request, { params }) {
         }
         const id = path[2];
         if (id && path.length === 3 && (method === 'PUT' || method === 'PATCH')) {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          // Admin, supervisor, akuntan, direktur can update cashbook entries
+          if (!requireRole(session, [...FULL_ACCESS, 'admin', 'supervisor'])) return err('Forbidden', 403);
           const b = await request.json().catch(() => ({}));
           const r = acct.updateQuickEntry(raw, id, { ...b, createdBy: uid });
           if (r.error) return err(r.error, 400);
@@ -894,7 +913,10 @@ async function handleRoute(request, { params }) {
           return json({ ok: true, ...r });
         }
         if (id && path.length === 3 && method === 'DELETE') {
-          if (!requireRole(session, WRITE)) return err('Forbidden', 403);
+          // ONLY akuntan & direktur can delete cashbook entries (admin & supervisor cannot)
+          if (!requireRole(session, CAN_DELETE_CASHBOOK)) {
+            return err('Hanya user Akuntan dan Direktur yang dapat menghapus data Pencatatan Keuangan Cepat', 403);
+          }
           const j = raw.prepare('SELECT * FROM journal_entries WHERE id=?').get(id);
           if (!j) return err('Transaksi tidak ditemukan', 404);
           if (j.is_auto) return err('Transaksi otomatis tidak dapat dihapus di sini', 400);
