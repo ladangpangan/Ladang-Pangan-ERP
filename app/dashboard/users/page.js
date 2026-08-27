@@ -24,6 +24,7 @@ const ROLE_STYLES = {
   supervisor: 'bg-blue-100 text-blue-700 border-blue-200',
   direktur: 'bg-purple-100 text-purple-700 border-purple-200',
   operator: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  akuntan: 'bg-amber-100 text-amber-700 border-amber-200',
 };
 
 const ROLE_LABELS = {
@@ -31,6 +32,7 @@ const ROLE_LABELS = {
   supervisor: 'Supervisor',
   direktur: 'Direktur',
   operator: 'Operator',
+  akuntan: 'Akuntan',
 };
 
 export default function UsersPage() {
@@ -82,8 +84,8 @@ export default function UsersPage() {
       </div>
 
       {/* Role summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {['admin', 'supervisor', 'direktur', 'operator'].map((r) => {
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {['admin', 'supervisor', 'direktur', 'operator', 'akuntan'].map((r) => {
           const count = (data?.data || []).filter(u => u.role === r).length;
           return (
             <Card key={r}>
@@ -293,7 +295,8 @@ function CreateUserDialog({ open, onOpenChange, onCreated }) {
               <SelectContent>
                 <SelectItem value="admin">Admin - akses penuh</SelectItem>
                 <SelectItem value="supervisor">Supervisor - kelola operasional</SelectItem>
-                <SelectItem value="direktur">Direktur - view only</SelectItem>
+                <SelectItem value="direktur">Direktur - view & approve</SelectItem>
+                <SelectItem value="akuntan">Akuntan - full accounting access</SelectItem>
                 <SelectItem value="operator">Operator - input lapangan</SelectItem>
               </SelectContent>
             </Select>
@@ -362,6 +365,7 @@ function EditUserDialog({ user, onOpenChange, onSaved, isSelf }) {
                 <SelectItem value="admin">Admin</SelectItem>
                 <SelectItem value="supervisor">Supervisor</SelectItem>
                 <SelectItem value="direktur">Direktur</SelectItem>
+                <SelectItem value="akuntan">Akuntan</SelectItem>
                 <SelectItem value="operator">Operator</SelectItem>
               </SelectContent>
             </Select>
