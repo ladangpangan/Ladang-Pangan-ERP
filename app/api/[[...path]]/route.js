@@ -1364,7 +1364,7 @@ async function handleRoute(request, { params }) {
       const body = await request.json();
       const { name, email, password, role, status = 'active' } = body || {};
       if (!name || !email || !password || !role) return err('name, email, password, role required');
-      if (!['admin', 'supervisor', 'direktur', 'operator'].includes(role)) return err('Invalid role');
+      if (!['admin', 'supervisor', 'direktur', 'operator', 'akuntan'].includes(role)) return err('Invalid role');
       if (String(password).length < 6) return err('Password minimal 6 karakter');
       // Check duplicate email
       const existing = await authUsers.findUserRawByEmail(email);
@@ -1394,7 +1394,7 @@ async function handleRoute(request, { params }) {
       const upd = {};
       if (body.name !== undefined) upd.name = body.name;
       if (body.role !== undefined) {
-        if (!['admin', 'supervisor', 'direktur', 'operator'].includes(body.role)) return err('Invalid role');
+        if (!['admin', 'supervisor', 'direktur', 'operator', 'akuntan'].includes(body.role)) return err('Invalid role');
         upd.role = body.role;
       }
       if (body.status !== undefined) {
