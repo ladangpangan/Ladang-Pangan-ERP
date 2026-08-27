@@ -336,7 +336,11 @@ async function handleRoute(request, { params }) {
   // tally-outbound; reads on dashboard, reports, accounting, sales-reports, inventory-reports, contacts)
   // so every pod serves the same SO numbers (AR, today sales, commissions). Read-only full-replace.
   if (SALES_PATHS.has(path[0])) {
-    try { await salesMongo.ensureSalesReady(getRawSqlite()); } catch (e) { /* best-effort */ }
+    try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
+      if (!isRead || Date.now() - (g.sales || 0) > 10000) { await salesMongo.ensureSalesReady(getRawSqlite()); g.sales = Date.now(); }
+    } catch (e) { /* best-effort */ }
   }
 
   // Phase 4 (MongoDB): inventory_stock (physical stock lots + allocation status + quantities) is
