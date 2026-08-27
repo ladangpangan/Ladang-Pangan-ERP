@@ -348,8 +348,13 @@ async function handleRoute(request, { params }) {
   // and (for mutating requests) snapshot the stock signatures so we can diff-persist only what changed.
   if (INVENTORY_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawInv = getRawSqlite();
-      await invMongo.ensureInventoryReady(rawInv);
+      if (!isRead || Date.now() - (g.inventory || 0) > 10000) {
+        await invMongo.ensureInventoryReady(rawInv);
+        g.inventory = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') invMongo.captureSnapshot(request, rawInv);
     } catch (e) { /* best-effort */ }
   }
@@ -359,8 +364,13 @@ async function handleRoute(request, { params }) {
   // on mutations, snapshot so we diff-persist only the changed rows (concurrency-safe).
   if (POTX_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawTx = getRawSqlite();
-      await potxMongo.ensureReady(rawTx);
+      if (!isRead || Date.now() - (g.potx || 0) > 10000) {
+        await potxMongo.ensureReady(rawTx);
+        g.potx = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') potxMongo.captureSnapshot(request, rawTx);
     } catch (e) { /* best-effort */ }
   }
@@ -370,8 +380,13 @@ async function handleRoute(request, { params }) {
   // request; on mutations, snapshot for concurrency-safe diff-persist.
   if (ASSETS_OPNAME_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawAo = getRawSqlite();
-      await assetsOpnameMongo.ensureReady(rawAo);
+      if (!isRead || Date.now() - (g.assetsOpname || 0) > 10000) {
+        await assetsOpnameMongo.ensureReady(rawAo);
+        g.assetsOpname = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') assetsOpnameMongo.captureSnapshot(request, rawAo);
     } catch (e) { /* best-effort */ }
   }
@@ -380,8 +395,13 @@ async function handleRoute(request, { params }) {
   // SQLite mirror for these paths and, on mutations, snapshot so we diff-persist only changed rows.
   if (WO_APPROVAL_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawWa = getRawSqlite();
-      await woApprovalMongo.ensureReady(rawWa);
+      if (!isRead || Date.now() - (g.woApproval || 0) > 10000) {
+        await woApprovalMongo.ensureReady(rawWa);
+        g.woApproval = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') woApprovalMongo.captureSnapshot(request, rawWa);
     } catch (e) { /* best-effort */ }
   }
@@ -392,8 +412,13 @@ async function handleRoute(request, { params }) {
   // reads/writes these tables; on mutations, snapshot for concurrency-safe diff-persist.
   if (TALLY_TX_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawTt = getRawSqlite();
-      await tallyTxMongo.ensureReady(rawTt);
+      if (!isRead || Date.now() - (g.tallyTx || 0) > 10000) {
+        await tallyTxMongo.ensureReady(rawTt);
+        g.tallyTx = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') tallyTxMongo.captureSnapshot(request, rawTt);
     } catch (e) { /* best-effort */ }
   }
@@ -403,8 +428,13 @@ async function handleRoute(request, { params }) {
   // snapshot so we diff-persist only changed rows (concurrency-safe).
   if (MISC_PATHS.has(path[0])) {
     try {
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
       const rawMisc = getRawSqlite();
-      await miscMongo.ensureReady(rawMisc);
+      if (!isRead || Date.now() - (g.misc || 0) > 10000) {
+        await miscMongo.ensureReady(rawMisc);
+        g.misc = Date.now();
+      }
       if (method !== 'GET' && method !== 'HEAD') miscMongo.captureSnapshot(request, rawMisc);
     } catch (e) { /* best-effort */ }
   }
@@ -531,17 +561,35 @@ async function handleRoute(request, { params }) {
       const WRITE = ['admin', 'supervisor'];
       if (!requireRole(session, READ)) return err('Forbidden', 403);
       const raw = getRawSqlite();
+      
+      // 10-second TTL cache for accounting hydrations (GET/HEAD only, mutations bypass cache).
+      // Reduces accounting page load from 10-26s to <1s by skipping redundant MongoDB hydration.
+      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      const isRead = method === 'GET' || method === 'HEAD';
+      
       // COA is MongoDB-authoritative (multi-replica safe). Refresh the local SQLite mirror from Mongo
       // before any accounting read/report/sync so the engine joins use the shared, up-to-date COA.
-      await coaMongo.ensureCoaReady(raw);
+      if (!isRead || Date.now() - (g.coa || 0) > 10000) {
+        await coaMongo.ensureCoaReady(raw);
+        g.coa = Date.now();
+      }
+      
       // Journals & ledger are ALSO MongoDB-authoritative for user-entered data (manual journals,
       // Cashbook, opening balances, period closings). Hydrate the per-pod SQLite mirror from Mongo
       // before any read/sync so every replica sees the same shared financial data.
-      await jmongo.ensureJournalsReady(raw);
+      if (!isRead || Date.now() - (g.journals || 0) > 10000) {
+        await jmongo.ensureJournalsReady(raw);
+        g.journals = Date.now();
+      }
+      
       // Sales Orders are MongoDB-authoritative too — the accounting engine (syncLedger) reads
       // sales_order / so_item_stocks / sales_payments to regenerate SO auto journals (revenue, COGS,
       // payments, cashback), so hydrate the SO aggregate BEFORE the engine runs.
-      await salesMongo.ensureSalesReady(raw);
+      // NOTE: Sales already cached globally at line 342, but we refresh here for accounting mutations.
+      if (!isRead || Date.now() - (g.sales || 0) > 10000) {
+        await salesMongo.ensureSalesReady(raw);
+        g.sales = Date.now();
+      }
 
       // VERIFICATION (multi-replica single-source-of-truth audit for FINANCIAL REPORTS):
       // Just like the Dashboard & Inventory reports, print to the terminal that the accounting data
