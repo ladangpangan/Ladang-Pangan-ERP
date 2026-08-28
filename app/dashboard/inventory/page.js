@@ -441,38 +441,60 @@ function OutboundDialog({ stockIds, onDone }) {
 
 function SplitKarungButton({ stock, onDone }) {
   const [open, setOpen] = useState(false);
-  const [packs, setPacks] = useState([{ weight: 0, quantity: 1 }]);
+  const [packs, setPacks] = useState([{ weight: 0, quantity: 1, packagingType: 'karung' }]);
   const [saving, setSaving] = useState(false);
+  const PKG_OPTS = [
+    { value: 'karung', label: 'Karung' },
+    { value: 'pack', label: 'Pack' },
+    { value: 'keranjang', label: 'Keranjang' },
+    { value: 'kardus', label: 'Kardus' },
+    { value: 'box', label: 'Box' },
+    { value: 'curah', label: 'Curah' },
+  ];
   const upd = (i, k, v) => { const arr = [...packs]; arr[i] = { ...arr[i], [k]: v }; setPacks(arr); };
-  const add = () => setPacks([...packs, { weight: 0, quantity: 1 }]);
+  const add = () => setPacks([...packs, { weight: 0, quantity: 1, packagingType: 'karung' }]);
   const remove = (i) => setPacks(packs.filter((_, idx) => idx !== i));
   const totalW = packs.reduce((a, b) => a + Number(b.weight || 0), 0);
+  const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
   const save = async () => {
     setSaving(true);
     try {
       const res = await fetch('/api/inventory/split-karung', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stockId: stock.id, packs }) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success(`Karung dibuka → ${j.data.childStockIds.length} pack baru dengan kode simpan masing-masing`);
+      toast.success(`Karung dibuka → ${j.data.childStockIds.length} kemasan baru dengan kode simpan masing-masing (HPP mengikuti asal)`);
       setOpen(false); onDone();
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button size="icon" variant="ghost" title="Buka Karung"><Scissors className="w-4 h-4" /></Button></DialogTrigger>
-      <DialogContent className="max-w-lg">
-        <DialogHeader><DialogTitle>Buka Karung {stock.kodeSimpan}</DialogTitle><DialogDescription>Karung akan disegel (opened), setiap pack mendapatkan kode simpan baru.</DialogDescription></DialogHeader>
+      <DialogContent className="max-w-xl">
+        <DialogHeader><DialogTitle>Buka Karung {stock.kodeSimpan}</DialogTitle><DialogDescription>Karung akan disegel (opened), setiap kemasan mendapatkan kode simpan baru. HPP/kg mengikuti karung asal.</DialogDescription></DialogHeader>
         <div className="space-y-3">
-          <div className="text-sm p-3 bg-slate-50 rounded">Berat karung: <b>{stock.weight} kg</b> · Total pack: <b>{totalW.toFixed(2)} kg</b>{Math.abs(totalW - stock.weight) > 0.01 && <span className="text-amber-600 ml-2">⚠️ delta {(stock.weight - totalW).toFixed(2)} kg</span>}</div>
+          <div className="text-sm p-3 bg-slate-50 rounded flex flex-wrap gap-x-4 gap-y-1">
+            <span>Berat karung: <b>{stock.weight} kg</b></span>
+            <span>HPP/kg asal: <b>{rupiah(stock.hppPerKg)}</b></span>
+            <span>Total: <b>{totalW.toFixed(2)} kg</b>{Math.abs(totalW - stock.weight) > 0.01 && <span className="text-amber-600 ml-2">⚠️ delta {(stock.weight - totalW).toFixed(2)} kg</span>}</span>
+          </div>
           {packs.map((p, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-2 text-sm font-semibold">Pack {i + 1}</div>
-              <div className="col-span-4"><Label className="text-xs">Berat (kg)</Label><WeightInput value={p.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
-              <div className="col-span-4"><Label className="text-xs">Qty</Label><Input type="number" value={p.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} /></div>
+              <div className="col-span-2 text-sm font-semibold pb-2">Pack {i + 1}</div>
+              <div className="col-span-3"><Label className="text-xs">Berat (kg)</Label><WeightInput value={p.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
+              <div className="col-span-2"><Label className="text-xs">Qty</Label><Input type="number" value={p.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} /></div>
+              <div className="col-span-3">
+                <Label className="text-xs">Kemasan</Label>
+                <Select value={p.packagingType} onValueChange={v => upd(i, 'packagingType', v)}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PKG_OPTS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="col-span-2"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
             </div>
           ))}
-          <Button size="sm" variant="outline" onClick={add}><Plus className="w-4 h-4 mr-1" />Tambah Pack</Button>
+          <Button size="sm" variant="outline" onClick={add}><Plus className="w-4 h-4 mr-1" />Tambah Kemasan</Button>
         </div>
         <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buka Karung</Button></DialogFooter>
       </DialogContent>
