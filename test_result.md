@@ -31411,6 +31411,205 @@ agent_communication:
           - TEST 5: Negative Test ✓
           - TEST 6: Regression ✓
 
+  - task: "Cashbook per-user filtering: Admin & Supervisor ONLY see entries they created; Akuntan & Direktur see ALL"
+    implemented: true
+    working: false
+    file: "/app/app/api/[[...path]]/route.js (lines 897-901), /app/lib/accounting/engine.js (lines 1092-1098)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ CRITICAL BUG FOUND - FEATURE NOT WORKING (0/6 tests passed, 100% failure)
+          
+          Comprehensive backend testing completed for the NEW cashbook per-user filtering feature.
+          The feature is BROKEN due to a missing field in the API response.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie
+          - Test credentials: admin@lpi.co.id/admin123, akuntan@lpi.co.id/akuntanlpi123
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with session cookies
+          - Test file: /app/backend_test_cashbook_filter.py
+          
+          === CRITICAL BUG DETAILS ===
+          
+          **SYMPTOM:**
+          - Admin sees EMPTY list (0 entries) even though they just created an entry
+          - Akuntan sees ALL entries correctly (82 total)
+          - The created_by/createdBy field is NOT present in the API response
+          
+          **ROOT CAUSE:**
+          The filtering logic in route.js (lines 897-901) expects r.createdBy or r.created_by to exist:
+          ```javascript
+          if (['admin', 'supervisor'].includes(userRole)) {
+            const meEmail = session.user?.email; const meId = session.user?.id;
+            rows = (rows || []).filter(r => r.createdBy === meEmail || r.createdBy === meId || r.created_by === meEmail || r.created_by === meId);
+          }
+          ```
+          
+          BUT the listCashbook function in engine.js (lines 1092-1098) does NOT include this field:
+          ```javascript
+          return {
+            id: e.id, journalNumber: e.journal_number, date: e.entry_date, type: e.source_type,
+            amount: round2(e.total_debit), category, categoryCode, cash, cashCode, cashCode2, direction,
+            note: e.description, hasAttachment: !!e.attachment,
+            fromName: cr.account_name, toName: dr.account_name,
+            // ❌ MISSING: createdBy: e.created_by
+          };
+          ```
+          
+          **RESULT:**
+          - Admin/Supervisor: The filter removes ALL entries because r.createdBy and r.created_by are undefined
+          - Akuntan/Direktur: No filtering applied, so they see all entries correctly
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as AKUNTAN (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set ✓
+          
+          ✅ TEST 2 — Create entry as AKUNTAN (PASSED):
+             - POST /api/accounting/cashbook → 200 OK ✓
+             - Entry created: TEST-AKUNTAN (id: bde27b02-9933-47d8-b95c-02a3d9597861) ✓
+             - Journal Number: JU-2608-098 ✓
+          
+          ✅ TEST 3 — Login as ADMIN (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set ✓
+          
+          ✅ TEST 4 — Create entry as ADMIN (PASSED):
+             - POST /api/accounting/cashbook → 200 OK ✓
+             - Entry created: TEST-ADMIN (id: 35a4a3ce-4073-4a85-90cc-2b873434de71) ✓
+             - Journal Number: JU-2608-099 ✓
+          
+          ❌ TEST 5 — **CORE FEATURE** — GET as ADMIN (FAILED):
+             - GET /api/accounting/cashbook as ADMIN → 200 OK
+             - **Total entries returned: 0** ❌
+             - Expected: 1 entry (TEST-ADMIN only)
+             - Admin sees TEST-ADMIN: False ❌
+             - Admin sees TEST-AKUNTAN: False ✓ (correct, shouldn't see this)
+             
+             **CRITICAL VERIFICATION:**
+             ❌ Admin sees EMPTY list instead of their own entry
+             ❌ Filtering removes ALL entries because created_by field is missing
+             ❌ This is a BLOCKING BUG - Admin cannot use the cashbook feature
+          
+          ✅ TEST 6 — GET as AKUNTAN (PASSED):
+             - GET /api/accounting/cashbook as AKUNTAN → 200 OK ✓
+             - Total entries returned: 82 ✓
+             - Test entries found: 2 ✓
+             - Akuntan sees TEST-AKUNTAN: True ✓
+             - Akuntan sees TEST-ADMIN: True ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Akuntan sees ALL entries (no filtering applied)
+             ✅ Both test entries visible
+          
+          ❌ TEST 7 — Verify created_by field presence (FAILED):
+             - Field 'created_by' in response: False ❌
+             - Field 'createdBy' in response: False ❌
+             - **Available fields:** ['id', 'journalNumber', 'date', 'type', 'amount', 'category', 
+               'categoryCode', 'cash', 'cashCode', 'cashCode2', 'direction', 'note', 'hasAttachment', 
+               'fromName', 'toName']
+             
+             **CRITICAL VERIFICATION:**
+             ❌ created_by/createdBy field is NOT exposed in the API response
+             ❌ This is the ROOT CAUSE of the filtering bug
+          
+          ✅ TEST 8 — Cleanup (PASSED):
+             - DELETE /api/accounting/cashbook/:id (TEST-AKUNTAN) → 200 OK ✓
+             - DELETE /api/accounting/cashbook/:id (TEST-ADMIN) → 200 OK ✓
+             - All test data removed successfully ✓
+          
+          === KEY FINDINGS ===
+          
+          ❌ **Core Feature BROKEN**:
+          - Admin/Supervisor filtering: NOT WORKING (returns empty list)
+          - Akuntan/Direktur see all: WORKING (no filtering applied)
+          - created_by field: MISSING from API response
+          
+          ❌ **Missing Field**:
+          - Location: /app/lib/accounting/engine.js, function listCashbook(), lines 1092-1098
+          - The function does `SELECT * FROM journal_entries` which includes created_by
+          - But the return statement does NOT include `createdBy: e.created_by`
+          - This causes the filtering logic in route.js to fail
+          
+          ❌ **Impact**:
+          - Admin and Supervisor CANNOT use the cashbook feature (see empty list)
+          - They create entries but cannot see them afterward
+          - This is a BLOCKING BUG for Admin/Supervisor roles
+          
+          ✅ **What Works**:
+          - Login for both roles ✓
+          - Create cashbook entries ✓
+          - Delete cashbook entries ✓
+          - Akuntan/Direktur see all entries ✓
+          
+          === FIX REQUIRED ===
+          
+          **File:** /app/lib/accounting/engine.js
+          **Function:** listCashbook()
+          **Lines:** 1092-1098
+          
+          **Current code:**
+          ```javascript
+          return {
+            id: e.id, journalNumber: e.journal_number, date: e.entry_date, type: e.source_type,
+            amount: round2(e.total_debit), category, categoryCode, cash, cashCode, cashCode2, direction,
+            note: e.description, hasAttachment: !!e.attachment,
+            fromName: cr.account_name, toName: dr.account_name,
+          };
+          ```
+          
+          **Fixed code:**
+          ```javascript
+          return {
+            id: e.id, journalNumber: e.journal_number, date: e.entry_date, type: e.source_type,
+            amount: round2(e.total_debit), category, categoryCode, cash, cashCode, cashCode2, direction,
+            note: e.description, hasAttachment: !!e.attachment,
+            fromName: cr.account_name, toName: dr.account_name,
+            createdBy: e.created_by,  // ← ADD THIS LINE
+          };
+          ```
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test Entries Created:
+          - TEST-AKUNTAN: id=bde27b02-9933-47d8-b95c-02a3d9597861, journal=JU-2608-098
+          - TEST-ADMIN: id=35a4a3ce-4073-4a85-90cc-2b873434de71, journal=JU-2608-099
+          
+          GET Results:
+          - Admin (should see 1): 0 entries ❌
+          - Akuntan (should see 82): 82 entries ✓
+          
+          Field Presence:
+          - created_by: NOT PRESENT ❌
+          - createdBy: NOT PRESENT ❌
+          - Available fields: 15 fields (id, journalNumber, date, type, amount, category, categoryCode, 
+            cash, cashCode, cashCode2, direction, note, hasAttachment, fromName, toName)
+          
+          === CRITICAL ISSUE ===
+          
+          ❌ **BLOCKING BUG:** Admin and Supervisor cannot use the cashbook feature.
+          ❌ **ROOT CAUSE:** created_by field not exposed in listCashbook() return object.
+          ❌ **IMPACT:** Admin/Supervisor see empty list even after creating entries.
+          ❌ **FIX:** Add `createdBy: e.created_by` to the return object in engine.js line 1097.
+          
+          Test Coverage: 6/8 tests passed (75%), 2/8 tests failed (25%)
+          - TEST 1: Login as AKUNTAN ✓
+          - TEST 2: Create entry as AKUNTAN ✓
+          - TEST 3: Login as ADMIN ✓
+          - TEST 4: Create entry as ADMIN ✓
+          - TEST 5: GET as ADMIN (CORE FEATURE) ❌
+          - TEST 6: GET as AKUNTAN ✓
+          - TEST 7: Verify created_by field ❌
+          - TEST 8: Cleanup ✓
+
+
 
 metadata:
   created_by: "main_agent"
@@ -31420,7 +31619,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Akuntan full access (admin-equivalent) + Payment Approval workflow"
+    - "Cashbook per-user filtering: Admin & Supervisor ONLY see entries they created; Akuntan & Direktur see ALL"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -31441,6 +31640,38 @@ agent_communication:
       
       **RESULTS:**
       ✅ 3/6 tests PASSED (Akuntan full access, negative test, regression)
+
+  - agent: "testing"
+    message: |
+      Backend testing completed for Cashbook per-user filtering feature.
+      
+      **CRITICAL BUG FOUND:**
+      ❌ Feature is BROKEN - Admin/Supervisor see EMPTY list instead of their own entries
+      
+      **ROOT CAUSE:**
+      The created_by field is NOT exposed in the listCashbook() API response.
+      - Filtering logic in route.js (lines 897-901) expects r.createdBy or r.created_by
+      - But listCashbook() in engine.js (lines 1092-1098) does NOT include this field
+      - Result: Admin/Supervisor filter removes ALL entries (field is undefined)
+      
+      **TEST RESULTS:**
+      ❌ Admin GET /accounting/cashbook: 0 entries (should see 1 - their own)
+      ✅ Akuntan GET /accounting/cashbook: 82 entries (correct - sees all)
+      ❌ created_by field: NOT PRESENT in response
+      
+      **FIX REQUIRED:**
+      File: /app/lib/accounting/engine.js
+      Function: listCashbook()
+      Lines: 1092-1098
+      Change: Add `createdBy: e.created_by,` to the return object
+      
+      **IMPACT:**
+      This is a BLOCKING BUG for Admin/Supervisor roles. They cannot use the cashbook
+      feature because they see an empty list even after creating entries.
+      
+      Test file: /app/backend_test_cashbook_filter.py
+      Test Coverage: 6/8 passed (75%), 2/8 failed (25%)
+
       ⚠️ 3/6 tests SKIPPED due to data conditions (no Shipped SO, no PO, no payment_approval)
       
       **VERIFIED:**
