@@ -3639,7 +3639,7 @@ async function handleRoute(request, { params }) {
       if (['Invoiced', 'Cancelled'].includes(existing.pipelineStatus)) return err('SO tidak dapat diubah pada status ini');
       const body = await request.json();
       const update = {};
-      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer', 'shippingPayMethod'];
+      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer', 'shippingPayMethod', 'shippingAccountCode'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;

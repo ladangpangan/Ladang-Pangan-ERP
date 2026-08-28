@@ -782,15 +782,26 @@ function SjTab({ so, onSaved, canOperate }) {
 function ShippingCostCard({ so, onSaved, canEdit }) {
   const [cost, setCost] = useState(String(so.shippingCost || 0));
   const [bearer, setBearer] = useState(so.shippingBearer || 'seller');
-  const [payMethod, setPayMethod] = useState(so.shippingPayMethod || 'transfer');
+  const [accountCode, setAccountCode] = useState(so.shippingAccountCode || '');
+  const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
   const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  useEffect(() => {
+    fetch('/api/cash-bank-accounts', { credentials: 'include' })
+      .then(r => r.json())
+      .then(j => setAccounts(j.data || []))
+      .catch(() => {});
+  }, []);
   const save = async () => {
+    if (Number(cost || 0) > 0 && !accountCode) return toast.error('Pilih rekening Kas/Bank sumber pembayaran ongkir');
     setSaving(true);
     try {
+      // Turunkan metode legacy (tunai/transfer) dari akun yang dipilih untuk fallback & tampilan.
+      const selName = (accounts.find(a => a.code === accountCode)?.name || '').toLowerCase();
+      const payMethod = (selName.startsWith('kas') || accountCode === '1-1110') ? 'tunai' : 'transfer';
       const res = await fetch(`/api/sales-orders/${so.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shippingCost: Number(cost || 0), shippingBearer: bearer, shippingPayMethod: payMethod }),
+        body: JSON.stringify({ shippingCost: Number(cost || 0), shippingBearer: bearer, shippingPayMethod: payMethod, shippingAccountCode: accountCode || null }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
@@ -802,7 +813,7 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Truck className="w-4 h-4" />Biaya Pengiriman</CardTitle>
-        <CardDescription>Biaya kirim yang perusahaan bayar ke kurir. <b>Pembeli</b> → ditambahkan ke total invoice (pelanggan membayar). <b>Penjual</b> → mengurangi laba (Beban Ongkir).</CardDescription>
+        <CardDescription>Biaya kirim yang perusahaan bayar ke kurir. <b>Pembeli</b> → ditambahkan ke total invoice (pelanggan membayar). <b>Penjual</b> → mengurangi laba (Beban Ongkir). Jurnal otomatis: Beban Pengiriman didebit, rekening yang dipilih dikredit.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -821,12 +832,13 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
             </Select>
           </div>
           <div>
-            <Label className="text-xs">Dibayar dari</Label>
-            <Select value={payMethod} onValueChange={setPayMethod} disabled={!canEdit}>
-              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+            <Label className="text-xs">Dibayar dari (Kas/Bank)</Label>
+            <Select value={accountCode} onValueChange={setAccountCode} disabled={!canEdit}>
+              <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih rekening" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="transfer">Bank / Transfer</SelectItem>
-                <SelectItem value="tunai">Kas Tunai</SelectItem>
+                {accounts.map(a => (
+                  <SelectItem key={a.code} value={a.code}>{a.code} — {a.name}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
