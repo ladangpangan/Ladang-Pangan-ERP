@@ -6,7 +6,7 @@ Check current state of SOs and POs to understand data conditions
 import requests
 import json
 
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Login as admin
 session = requests.Session()

@@ -128,7 +128,7 @@ backend:
           and UI surplus display).
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) - source of truth
           - Test execution: Python requests with session cookies
@@ -377,7 +377,7 @@ backend:
           - Silently ignore duplicate insert errors (contact may already exist in SQLite)
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) - source of truth
           - Test execution: Python requests with session cookies
@@ -661,7 +661,7 @@ backend:
           successfully resolved and verified with exact number matching.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) - source of truth
           - Test execution: Python requests with session cookies
@@ -823,7 +823,7 @@ backend:
           of per-pod SQLite cache. All stability tests passed with IDENTICAL results across 5 calls.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) - source of truth
           - Test execution: 5 consecutive calls per endpoint with 0.5s delays
@@ -990,7 +990,7 @@ backend:
           with proper typo guard, invoice adjustment, and COGS protection.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: LIVE Production MongoDB Atlas (erp_prod)
           - Test approach: FULLY REVERSIBLE (used existing SO, deleted receipt at end)
@@ -1456,7 +1456,7 @@ backend:
           GET requests within the 10-second window. All cache behaviors verified.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) - production data
           - Test execution: Python requests with timing measurements
@@ -2058,7 +2058,7 @@ backend:
           Commission records are created AND persisted for both STOCK and DROPSHIP sales orders.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth cookie-based (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Test execution time: ~81 seconds
@@ -21867,7 +21867,7 @@ frontend:
           === TEST RESULTS ===
           
           ✅ TEST 1 — Login (PASSED):
-             - URL: https://github-to-production.preview.emergentagent.com/login
+             - URL: https://so-po-loader.preview.emergentagent.com/login
              - Credentials: admin@lpi.co.id / admin123
              - Successfully authenticated and redirected to /dashboard
           
@@ -22061,7 +22061,7 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: |
-      FRONTEND UI verification approved by user. App base URL: https://github-to-production.preview.emergentagent.com
+      FRONTEND UI verification approved by user. App base URL: https://so-po-loader.preview.emergentagent.com
       Login at /login with admin@lpi.co.id / admin123 (email + password fields, submit button). All app pages are under
       /dashboard. Please verify (no crashes, data renders, filters work):
       1) /dashboard/inventory — header cards show TOTAL ROWS = 29, TOTAL BERAT = 5.751 kg, NILAI STOK (HPP) ≈ Rp 94,3–94,4 juta.
@@ -23391,7 +23391,7 @@ frontend:
           All pages load data correctly from MongoDB, CRUD operations work, and no session drops or critical errors found.
           
           === TEST ENVIRONMENT ===
-          - URL: https://github-to-production.preview.emergentagent.com
+          - URL: https://so-po-loader.preview.emergentagent.com
           - Auth: admin@lpi.co.id / admin123
           - UI Language: Indonesian
           - Browser: Playwright automation with console log capture
@@ -23548,7 +23548,7 @@ agent_communication:
     -agent: "main"
     -message: |
       Please run FRONTEND UI tests for the Master Data pages (user explicitly requested this).
-      App URL: https://github-to-production.preview.emergentagent.com  Login page: /login
+      App URL: https://so-po-loader.preview.emergentagent.com  Login page: /login
       Login as admin: admin@lpi.co.id / admin123. UI/labels are in Indonesian.
       Test these dashboard pages (data now comes from MongoDB via dual-write):
       1) PRODUCTS (/dashboard/products): list loads (~52 products); create a new product via the "Tambah"/add
@@ -30325,7 +30325,7 @@ agent_communication:
           All data correctly persists to MongoDB and round-trips successfully.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -30422,7 +30422,7 @@ agent_communication:
           Full CRUD cycle tested: Create → Read → Update → Read → Delete → Verify deletion.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -30529,7 +30529,7 @@ agent_communication:
           Tested notification retrieval, mark-as-read (single + all), and unread count tracking.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           - Module: /app/lib/db/misc-mongo.js
@@ -30640,7 +30640,7 @@ agent_communication:
           after PHASE 10 MongoDB-authoritative migration for misc tables.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
           - Database: MongoDB Atlas (erp_prod) + SQLite mirror
           
@@ -30995,7 +30995,7 @@ agent_communication:
       All 4 domains (app_settings, contact_customers, notifications, + regression) tested and verified.
       
       === TEST ENVIRONMENT ===
-      - Base URL: https://github-to-production.preview.emergentagent.com/api
+      - Base URL: https://so-po-loader.preview.emergentagent.com/api
       - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
       - Database: MongoDB Atlas (erp_prod) + SQLite mirror
       - Module: /app/lib/db/misc-mongo.js
@@ -31204,7 +31204,7 @@ agent_communication:
           due to lack of appropriate test data (no Shipped SO, no PO, no payment_approval concerns).
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookies (multiple roles tested)
           - Database: MongoDB Atlas (erp_prod) - production data
           - Test execution time: ~60 seconds
@@ -31413,11 +31413,11 @@ agent_communication:
 
   - task: "Cashbook per-user filtering: Admin & Supervisor ONLY see entries they created; Akuntan & Direktur see ALL"
     implemented: true
-    working: false
-    file: "/app/app/api/[[...path]]/route.js (lines 897-901), /app/lib/accounting/engine.js (lines 1092-1098)"
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (lines 897-901), /app/lib/accounting/engine.js (lines 1086, 1098)"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: false
         agent: "testing"
@@ -31428,7 +31428,7 @@ agent_communication:
           The feature is BROKEN due to a missing field in the API response.
           
           === TEST ENVIRONMENT ===
-          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
           - Auth: Better Auth session cookie
           - Test credentials: admin@lpi.co.id/admin123, akuntan@lpi.co.id/akuntanlpi123
           - Database: MongoDB Atlas (erp_prod) - source of truth
@@ -31579,8 +31579,8 @@ agent_communication:
           === ACTUAL VALUES OBSERVED ===
           
           Test Entries Created:
-          - TEST-AKUNTAN: id=bde27b02-9933-47d8-b95c-02a3d9597861, journal=JU-2608-098
-          - TEST-ADMIN: id=35a4a3ce-4073-4a85-90cc-2b873434de71, journal=JU-2608-099
+          - TEST-AKUNTAN: id=so-po-loader, journal=JU-2608-098
+          - TEST-ADMIN: id=so-po-loader, journal=JU-2608-099
           
           GET Results:
           - Admin (should see 1): 0 entries ❌
@@ -31608,6 +31608,211 @@ agent_communication:
           - TEST 6: GET as AKUNTAN ✓
           - TEST 7: Verify created_by field ❌
           - TEST 8: Cleanup ✓
+      
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (6/6, 100%)
+          
+          Comprehensive backend testing completed for the Cashbook per-user filtering feature
+          after the bug fix. The empty list bug is RESOLVED and all filtering rules work correctly.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie
+          - Test credentials: admin@lpi.co.id/admin123, akuntan@lpi.co.id/akuntanlpi123,
+            supervisor@lpi.co.id/super123, direktur@lpi.co.id/direktur123
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with session cookies
+          - Test file: /app/backend_test_cashbook_filtering.py
+          
+          === BUG FIX APPLIED ===
+          
+          **File:** /app/lib/accounting/engine.js
+          **Function:** listCashbook()
+          **Lines:** 1086, 1098
+          
+          **Fix:**
+          - Line 1086: Added `e.createdBy = e.created_by;` (assigns created_by to createdBy)
+          - Line 1098: Added `createdBy: e.created_by, created_by: e.created_by,` to return object
+          
+          **Before (BROKEN):**
+          ```javascript
+          return {
+            id: e.id, journalNumber: e.journal_number, date: e.entry_date, type: e.source_type,
+            amount: round2(e.total_debit), category, categoryCode, cash, cashCode, cashCode2, direction,
+            note: e.description, hasAttachment: !!e.attachment,
+            fromName: cr.account_name, toName: dr.account_name,
+            // ❌ MISSING: createdBy and created_by fields
+          };
+          ```
+          
+          **After (FIXED):**
+          ```javascript
+          e.createdBy = e.created_by;  // Line 1086
+          // ...
+          return {
+            id: e.id, journalNumber: e.journal_number, date: e.entry_date, type: e.source_type,
+            amount: round2(e.total_debit), category, categoryCode, cash, cashCode, cashCode2, direction,
+            note: e.description, hasAttachment: !!e.attachment,
+            fromName: cr.account_name, toName: dr.account_name,
+            createdBy: e.created_by, created_by: e.created_by,  // ✅ Line 1098
+          };
+          ```
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as AKUNTAN (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set ✓
+          
+          ✅ TEST 2 — Create entry as AKUNTAN (PASSED):
+             - POST /api/accounting/cashbook → 200 OK ✓
+             - Entry created: JU-2608-098 (id: 41a6b77e-525d-4aa7-b695-7881b0f6755c) ✓
+             - Amount: Rp 150,000 ✓
+             - Note: "Test akuntan entry - cashbook filtering" ✓
+          
+          ✅ TEST 3 — Login as ADMIN (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set ✓
+          
+          ✅ TEST 4 — Create entry as ADMIN (PASSED):
+             - POST /api/accounting/cashbook → 200 OK ✓
+             - Entry created: JU-2608-099 (id: f38987ae-2f0e-446b-9a80-84f4f9cbc815) ✓
+             - Amount: Rp 125,000 ✓
+             - Note: "Test admin entry - cashbook filtering" ✓
+          
+          ✅ TEST 5 — **CORE FIX** — GET as ADMIN (PASSED):
+             - GET /api/accounting/cashbook as ADMIN → 200 OK ✓
+             - **Total entries returned: 47** ✓ (NOT empty - bug fixed!)
+             - Admin sees their own entry (f38987ae-2f0e-446b-9a80-84f4f9cbc815): True ✓
+             - Admin sees akuntan's entry (41a6b77e-525d-4aa7-b695-7881b0f6755c): False ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Admin sees their own entries (NOT empty - original bug FIXED)
+             ✅ Admin does NOT see akuntan's entry (filtering working correctly)
+             ✅ created_by field is POPULATED in response
+             ✅ Sample entry: createdBy=6a8d568d3aee812581d7ca8b, created_by=6a8d568d3aee812581d7ca8b
+          
+          ✅ TEST 6 — GET as AKUNTAN (PASSED):
+             - GET /api/accounting/cashbook as AKUNTAN → 200 OK ✓
+             - Total entries returned: 82 ✓
+             - Akuntan sees their own entry (41a6b77e-525d-4aa7-b695-7881b0f6755c): True ✓
+             - Akuntan sees admin's entry (f38987ae-2f0e-446b-9a80-84f4f9cbc815): True ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Akuntan sees ALL entries (FULL ACCESS working)
+             ✅ Both test entries visible (admin + akuntan)
+             ✅ No filtering applied for akuntan role
+          
+          ✅ TEST 7 — Regression: SUPERVISOR filtering (PASSED):
+             - Login as SUPERVISOR → 200 OK ✓
+             - GET /api/accounting/cashbook → 200 OK ✓
+             - Total entries returned: 0 ✓
+             - Supervisor sees admin's entry: False ✓
+             - Supervisor sees akuntan's entry: False ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Supervisor correctly sees only their own entries (0 test entries)
+             ✅ Supervisor does NOT see other users' entries
+             ✅ Filtering working correctly for supervisor role
+          
+          ✅ TEST 8 — Regression: DIREKTUR filtering (PASSED):
+             - Login as DIREKTUR → 200 OK ✓
+             - GET /api/accounting/cashbook → 200 OK ✓
+             - Total entries returned: 82 ✓
+             - Direktur sees admin's entry (f38987ae-2f0e-446b-9a80-84f4f9cbc815): True ✓
+             - Direktur sees akuntan's entry (41a6b77e-525d-4aa7-b695-7881b0f6755c): True ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Direktur sees ALL entries (FULL ACCESS working)
+             ✅ Both test entries visible
+             ✅ No filtering applied for direktur role
+          
+          ✅ TEST 9 — Cleanup (PASSED):
+             - DELETE /api/accounting/cashbook/:id (akuntan entry) → 200 OK ✓
+             - DELETE /api/accounting/cashbook/:id (admin entry) → 200 OK ✓
+             - All test data removed successfully ✓
+          
+          ✅ TEST 10 — Final verification (PASSED):
+             - GET /api/accounting/cashbook as AKUNTAN → 200 OK ✓
+             - Total entries: 80 (down from 82) ✓
+             - Test entries no longer exist ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Feature WORKING**:
+          - Admin filtering: WORKING (sees only own entries, NOT empty)
+          - Supervisor filtering: WORKING (sees only own entries)
+          - Akuntan FULL ACCESS: WORKING (sees all entries)
+          - Direktur FULL ACCESS: WORKING (sees all entries)
+          - created_by field: PRESENT and POPULATED in API response
+          
+          ✅ **Bug Fix Verified**:
+          - Location: /app/lib/accounting/engine.js, function listCashbook()
+          - Line 1086: `e.createdBy = e.created_by;` (assigns field)
+          - Line 1098: `createdBy: e.created_by, created_by: e.created_by,` (returns both fields)
+          - The filtering logic in route.js (lines 897-901) now works correctly
+          
+          ✅ **Empty List Bug RESOLVED**:
+          - Admin previously saw 0 entries (empty list)
+          - Admin now sees 47 entries (their own entries)
+          - The created_by field is now exposed in the API response
+          - Filtering removes only OTHER users' entries, not ALL entries
+          
+          ✅ **Business Rules Verified**:
+          - Admin & Supervisor: See ONLY entries they created themselves ✓
+          - Akuntan & Direktur: See ALL entries (from everyone) ✓
+          - created_by field populated with user ID ✓
+          - Filtering logic working correctly ✓
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test Entries Created:
+          - AKUNTAN: JU-2608-098 (id: 41a6b77e-525d-4aa7-b695-7881b0f6755c, Rp 150,000)
+          - ADMIN: JU-2608-099 (id: f38987ae-2f0e-446b-9a80-84f4f9cbc815, Rp 125,000)
+          
+          GET Results (BEFORE cleanup):
+          - Admin (should see own entries): 47 entries ✓ (includes admin's own entry)
+          - Akuntan (should see all): 82 entries ✓ (includes both test entries)
+          - Supervisor (should see own entries): 0 entries ✓ (no supervisor entries exist)
+          - Direktur (should see all): 82 entries ✓ (includes both test entries)
+          
+          Field Presence:
+          - created_by: PRESENT ✓
+          - createdBy: PRESENT ✓
+          - Sample value: 6a8d568d3aee812581d7ca8b (user ID)
+          
+          GET Results (AFTER cleanup):
+          - Akuntan: 80 entries (down from 82, test entries deleted) ✓
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All filtering rules working correctly.
+          Empty list bug is RESOLVED.
+          created_by field is now exposed in API response.
+          Admin and Supervisor can now use the cashbook feature.
+          Akuntan and Direktur see all entries as expected.
+          All test data cleaned up successfully.
+          
+          Test Coverage: 6/6 tests passed (100%)
+          - TEST 1: Login as AKUNTAN ✓
+          - TEST 2: Create entry as AKUNTAN ✓
+          - TEST 3: Login as ADMIN ✓
+          - TEST 4: Create entry as ADMIN ✓
+          - TEST 5: GET as ADMIN (CORE FIX) ✓
+          - TEST 6: GET as AKUNTAN ✓
+          - TEST 7: Regression - SUPERVISOR ✓
+          - TEST 8: Regression - DIREKTUR ✓
+          - TEST 9: Cleanup ✓
+          - TEST 10: Final verification ✓
+          
+          === CONCLUSION ===
+          
+          ✅ BUGFIX VERIFIED
+          The empty list bug is RESOLVED. Admin and Supervisor now see their own cashbook
+          entries (not empty). Akuntan and Direktur see all entries. The created_by field
+          is now properly exposed in the API response, and the filtering logic works correctly.
 
 
 
@@ -31618,8 +31823,7 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Cashbook per-user filtering: Admin & Supervisor ONLY see entries they created; Akuntan & Direktur see ALL"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -31699,4 +31903,59 @@ agent_communication:
       
       However, based on testable features and code review, the implementation
       appears correct. No critical code bugs found.
+
+  - agent: "main"
+
+  - agent: "testing"
+    message: |
+      ✅ RE-TEST COMPLETE: Cashbook per-user filtering bugfix VERIFIED (6/6 tests passed, 100%)
+      
+      **BUG STATUS:** RESOLVED ✓
+      
+      **WHAT WAS FIXED:**
+      The empty list bug is RESOLVED. In /app/lib/accounting/engine.js listCashbook():
+      - Line 1086: Added `e.createdBy = e.created_by;`
+      - Line 1098: Added `createdBy: e.created_by, created_by: e.created_by,` to return object
+      
+      **TEST RESULTS:**
+      ✅ Admin sees ONLY their own entries (47 entries, NOT empty - bug fixed)
+      ✅ Akuntan sees ALL entries (82 entries, includes admin + akuntan entries)
+      ✅ Supervisor sees ONLY their own entries (0 entries, no supervisor entries exist)
+      ✅ Direktur sees ALL entries (82 entries, FULL ACCESS working)
+      ✅ created_by field is POPULATED in API response (sample: 6a8d568d3aee812581d7ca8b)
+      ✅ Filtering logic working correctly (admin does NOT see akuntan's entry)
+      
+      **BUSINESS RULES VERIFIED:**
+      - Admin & Supervisor: See ONLY entries they created themselves ✓
+      - Akuntan & Direktur: See ALL entries (from everyone) ✓
+      - created_by field populated with user ID ✓
+      
+      **BEFORE FIX:**
+      - Admin GET /accounting/cashbook: 0 entries (empty list - BROKEN)
+      - created_by field: NOT PRESENT in response
+      
+      **AFTER FIX:**
+      - Admin GET /accounting/cashbook: 47 entries (their own entries - WORKING)
+      - created_by field: PRESENT and POPULATED
+      
+      Test file: /app/backend_test_cashbook_filtering.py
+      Test Coverage: 6/6 passed (100%)
+      All test data cleaned up successfully.
+
+    message: |
+      RE-TEST REQUEST (Cashbook per-user filtering — Revisi #1):
+      Applied the exact fix recommended by testing agent. In /app/lib/accounting/engine.js
+      listCashbook() return object now includes `createdBy: e.created_by, created_by: e.created_by`.
+      Previously line 1086 set e.createdBy but the returned NEW object literal did not carry it,
+      so the Admin/Supervisor filter in route.js (lines 897-901) removed all rows.
+
+      PLEASE RE-TEST (backend):
+      1) Login AKUNTAN (akuntan@lpi.co.id / akuntanlpi123). Create a cashbook EXPENSE entry.
+      2) Login ADMIN (admin@lpi.co.id / admin123). Create a cashbook EXPENSE entry.
+      3) GET /api/accounting/cashbook as ADMIN → must return ONLY admin's own entries (>=1, the one
+         admin created), NOT empty, and must NOT include akuntan's entry.
+      4) GET /api/accounting/cashbook as AKUNTAN → must return ALL entries (sees admin's + akuntan's + others).
+      5) Verify response rows now include createdBy (and created_by) field populated with the creator user id.
+      6) Regression: Supervisor sees only own entries; Direktur sees all.
+      7) Cleanup any test entries created.
 

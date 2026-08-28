@@ -6,7 +6,7 @@ Extended test to check for surplus scenarios and verify negative shrinkage handl
 import requests
 import json
 
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@lpi.co.id"
 ADMIN_PASSWORD = "admin123"
 
