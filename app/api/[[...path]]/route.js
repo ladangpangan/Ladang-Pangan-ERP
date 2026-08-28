@@ -323,6 +323,14 @@ async function handleRoute(request, { params }) {
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
 
+  // Mongo -> SQLite hydration for master data (products/cold_storages/zones). Mongo is authoritative;
+  // this keeps every pod's SQLite mirror in sync so transaction joins (e.g. inventory kode simpan ->
+  // product name) never resolve empty due to drift. Short TTL guard to bound overhead.
+  try {
+    const gm = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+    if (Date.now() - (gm.master || 0) > 30000) { await md.hydrateMasterFromMongo(); gm.master = Date.now(); }
+  } catch (e) { /* non-fatal */ }
+
   // Warm the in-memory notification-recipient cache in THIS module instance (boot.js primes a possibly
   // different instance in dev/multi-bundle). Idempotent + cheap (only queries Mongo when empty) so
   // createNotification() can reliably resolve supervisor/direktur recipients.
