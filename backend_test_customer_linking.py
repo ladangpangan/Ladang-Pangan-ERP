@@ -10,7 +10,7 @@ import sys
 import time
 
 # Base URL from .env
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Test credentials
 EMAIL = "admin@lpi.co.id"

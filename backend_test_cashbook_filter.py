@@ -19,7 +19,7 @@ import json
 from datetime import datetime
 
 # Base URL
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Test credentials
 AKUNTAN_EMAIL = "akuntan@lpi.co.id"

@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta
 
 # Base URL from .env
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Test credentials
 ADMIN_EMAIL = "admin@lpi.co.id"

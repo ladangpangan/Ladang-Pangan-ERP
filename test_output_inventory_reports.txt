@@ -2,8 +2,8 @@
 ================================================================================
 BACKEND TEST: FLUCTUATING INVENTORY REPORTS BUGFIX
 ================================================================================
-Base URL: https://github-to-production.preview.emergentagent.com
-API Base: https://github-to-production.preview.emergentagent.com/api
+Base URL: https://so-po-loader.preview.emergentagent.com
+API Base: https://so-po-loader.preview.emergentagent.com/api
 Credentials: admin@lpi.co.id / admin123
 ================================================================================
 ================================================================================

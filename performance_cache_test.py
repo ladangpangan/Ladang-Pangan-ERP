@@ -21,7 +21,7 @@ from datetime import datetime
 
 # Base URL - using preview URL from .env (NEXT_PUBLIC_BASE_URL)
 # Note: localhost:3000 may not work in container environment
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Test credentials
 EMAIL = "admin@lpi.co.id"

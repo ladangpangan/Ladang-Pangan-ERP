@@ -2,7 +2,7 @@
 ================================================================================
 BACKEND API TESTING: Agen & Dropshipper + Commission + End-Customers
 ================================================================================
-Base URL: https://github-to-production.preview.emergentagent.com/api
+Base URL: https://so-po-loader.preview.emergentagent.com/api
 Test started at: 2026-08-07 08:37:55
 
 ================================================================================

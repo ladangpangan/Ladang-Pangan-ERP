@@ -6,7 +6,7 @@ Check approvals as akuntan to see if there are any payment_approval concerns
 import requests
 import json
 
-BASE_URL = "https://github-to-production.preview.emergentagent.com/api"
+BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
 
 # Login as akuntan
 session = requests.Session()
