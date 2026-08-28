@@ -5666,8 +5666,18 @@ async function handleRoute(request, { params }) {
       if (parent.status !== 'active') return err('Karung tidak aktif');
       const packs = body.packs || [];
       if (packs.length === 0) return err('packs required');
+      const VALID_PKG = ['karung', 'pack', 'box', 'curah', 'colly', 'keranjang', 'kardus'];
+      // HPP/kg efektif karung asal: untuk stok PO ambil HPP live dari PO item (basis tally),
+      // fallback ke nilai tersimpan di stok. Anak split mewarisi HPP ini (jangan 0).
+      let effHpp = Number(parent.hppPerKg || 0);
+      if (parent.sourceType === 'PO' && parent.sourceBatch) {
+        const poIt = db.select({ hpp: s.purchaseOrderItems.hppPerKg }).from(s.purchaseOrderItems)
+          .where(and(eq(s.purchaseOrderItems.purchaseOrderId, parent.sourceBatch), eq(s.purchaseOrderItems.productId, parent.productId))).get();
+        if (Number(poIt?.hpp || 0) > 0) effHpp = Number(poIt.hpp);
+      }
       const createdIds = [];
       for (const p of packs) {
+        const pkg = VALID_PKG.includes(p.packagingType) ? p.packagingType : 'pack';
         const stkId = uuidv4();
         db.insert(s.inventoryStock).values({
           id: stkId,
@@ -5675,13 +5685,14 @@ async function handleRoute(request, { params }) {
           coldStorageId: parent.coldStorageId,
           zoneId: parent.zoneId,
           kodeSimpan: nextKodeSimpan(),
-          packagingType: 'pack',
+          packagingType: pkg,
           parentStockId: parent.id,
           quantity: Number(p.quantity || 1),
           weight: Number(p.weight || 0),
           expiredDate: parent.expiredDate,
           status: 'active',
           sourceBatch: parent.sourceBatch, sourceType: parent.sourceType,
+          hppPerKg: effHpp,
           transactionId: parent.transactionId,
         }).run();
         createdIds.push(stkId);
