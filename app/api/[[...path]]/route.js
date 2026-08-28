@@ -1657,14 +1657,52 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
       const id = path[1];
-      const parent = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      // Kontak bersifat MongoDB-authoritative; mirror SQLite per-pod bisa belum ter-hydrate di
+      // replika tertentu (menyebabkan "Kontak tidak ditemukan" yang intermittent). Fallback ke Mongo.
+      let parent = db.select().from(s.contacts).where(eq(s.contacts.id, id)).get();
+      if (!parent) { 
+        try { 
+          parent = await md.mdGet('contacts', id); 
+          // Sync to SQLite mirror to satisfy foreign key constraints
+          if (parent) {
+            try { 
+              // Convert MongoDB date strings to Date objects for SQLite
+              const parentForSqlite = {
+                ...parent,
+                createdAt: parent.createdAt ? new Date(parent.createdAt) : new Date(),
+                updatedAt: parent.updatedAt ? new Date(parent.updatedAt) : new Date(),
+                archivedAt: parent.archivedAt ? new Date(parent.archivedAt) : null,
+              };
+              db.insert(s.contacts).values(parentForSqlite).run(); 
+            } catch (e) { /* ignore duplicate or other SQLite errors */ }
+          }
+        } catch { /* ignore MongoDB fetch errors */ } 
+      }
       if (!parent) return err('Kontak tidak ditemukan', 404);
       const body = await request.json();
       const now = new Date();
 
       // Mode "Pilih dari Kontak": tautkan ke kontak Customer yang sudah ada (bukan salinan)
       if (body.linkedContactId) {
-        const linked = db.select().from(s.contacts).where(eq(s.contacts.id, body.linkedContactId)).get();
+        let linked = db.select().from(s.contacts).where(eq(s.contacts.id, body.linkedContactId)).get();
+        if (!linked) { 
+          try { 
+            linked = await md.mdGet('contacts', body.linkedContactId); 
+            // Sync to SQLite mirror to satisfy foreign key constraints
+            if (linked) {
+              try { 
+                // Convert MongoDB date strings to Date objects for SQLite
+                const linkedForSqlite = {
+                  ...linked,
+                  createdAt: linked.createdAt ? new Date(linked.createdAt) : new Date(),
+                  updatedAt: linked.updatedAt ? new Date(linked.updatedAt) : new Date(),
+                  archivedAt: linked.archivedAt ? new Date(linked.archivedAt) : null,
+                };
+                db.insert(s.contacts).values(linkedForSqlite).run(); 
+              } catch (e) { /* ignore duplicate or other SQLite errors */ }
+            }
+          } catch { /* ignore MongoDB fetch errors */ } 
+        }
         if (!linked) return err('Kontak yang dipilih tidak ditemukan', 404);
         if (linked.id === id) return err('Tidak boleh menautkan kontak ke dirinya sendiri', 400);
         // cegah duplikat tautan ke kontak yang sama
