@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -508,8 +508,14 @@ function GrnTab({ po, onSaved, canOperate }) {
 
 function PaymentsTab({ po, onSaved, canEdit }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ amount: 0, method: 'Transfer', reference: '', isDp: false, paymentDate: new Date().toISOString().slice(0,10), notes: '' });
+  const [form, setForm] = useState({ amount: 0, method: 'Transfer', accountCode: '', reference: '', isDp: false, paymentDate: new Date().toISOString().slice(0,10), notes: '' });
+  const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open && accounts.length === 0) {
+      fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
+    }
+  }, [open]);
   const create = async () => {
     if (!form.amount) return toast.error('Nominal wajib diisi');
     setSaving(true);
@@ -541,7 +547,20 @@ function PaymentsTab({ po, onSaved, canEdit }) {
                     <SelectContent><SelectItem value="Transfer">Transfer</SelectItem><SelectItem value="Tunai">Tunai</SelectItem><SelectItem value="QRIS">QRIS</SelectItem></SelectContent>
                   </Select>
                 </F>
-                <F label="Nominal (Rp)" className="col-span-2"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} placeholder="0" /></F>
+                <F label="Nominal (Rp)" className="col-span-2">
+                  <div className="flex gap-2">
+                    <CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} placeholder="0" />
+                    <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, amount: Number(po.outstanding || 0) })}>Lunas</Button>
+                  </div>
+                </F>
+                <F label="Dibayar dari Rekening" className="col-span-2">
+                  <Select value={form.accountCode || undefined} onValueChange={v => setForm({ ...form, accountCode: v })}>
+                    <SelectTrigger><SelectValue placeholder="Pilih Kas/Bank sumber" /></SelectTrigger>
+                    <SelectContent>
+                      {accounts.map(a => <SelectItem key={a.code} value={a.code}>{a.code} · {a.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </F>
                 <F label="Referensi (no bukti)" className="col-span-2"><Input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} /></F>
                 <F label="Adalah DP?">
                   <Select value={form.isDp ? 'yes' : 'no'} onValueChange={v => setForm({ ...form, isDp: v === 'yes' })}>

@@ -893,7 +893,12 @@ async function handleRoute(request, { params }) {
         if (path.length === 2 && method === 'GET') {
           const url = new URL(request.url);
           const { from, to } = parseRange(url);
-          const rows = acct.listCashbook(raw, { from, to, type: url.searchParams.get('type') });
+          let rows = acct.listCashbook(raw, { from, to, type: url.searchParams.get('type') });
+          // Admin & Supervisor hanya melihat entri yang mereka input sendiri; Akuntan & Direktur lihat semua.
+          if (['admin', 'supervisor'].includes(userRole)) {
+            const meEmail = session.user?.email; const meId = session.user?.id;
+            rows = (rows || []).filter(r => r.createdBy === meEmail || r.createdBy === meId || r.created_by === meEmail || r.created_by === meId);
+          }
           return json({ data: rows });
         }
         if (path.length === 2 && method === 'POST') {
@@ -1224,6 +1229,21 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth();
       if (error) return error;
       return json({ user: session.user });
+    }
+
+    // GET /cash-bank-accounts — daftar akun Kas & Bank (COA 1-11xx) untuk dropdown pembayaran SO/PO.
+    // Dapat diakses semua peran manajemen (admin/supervisor perlu ini walau modul akunting dibatasi).
+    if (route === '/cash-bank-accounts' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      try {
+        const all = await coaMongo.coaList({ includeArchived: false });
+        const rows = (all || [])
+          .filter(a => String(a.code || '').startsWith('1-11') && a.archived_at == null && (a.is_postable == null || a.is_postable === 1 || a.is_postable === true))
+          .map(a => ({ code: a.code, name: a.name }))
+          .sort((x, y) => String(x.code).localeCompare(String(y.code)));
+        return json({ data: rows });
+      } catch (e) { return json({ data: [] }); }
     }
 
     // ---------- NOTIFICATIONS (in-app) ----------
@@ -2733,6 +2753,7 @@ async function handleRoute(request, { params }) {
         paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
         amount: Number(body.amount),
         method: body.method || 'Transfer',
+        accountCode: body.accountCode || null,
         reference: body.reference || null,
         isDp: !!body.isDp,
         notes: body.notes || null,
@@ -3961,6 +3982,7 @@ async function handleRoute(request, { params }) {
         paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
         amount: Number(body.amount),
         method: body.method || 'Transfer',
+        accountCode: body.accountCode || null,
         reference: body.reference || null,
         isDp: !!body.isDp,
         notes: body.notes || null,
