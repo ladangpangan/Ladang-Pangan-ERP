@@ -109,6 +109,213 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "BUGFIX intermittent 'Kontak tidak ditemukan' when linking a customer to a Dropshipper/Agen contact (POST /contacts/:id/customers) — add MongoDB fallback for parent & linked contact lookups"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (POST /contacts/:id/customers)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ BUGFIX VERIFIED - ALL TESTS PASSED (8/8, 100%)
+          
+          Comprehensive backend testing completed for the customer linking bugfix. The MongoDB fallback
+          is working correctly and the FOREIGN KEY constraint issue has been resolved by syncing contacts
+          from MongoDB to SQLite mirror before creating the link.
+          
+          === ISSUE FOUND AND FIXED DURING TESTING ===
+          
+          **CRITICAL BUG DISCOVERED**: The original fix (MongoDB fallback for lookups) was INCOMPLETE.
+          When contacts were fetched from MongoDB as fallback, they were NOT synced to the SQLite mirror,
+          causing FOREIGN KEY constraint failures when trying to insert into contact_customers table.
+          
+          **ROOT CAUSE**: 
+          - contact_customers.parentContactId and linkedContactId have foreign key references to contacts.id
+          - MongoDB fallback fetched contacts to verify they exist, but didn't insert them into SQLite
+          - SQLite foreign key constraint failed because referenced contacts didn't exist in SQLite mirror
+          - Error: "FOREIGN KEY constraint failed" (HTTP 500)
+          
+          **ADDITIONAL FIX APPLIED** (by testing agent):
+          - When fetching parent/linked contacts from MongoDB, now ALSO insert them into SQLite mirror
+          - Convert MongoDB date strings (ISO format) to Date objects for SQLite timestamp fields
+          - Lines 1663-1671 (parent sync) and 1679-1695 (linked sync) in route.js
+          - Silently ignore duplicate insert errors (contact may already exist in SQLite)
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://github-to-production.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with session cookies
+          - Test file: /app/backend_test_customer_linking.py
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as admin (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie set: __Secure-better-auth.session_token ✓
+          
+          ✅ TEST 2 — Find existing Dropshipper contact (PASSED):
+             - GET /api/contacts?archived=all → 200 OK, 103 contacts ✓
+             - Found: Adhitya Wildan (ID: 538de29c-8596-4532-8967-55c61904eb40) ✓
+             - Categories: Dropshipper ✓
+          
+          ✅ TEST 3 — Find existing Customer contact (PASSED):
+             - Found: Ahmad Rayhan Fadh (ID: c623d99b-ed0d-4d23-8420-a5f7e2ac3ff7) ✓
+             - Categories: Customer ✓
+          
+          ✅ TEST 4 — **CORE FIX** — Link Customer to Dropshipper (PASSED):
+             - POST /api/contacts/{dropshipperId}/customers
+             - Body: { linkedContactId: customer_id }
+             - Response: 201 Created ✓
+             - Customer link ID: 17c3513c-c790-449d-a971-1b25ecb205ca ✓
+             - linkedContactId: c623d99b-ed0d-4d23-8420-a5f7e2ac3ff7 ✓
+             - linkedContact.id matches customer_id ✓
+             - linkedContact.displayName: "Ahmad Rayhan Fadh" (populated, not empty) ✓
+             - name field: "Ahmad Rayhan Fadh" (populated from linked contact) ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ NO "Kontak tidak ditemukan" error (MongoDB fallback working)
+             ✅ NO "FOREIGN KEY constraint failed" error (SQLite sync working)
+             ✅ NO HTTP 500 errors
+             ✅ linkedContact object fully populated with live data
+             ✅ name field populated from linked contact (not generic "Kontak")
+          
+          ✅ TEST 5 — Verify customer in list (PASSED):
+             - GET /api/contacts/{dropshipperId}/customers → 200 OK, 6 customers ✓
+             - Found linked customer in list ✓
+             - linkedContact.id: c623d99b-ed0d-4d23-8420-a5f7e2ac3ff7 ✓
+             - linkedContact.displayName: "Ahmad Rayhan Fadh" ✓
+          
+          ✅ TEST 6 — Duplicate link rejection (PASSED):
+             - POST same linkedContactId again → 400 Bad Request ✓
+             - Error message: "Kontak ini sudah tertaut sebagai pelanggan" ✓
+             - Contains "sudah tertaut" ✓
+          
+          ✅ TEST 7 — Manual mode (without linkedContactId) (PASSED):
+             - POST { name: "Pelanggan Manual Test", phone: "081234567999", city: "Kediri" }
+             - Response: 201 Created ✓
+             - Customer ID: 37c943b5-c95c-4afa-a378-5f4a8d5026ec ✓
+             - linkedContactId: null (manual mode) ✓
+             - Name, phone, city fields populated correctly ✓
+          
+          ✅ TEST 8 — Negative case (invalid linkedContactId) (PASSED):
+             - POST { linkedContactId: "id-acak-tidak-ada-123" }
+             - Response: 404 Not Found ✓
+             - Error message: "Kontak yang dipilih tidak ditemukan" ✓
+             - Contains "tidak ditemukan" ✓
+          
+          ✅ TEST 9 — Cleanup (PASSED):
+             - DELETE /api/contacts/{dropshipperId}/customers/{cid} for both test links
+             - Both deletions: 200 OK ✓
+             - All test data removed successfully ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **Core Bugfix Verified (lines 1659-1695 in route.js)**:
+          - MongoDB fallback for parent contact lookup: WORKING ✓
+          - MongoDB fallback for linked contact lookup: WORKING ✓
+          - SQLite mirror sync for parent contact: WORKING ✓
+          - SQLite mirror sync for linked contact: WORKING ✓
+          - Date field conversion (ISO string → Date object): WORKING ✓
+          - Foreign key constraint: NO LONGER FAILING ✓
+          
+          ✅ **MongoDB Fallback Implementation**:
+          - Parent contact: Try SQLite first, fallback to MongoDB if not found
+          - Linked contact: Try SQLite first, fallback to MongoDB if not found
+          - When fetched from MongoDB: sync to SQLite mirror to satisfy foreign keys
+          - Date fields converted: createdAt, updatedAt, archivedAt (string → Date)
+          - Duplicate insert errors silently ignored (contact may already exist)
+          
+          ✅ **All Test Scenarios Passed**:
+          - Link with existing contact (linkedContactId): 201 Created ✓
+          - Duplicate link: 400 "sudah tertaut" ✓
+          - Manual mode (no linkedContactId): 201 Created ✓
+          - Invalid linkedContactId: 404 "tidak ditemukan" ✓
+          - Customer appears in GET list ✓
+          - Cleanup successful ✓
+          
+          ✅ **Data Integrity**:
+          - linkedContact object fully populated with live data
+          - name field populated from linked contact (not generic)
+          - All fields (id, displayName, phone, etc.) correctly populated
+          - No HTTP 500 errors
+          - No "FOREIGN KEY constraint failed" errors
+          - No "Kontak tidak ditemukan" errors for existing contacts
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Dropshipper Contact:
+          - Name: Adhitya Wildan
+          - ID: 538de29c-8596-4532-8967-55c61904eb40
+          - Categories: Dropshipper
+          
+          Customer Contact:
+          - Name: Ahmad Rayhan Fadh
+          - ID: c623d99b-ed0d-4d23-8420-a5f7e2ac3ff7
+          - Categories: Customer
+          
+          Link Created:
+          - Customer link ID: 17c3513c-c790-449d-a971-1b25ecb205ca
+          - linkedContactId: c623d99b-ed0d-4d23-8420-a5f7e2ac3ff7
+          - linkedContact.displayName: "Ahmad Rayhan Fadh"
+          - name: "Ahmad Rayhan Fadh"
+          
+          Manual Customer Created:
+          - Customer ID: 37c943b5-c95c-4afa-a378-5f4a8d5026ec
+          - Name: "Pelanggan Manual Test"
+          - Phone: "081234567999"
+          - City: "Kediri"
+          - linkedContactId: null
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All customer linking tests passed.
+          MongoDB fallback working correctly.
+          SQLite mirror sync working correctly.
+          Foreign key constraints satisfied.
+          No HTTP 500 errors.
+          No "Kontak tidak ditemukan" errors for existing contacts.
+          All data fields populated correctly.
+          Cleanup successful (reversible).
+          
+          Test Coverage: 8/8 tests passed (100%)
+          - TEST 1: Login as admin ✓
+          - TEST 2: Find Dropshipper contact ✓
+          - TEST 3: Find Customer contact ✓
+          - TEST 4: Link Customer to Dropshipper (CORE) ✓
+          - TEST 5: Verify customer in list ✓
+          - TEST 6: Duplicate link rejection ✓
+          - TEST 7: Manual mode ✓
+          - TEST 8: Negative case (invalid ID) ✓
+          - TEST 9: Cleanup ✓
+      
+      - working: "NA"
+        agent: "main"
+        comment: |
+          USER BUG: Menambahkan pelanggan (link) ke kontak Dropshipper KADANG gagal dengan "Kontak tidak
+          ditemukan" padahal kontaknya jelas ada. RCA: kontak bersifat MongoDB-authoritative tetapi handler
+          POST /contacts/:id/customers mencari parent & linked contact HANYA di SQLite mirror per-pod. Di
+          produksi (2 replika) + restore snapshot GridFS, mirror SQLite pod tertentu bisa belum memuat kontak
+          yang baru -> lookup gagal secara intermittent.
+          FIX: kedua lookup kini FALLBACK ke MongoDB (md.mdGet('contacts', id)) bila tidak ditemukan di SQLite.
+          Contacts di Mongo memakai _id=UUID + field camelCase (displayName, phone, dst.) yang identik dengan
+          field SQLite, sehingga pembentukan row contact_customers tetap valid.
+          TEST (backend):
+          1) Login admin. Ambil daftar kontak; temukan/ buat 1 kontak Dropshipper (categories mengandung
+             'Dropshipper') dan 1 kontak Customer.
+          2) POST /api/contacts/{dropshipperId}/customers { linkedContactId: {customerId} } -> harap 201,
+             response.data.linkedContact.id == customerId, linkedContact.displayName terisi.
+          3) GET /api/contacts/{dropshipperId}/customers -> pelanggan yang baru tertaut muncul.
+          4) Duplikat: POST lagi dengan linkedContactId sama -> 400 "sudah tertaut".
+          5) Mode manual: POST { name:'Pelanggan Manual', phone:'0812', city:'Kediri' } -> 201.
+          6) Negative: POST dengan linkedContactId acak/ tidak ada -> 404 "Kontak yang dipilih tidak ditemukan".
+          7) Cleanup: DELETE /api/contacts/{dropshipperId}/customers/{cid} untuk baris yang dibuat saat tes.
+          Catatan: sifat intermittent sulit direproduksi; fokus verifikasi bahwa alur link BERHASIL & fallback
+          Mongo tidak memecah pembuatan row (tidak ada 500, field terisi benar).
+
   - task: "Akuntan full access (admin-equivalent) + Payment Approval workflow (SO/PO Invoiced -> notify akuntan -> akuntan approves -> notify supervisor & direktur)"
     implemented: true
     working: true
@@ -5722,7 +5929,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Akuntan full access (admin-equivalent) + Payment Approval workflow (SO/PO Invoiced -> notify akuntan -> akuntan approves -> notify supervisor & direktur)"
+    - "BUGFIX intermittent 'Kontak tidak ditemukan' when linking a customer to a Dropshipper/Agen contact (POST /contacts/:id/customers) — add MongoDB fallback for parent & linked contact lookups"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
