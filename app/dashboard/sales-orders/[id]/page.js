@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
@@ -236,6 +236,10 @@ export default function SODetailPage() {
 
       <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
 
+      {so.markupEnabled && Number(so.cashbackAmount) > 0 && (
+        <CashbackRefundCard so={so} canRefund={['admin', 'supervisor', 'direktur', 'akuntan'].includes(role)} onSaved={mutate} />
+      )}
+
       <Tabs defaultValue="items">
         <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
           <TabsTrigger value="info"><Receipt className="w-4 h-4 mr-1" />Info</TabsTrigger>
@@ -330,8 +334,8 @@ function MarkupCard({ so, canEdit, onSaved }) {
   const [cashAccount, setCashAccount] = useState(so.cashbackAccount || '');
   const [saving, setSaving] = useState(false);
 
-  const { data: accData } = useSWR(canEdit ? '/api/accounting/accounts?archived=0' : null, fetcher);
-  const cashAccounts = (accData?.data || []).filter(a => a.is_postable && a.type === 'asset' && /kas|bank/i.test(a.name));
+  const { data: accData } = useSWR(canEdit ? '/api/cash-bank-accounts' : null, fetcher);
+  const cashAccounts = accData?.data || [];
 
   // Non-editor: ringkas
   if (!canEdit) {
@@ -441,7 +445,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
               <Label className="text-xs">Dikembalikan dari (Kas/Bank)</Label>
               <Select value={cashAccount} onValueChange={setCashAccount}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder="Default: Bank" /></SelectTrigger>
-                <SelectContent>{cashAccounts.map(a => <SelectItem key={a.id} value={a.code}>{a.name}</SelectItem>)}</SelectContent>
+                <SelectContent>{cashAccounts.map(a => <SelectItem key={a.code} value={a.code}>{a.code} — {a.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div>
@@ -466,6 +470,98 @@ function MarkupCard({ so, canEdit, onSaved }) {
     </Card>
   );
 }
+
+function CashbackRefundCard({ so, canRefund, onSaved }) {
+  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const [refundedAt, setRefundedAt] = useState(so.cashbackRefundedAt || new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState(so.cashbackRefundNote || '');
+  const [file, setFile] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const refunded = !!so.cashbackRefunded;
+
+  const submit = async () => {
+    if (file && file.size > 10 * 1024 * 1024) return toast.error('Ukuran bukti maksimal 10MB');
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      if (file) fd.append('file', file);
+      fd.append('refundedAt', refundedAt);
+      fd.append('note', note || '');
+      const res = await fetch(`/api/sales-orders/${so.id}/cashback-refund`, { method: 'POST', body: fd });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Pengembalian cashback dicatat');
+      setFile(null);
+      const el = document.getElementById('cb-proof-input'); if (el) el.value = '';
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  const undo = async () => {
+    if (!confirm('Batalkan tanda pengembalian cashback & hapus bukti?')) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/cashback-refund`, { method: 'DELETE' });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Gagal'); }
+      toast.success('Tanda pengembalian dibatalkan'); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <Card className={refunded ? 'border-emerald-200' : 'border-amber-200'}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Wallet className="w-4 h-4 text-rose-600" />Pengembalian Cashback
+          {refunded
+            ? <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Sudah dikembalikan</span>
+            : <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Belum dikembalikan</span>}
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Cashback <b>{rp(so.cashbackAmount)}</b>{so.cashbackRecipient ? ` untuk ${so.cashbackRecipient}` : ''}. Catat bukti transfer nyata ke PIC di sini (operasional — jurnal akuntansi cashback sudah otomatis saat faktur terbit).
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {refunded && (
+          <div className="text-sm bg-emerald-50/70 border border-emerald-100 rounded-md px-3 py-2 space-y-1">
+            <div>Tanggal transfer: <b>{so.cashbackRefundedAt || '-'}</b></div>
+            {so.cashbackRefundNote && <div>Catatan: <b>{so.cashbackRefundNote}</b></div>}
+            {so.cashbackRefundedBy && <div className="text-xs text-muted-foreground">Ditandai oleh: {so.cashbackRefundedBy}</div>}
+            {so.cashbackProofKey && (
+              <a href={`/api/sales-orders/${so.id}/cashback-proof`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-medium mt-1">
+                <Eye className="w-3.5 h-3.5" /> Lihat Bukti ({so.cashbackProofName || 'file'})
+              </a>
+            )}
+          </div>
+        )}
+        {canRefund && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Tanggal Transfer</Label>
+                <Input type="date" value={refundedAt} onChange={e => setRefundedAt(e.target.value)} className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-xs">Bukti Transfer (PDF/JPG/PNG, maks 10MB)</Label>
+                <Input id="cb-proof-input" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" onChange={e => setFile(e.target.files?.[0] || null)} className="mt-1" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Catatan (opsional)</Label>
+              <Input value={note} onChange={e => setNote(e.target.value)} placeholder="mis. Transfer BCA a.n. Budi" className="mt-1" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={submit} disabled={saving}>
+                {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : (refunded ? <Upload className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />)}
+                {refunded ? 'Perbarui Bukti' : 'Tandai Sudah Dikembalikan'}
+              </Button>
+              {refunded && <Button size="sm" variant="ghost" className="text-red-500" onClick={undo} disabled={saving}>Batalkan</Button>}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 function InfoTab({ so }) {
   const rows = [

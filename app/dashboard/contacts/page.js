@@ -370,6 +370,9 @@ function ContactDetailSheet({ id, onClose }) {
                   {d.workOrders.length > 0 && (
                     <TransactionList title="Work Orders (dari PO)" items={d.workOrders} emptyMsg="" numberKey="woNumber" dateKey="startDate" />
                   )}
+                  {hasCat(d.contact, 'Customer') && (d.cashbackHistory?.length > 0) && (
+                    <CashbackHistoryList items={d.cashbackHistory} summary={d.summary} />
+                  )}
                 </TabsContent>
 
                 <TabsContent value="documents" className="mt-4">
@@ -394,6 +397,60 @@ function ContactDetailSheet({ id, onClose }) {
     </Sheet>
   );
 }
+
+function CashbackHistoryList({ items, summary }) {
+  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <Wallet className="w-4 h-4 text-rose-600" />
+        <h4 className="font-semibold text-sm">Riwayat Cashback (Faktur di-up)</h4>
+      </div>
+      <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
+        <div className="p-2 rounded-lg bg-rose-50 border border-rose-100">
+          <div className="text-rose-700 text-[10px] font-semibold uppercase tracking-wide">Total Cashback</div>
+          <div className="font-bold mt-0.5">{rp(summary?.totalCashback)}</div>
+        </div>
+        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100">
+          <div className="text-emerald-700 text-[10px] font-semibold uppercase tracking-wide">Sudah Dikembalikan</div>
+          <div className="font-bold mt-0.5">{rp(summary?.totalCashbackRefunded)}</div>
+        </div>
+        <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
+          <div className="text-amber-700 text-[10px] font-semibold uppercase tracking-wide">Belum</div>
+          <div className="font-bold mt-0.5">{rp(summary?.totalCashbackPending)}</div>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {items.map(c => (
+          <div key={c.id} className="p-3 rounded-lg border bg-white text-sm">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="font-mono text-xs font-semibold">{c.soNumber}{c.invoiceNumber ? ` · ${c.invoiceNumber}` : ''}</div>
+              {c.cashbackRefunded
+                ? <Badge className="bg-emerald-100 text-emerald-700"><CheckCircle2 className="w-3 h-3 mr-1" />Dikembalikan</Badge>
+                : <Badge className="bg-amber-100 text-amber-700">Belum</Badge>}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+              <span>Cashback: <b className="text-rose-700">{rp(c.cashbackAmount)}</b></span>
+              {c.cashbackAccountName && <span>Dari: <b>{c.cashbackAccountName}</b></span>}
+              {c.cashbackRecipient && <span>PIC: <b>{c.cashbackRecipient}</b></span>}
+              {c.cashbackRefunded && c.cashbackRefundedAt && <span>Tgl transfer: <b>{c.cashbackRefundedAt}</b></span>}
+            </div>
+            {c.cashbackRefundNote && <div className="mt-1 text-xs">Catatan: {c.cashbackRefundNote}</div>}
+            <div className="mt-1 flex items-center gap-3">
+              {c.hasProof && (
+                <a href={c.proofUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-emerald-700 hover:underline text-xs font-medium">
+                  <Eye className="w-3.5 h-3.5" /> Lihat Bukti
+                </a>
+              )}
+              <a href={`/dashboard/sales-orders/${c.id}`} className="inline-flex items-center gap-1 text-blue-600 hover:underline text-xs font-medium">Buka SO</a>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 const DOC_TYPES = ['NPWP', 'Akta Perusahaan', 'SK Perusahaan', 'KTP', 'Lainnya'];
 const DOC_TYPE_COLOR = {
