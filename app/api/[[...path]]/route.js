@@ -51,6 +51,10 @@ async function requireAuth() {
 
 function requireRole(session, allowed) {
   if (!session?.user?.role) return false;
+  // Akuntan memiliki akses setara Admin di seluruh modul (full access). Modul Akuntansi
+  // punya pengecekan role eksplisit sendiri (FULL_ACCESS=['akuntan','direktur']) sehingga
+  // trik ini tidak mengganggu pembatasan cashbook untuk admin/supervisor.
+  if (session.user.role === 'akuntan' && allowed.includes('admin')) return true;
   return allowed.includes(session.user.role);
 }
 
@@ -1282,7 +1286,7 @@ async function handleRoute(request, { params }) {
     if (route === '/approvals' && method === 'GET') {
       const { session, error } = await requireAuth();
       if (error) return error;
-      if (!requireRole(session, ['supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const status = url.searchParams.get('status'); // pending | approved | rejected | all
       const concernType = url.searchParams.get('type');
@@ -1312,7 +1316,7 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth();
       if (error) return error;
       const userRole = session.user.role;
-      if (!['supervisor', 'direktur'].includes(userRole)) return err('Forbidden', 403);
+      if (!['supervisor', 'direktur', 'akuntan'].includes(userRole)) return err('Forbidden', 403);
       const id = path[1];
       const body = await request.json();
       const { action, note } = body || {};
@@ -1321,6 +1325,39 @@ async function handleRoute(request, { params }) {
 
       const now = new Date();
       const upd = { updatedAt: now };
+
+      if (userRole === 'akuntan') {
+        // Akuntan adalah approver untuk konsern PERSETUJUAN PEMBAYARAN (payment_approval).
+        // Untuk jenis konsern lain, akuntan tidak berwenang.
+        if (ap.concernType !== 'payment_approval') {
+          return err('Akuntan hanya dapat menyetujui konsern Persetujuan Pembayaran', 403);
+        }
+        if (!['approved', 'rejected'].includes(action)) return err('action harus approved atau rejected');
+        if (ap.status !== 'pending') return err(`Konsern ini sudah ${ap.status}, tidak bisa diubah`);
+        upd.supervisorAction = action;
+        upd.supervisorNote = note || null;
+        upd.supervisorActedAt = now;
+        upd.supervisorActedBy = session.user.email;
+        upd.status = action; // approved | rejected
+        db.update(s.approvals).set(upd).where(eq(s.approvals.id, id)).run();
+        // Setelah Akuntan menyetujui pembayaran → notifikasi INFO ke Supervisor & Direktur (tidak perlu approve lagi)
+        if (action === 'approved') {
+          createNotification({
+            roles: ['supervisor', 'direktur'],
+            type: 'info',
+            category: 'payment_approved',
+            title: `Pembayaran ${ap.entityNumber || ''} telah disetujui Akuntan`,
+            message: `${ap.title}. Disetujui oleh ${session.user.email}${note ? ` · Catatan: ${note}` : ''}. Total Rp ${Number(ap.amount || 0).toLocaleString('id-ID')}.`,
+            entityType: ap.entityType,
+            entityId: ap.entityId,
+            entityNumber: ap.entityNumber,
+            linkPath: '/dashboard/approvals',
+            priority: 'normal',
+          });
+        }
+        const updated = db.select().from(s.approvals).where(eq(s.approvals.id, id)).get();
+        return json({ data: { ...updated, metadata: updated.metadata ? (() => { try { return JSON.parse(updated.metadata); } catch { return null; } })() : null } });
+      }
 
       if (userRole === 'supervisor') {
         // Supervisor can approve or reject (drives status)
@@ -2476,6 +2513,22 @@ async function handleRoute(request, { params }) {
           createdBy: session.user.email,
         });
       }
+      // Saat PO mencapai "Tanda Terima" (tahap invoice/siap bayar) → konsern PERSETUJUAN PEMBAYARAN untuk Akuntan.
+      if (target === 'Tanda Terima') {
+        createApproval({
+          concernType: 'payment_approval',
+          entityType: 'PO',
+          entityId: id,
+          entityNumber: po.poNumber,
+          title: `Persetujuan Pembayaran — PO ${po.poNumber}`,
+          description: `Purchase Order ${po.poNumber} telah sampai tahap Tanda Terima (siap dibayar ke supplier). Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}. Menunggu persetujuan pembayaran oleh Akuntan.`,
+          priority: Number(po.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
+          amount: Number(po.totalAmount || 0),
+          metadata: { poNumber: po.poNumber, docType: 'PO' },
+          createdBy: session.user.email,
+          notifyRoles: ['akuntan'],
+        });
+      }
       const updated = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       return json({ data: updated });
     }
@@ -2547,6 +2600,20 @@ async function handleRoute(request, { params }) {
       // Auto-transition to Tanda Terima if currently Dikirim
       if (po.pipelineStatus === 'Dikirim') {
         db.update(s.purchaseOrder).set({ pipelineStatus: 'Tanda Terima', updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+        // PO mencapai Tanda Terima via GRN → konsern Persetujuan Pembayaran untuk Akuntan.
+        createApproval({
+          concernType: 'payment_approval',
+          entityType: 'PO',
+          entityId: id,
+          entityNumber: po.poNumber,
+          title: `Persetujuan Pembayaran — PO ${po.poNumber}`,
+          description: `Purchase Order ${po.poNumber} telah sampai tahap Tanda Terima (siap dibayar ke supplier). Total Rp ${Number(poTotal || po.totalAmount || 0).toLocaleString('id-ID')}. Menunggu persetujuan pembayaran oleh Akuntan.`,
+          priority: Number(poTotal || po.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
+          amount: Number(poTotal || po.totalAmount || 0),
+          metadata: { poNumber: po.poNumber, docType: 'PO', via: 'grn' },
+          createdBy: session.user.email,
+          notifyRoles: ['akuntan'],
+        });
       }
       return json({ data: { ...g, totalAmount: poTotal } }, { status: 201 });
     }
@@ -3741,6 +3808,23 @@ async function handleRoute(request, { params }) {
         });
       }
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      // Saat SO menjadi Invoiced → buat konsern PERSETUJUAN PEMBAYARAN untuk role Akuntan.
+      // Akuntan akan memvalidasi/approve pembayaran; setelah approve, Supervisor & Direktur diberi notifikasi.
+      if (target === 'Invoiced') {
+        createApproval({
+          concernType: 'payment_approval',
+          entityType: 'SO',
+          entityId: id,
+          entityNumber: updated?.invoiceNumber || so.soNumber,
+          title: `Persetujuan Pembayaran — Invoice ${updated?.invoiceNumber || so.soNumber}`,
+          description: `Sales Order ${so.soNumber} telah di-invoice (${updated?.invoiceNumber || '-'}). Total tagihan Rp ${Number(updated?.totalAmount || 0).toLocaleString('id-ID')}. Menunggu persetujuan pembayaran oleh Akuntan.`,
+          priority: Number(updated?.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
+          amount: Number(updated?.totalAmount || 0),
+          metadata: { soNumber: so.soNumber, invoiceNumber: updated?.invoiceNumber || null, docType: 'SO' },
+          createdBy: session.user.email,
+          notifyRoles: ['akuntan'],
+        });
+      }
       return json({ data: updated });
     }
 
