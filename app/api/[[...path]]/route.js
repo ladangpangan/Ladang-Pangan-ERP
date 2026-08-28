@@ -1443,7 +1443,7 @@ async function handleRoute(request, { params }) {
     // ---------- CONTACTS ----------
     if (route === '/contacts' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const type = url.searchParams.get('type');
       const q = url.searchParams.get('q');
@@ -4223,7 +4223,7 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     if (route === '/sales-reports/daily' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const from = url.searchParams.get('from');
       const to = url.searchParams.get('to');
@@ -4244,7 +4244,7 @@ async function handleRoute(request, { params }) {
 
     if (route === '/sales-reports/ar-aging' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       // Get all Invoiced SOs with outstanding balance
       const invoiced = db.select().from(s.salesOrder).where(and(
         eq(s.salesOrder.pipelineStatus, 'Invoiced'),
@@ -4272,7 +4272,7 @@ async function handleRoute(request, { params }) {
 
     if (route === '/sales-reports/by-customer' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const rows = db.select({
         customerId: s.salesOrder.customerId,
         count: sql`count(*)`,
@@ -4288,7 +4288,7 @@ async function handleRoute(request, { params }) {
 
     if (route === '/sales-reports/by-product' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       // Join SO items with SO to filter cancelled
       const rows = db.select({
         productId: s.salesOrderItems.productId,
@@ -5749,7 +5749,7 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     if (route === '/dashboard/summary' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator', 'akuntan'])) return err('Forbidden', 403);
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
       // Today sales (non-Cancelled)
@@ -5801,7 +5801,7 @@ async function handleRoute(request, { params }) {
     // GET /dashboard/supplier-shrinkage - rekap susut (Surat Jalan vs Tally) per supplier
     if (route === '/dashboard/supplier-shrinkage' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const poItems = db.select().from(s.purchaseOrderItems).all();
       const bySupplier = {};
       for (const it of poItems) {
@@ -5854,7 +5854,7 @@ async function handleRoute(request, { params }) {
     // GET /dashboard/supplier-shrinkage/:supplierId - rincian susut per PO & produk untuk 1 supplier
     if (route.startsWith('/dashboard/supplier-shrinkage/') && path.length === 3 && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const supplierId = path[2];
       const supplier = db.select({ displayName: s.contacts.displayName, code: s.contacts.code }).from(s.contacts).where(eq(s.contacts.id, supplierId)).get();
       const pos = db.select().from(s.purchaseOrder)
@@ -5907,7 +5907,7 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     if (route === '/purchase-reports/by-supplier' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const rows = db.select({
         supplierId: s.purchaseOrder.supplierId,
         count: sql`count(*)`,
@@ -5922,7 +5922,7 @@ async function handleRoute(request, { params }) {
     }
     if (route === '/purchase-reports/ap-aging' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const pos = db.select().from(s.purchaseOrder).where(sql`pipeline_status not in ('Dibatalkan','Draft') and payment_status != 'paid'`).all();
       const buckets = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
       const details = [];
@@ -5942,7 +5942,7 @@ async function handleRoute(request, { params }) {
     }
     if (route === '/purchase-reports/susut-recap' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       // For Live Bird PO items with weight difference
       const pos = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.poType, 'Live Bird')).all();
       const details = [];
@@ -6010,7 +6010,7 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     if (route === '/inventory-reports/by-cs' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       // Read DIRECTLY from MongoDB (source of truth) => identical across all replicas.
       const mdb = getMongoDb();
       const agg = await mdb.collection('inventory_stock').aggregate([
@@ -6029,7 +6029,7 @@ async function handleRoute(request, { params }) {
     }
     if (route === '/inventory-reports/by-product' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       // Read DIRECTLY from MongoDB (source of truth) so results are IDENTICAL across all replicas
       // (avoids per-pod SQLite cache divergence that made this report fluctuate on refresh).
       const mdb = getMongoDb();
@@ -6049,7 +6049,7 @@ async function handleRoute(request, { params }) {
     }
     if (route === '/inventory-reports/near-expired' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator', 'akuntan'])) return err('Forbidden', 403);
       const url = new URL(request.url);
       const days = Number(url.searchParams.get('days') || 7);
       const threshold = Math.floor(Date.now() / 1000) + days * 24 * 3600;
@@ -6067,7 +6067,7 @@ async function handleRoute(request, { params }) {
     }
     if (route === '/inventory-reports/damage-recap' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
       const rows = db.select().from(s.inventoryTransaction).where(eq(s.inventoryTransaction.transactionType, 'DAMAGE')).orderBy(desc(s.inventoryTransaction.transactionDate)).all();
       const enriched = rows.map(r => ({ ...r, coldStorage: r.fromColdStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.fromColdStorageId)).get() : null }));
       const totalDamage = rows.filter(r => r.status === 'confirmed').reduce((a, b) => a + Number(b.totalWeight || 0), 0);
@@ -6076,7 +6076,7 @@ async function handleRoute(request, { params }) {
     // Kartu Stok (Stock Card) - per-product movement ledger with running balance
     if (route === '/inventory-reports/stock-card' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator'])) return err('Forbidden', 403);
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'operator', 'akuntan'])) return err('Forbidden', 403);
       await jmongo.ensureStockLedgerReady(getRawSqlite());
       const url = new URL(request.url);
       const productId = url.searchParams.get('productId');
