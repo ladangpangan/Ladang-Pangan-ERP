@@ -184,10 +184,10 @@ export default function SODetailPage() {
         <SumCard label="Sudah Dibayar" value={`Rp ${Number(so.paidAmount).toLocaleString('id-ID')}`} sub={`Status: ${so.paymentStatus}`} color="emerald" />
         <SumCard label="Total Retur" value={`Rp ${Number(so.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${so.returns?.length || 0} retur`} color="amber" />
         <SumCard
-          label="Penyusutan"
-          value={`${Number(so.totalShrinkageWeight || 0).toFixed(2)} kg`}
-          sub={`Rp ${Number(so.totalShrinkageValue || 0).toLocaleString('id-ID')} · ${so.receipts?.length || 0} penerimaan`}
-          color={so.totalShrinkageWeight > 0 ? 'amber' : 'slate'}
+          label={Number(so.totalShrinkageWeight || 0) < -0.001 ? 'Surplus (Kelebihan)' : 'Penyusutan'}
+          value={`${Math.abs(Number(so.totalShrinkageWeight || 0)).toFixed(2)} kg`}
+          sub={`Rp ${Math.abs(Number(so.totalShrinkageValue || 0)).toLocaleString('id-ID')} · ${so.receipts?.length || 0} penerimaan`}
+          color={Number(so.totalShrinkageWeight || 0) < -0.001 ? 'emerald' : (Number(so.totalShrinkageWeight || 0) > 0.001 ? 'amber' : 'slate')}
         />
         <SumCard label="Outstanding" value={`Rp ${Number(so.outstanding || 0).toLocaleString('id-ID')}`} sub={so.paymentTerm || '-'} color={so.outstanding > 0 ? 'red' : 'slate'} />
       </div>
