@@ -76,7 +76,7 @@ const NAV = [
     section: 'Sistem',
     items: [
       { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
-      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur'] },
+      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur', 'akuntan'] },
       { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['supervisor', 'direktur'] },
       { href: '/dashboard/import-export', label: 'Impor & Ekspor', icon: Database, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
       { href: '/dashboard/settings', label: 'Setting', icon: Settings, roles: ['admin', 'supervisor', 'direktur', 'akuntan', 'operator'] },
@@ -126,8 +126,10 @@ export default function DashboardShell({ user, children }) {
   const renderNav = () => (
     <nav className="space-y-6">
       {NAV.map((item, i) => {
+        // Akuntan memiliki akses setara Admin: cocokkan item yang mengizinkan 'admin'.
+        const roleCan = (roles) => (roles || []).includes(role) || (role === 'akuntan' && (roles || []).includes('admin'));
         if (item.section) {
-          const visible = item.items.filter(it => it.roles.includes(role));
+          const visible = item.items.filter(it => roleCan(it.roles));
           if (visible.length === 0) return null;
           return (
             <div key={i}>
@@ -140,7 +142,7 @@ export default function DashboardShell({ user, children }) {
             </div>
           );
         }
-        if (!item.roles?.includes(role)) return null;
+        if (!roleCan(item.roles)) return null;
         return <NavLink key={item.href} item={item} active={pathname === item.href} />;
       })}
     </nav>

@@ -60,6 +60,7 @@ export default function ApprovalsPage() {
   const userRole = session?.user?.role;
   const isApprover = ['supervisor', 'admin'].includes(userRole);
   const isDirektur = userRole === 'direktur';
+  const isAkuntan = userRole === 'akuntan';
 
   const openAction = (concern, initialAction) => {
     setSelected(concern);
@@ -206,7 +207,7 @@ export default function ApprovalsPage() {
                           </Button>
                         </Link>
                       )}
-                      {/* Supervisor / Admin actions */}
+                      {/* Supervisor / Admin actions (semua jenis konsern) */}
                       {isApprover && concern.status === 'pending' && (
                         <>
                           <Button size="sm" onClick={() => openAction(concern, 'approved')} className="bg-emerald-600 hover:bg-emerald-700">
@@ -214,6 +215,17 @@ export default function ApprovalsPage() {
                           </Button>
                           <Button size="sm" variant="destructive" onClick={() => openAction(concern, 'rejected')}>
                             <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
+                          </Button>
+                        </>
+                      )}
+                      {/* Akuntan actions — HANYA untuk konsern Persetujuan Pembayaran */}
+                      {isAkuntan && concern.concernType === 'payment_approval' && concern.status === 'pending' && (
+                        <>
+                          <Button size="sm" onClick={() => openAction(concern, 'approved')} className="bg-emerald-600 hover:bg-emerald-700">
+                            <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Approve Pembayaran
+                          </Button>
+                          <Button size="sm" variant="destructive" onClick={() => openAction(concern, 'rejected')}>
+                            <XCircle className="w-3.5 h-3.5 mr-1" /> Tolak
                           </Button>
                         </>
                       )}
