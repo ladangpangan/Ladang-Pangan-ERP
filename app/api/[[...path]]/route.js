@@ -1570,18 +1570,39 @@ async function handleRoute(request, { params }) {
       // Summary stats
       const totalSalesAmount = salesOrders.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
       const totalPurchaseAmount = purchaseOrders.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      // Riwayat cashback (Faktur di-up) pelanggan ini
+      const cashbackSOs = salesOrders.filter(o => o.markupEnabled && Number(o.cashbackAmount) > 0);
+      let coaMap = {};
+      if (cashbackSOs.length) { try { const coa = await coaMongo.coaList({ includeArchived: true }); for (const a of (coa || [])) coaMap[a.code] = a.name; } catch {} }
+      const cashbackHistory = cashbackSOs.map(o => ({
+        id: o.id, soNumber: o.soNumber, orderDate: o.orderDate, invoiceNumber: o.invoiceNumber,
+        cashbackAmount: Number(o.cashbackAmount || 0),
+        cashbackAccount: o.cashbackAccount, cashbackAccountName: o.cashbackAccount ? (coaMap[o.cashbackAccount] || o.cashbackAccount) : null,
+        cashbackRecipient: o.cashbackRecipient,
+        cashbackRefunded: !!o.cashbackRefunded, cashbackRefundedAt: o.cashbackRefundedAt,
+        cashbackRefundNote: o.cashbackRefundNote, cashbackRefundedBy: o.cashbackRefundedBy,
+        hasProof: !!o.cashbackProofKey, proofName: o.cashbackProofName,
+        proofUrl: o.cashbackProofKey ? `/api/sales-orders/${o.id}/cashback-proof` : null,
+      }));
+      const totalCashback = cashbackHistory.reduce((a, b) => a + b.cashbackAmount, 0);
+      const totalCashbackRefunded = cashbackHistory.filter(c => c.cashbackRefunded).reduce((a, b) => a + b.cashbackAmount, 0);
       return json({
         data: {
           contact: withCategories(contact),
           salesOrders,
           purchaseOrders,
           workOrders,
+          cashbackHistory,
           summary: {
             salesCount: salesOrders.length,
             purchaseCount: purchaseOrders.length,
             workOrderCount: workOrders.length,
             totalSalesAmount,
             totalPurchaseAmount,
+            cashbackCount: cashbackHistory.length,
+            totalCashback,
+            totalCashbackRefunded,
+            totalCashbackPending: totalCashback - totalCashbackRefunded,
           },
         },
       });
@@ -4043,6 +4064,88 @@ async function handleRoute(request, { params }) {
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       return json({ data: updated, info });
     }
+
+    // POST /sales-orders/:id/cashback-refund — tandai cashback SUDAH dikembalikan + unggah bukti transfer (multipart).
+    // Ini pencatatan OPERASIONAL (bukti transfer nyata ke PIC). Jurnal akuntansi cashback sudah otomatis saat invoice.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-refund' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
+      const file = form.get('file');
+      const note = form.get('note') ? String(form.get('note')).slice(0, 500) : null;
+      const refundedAt = form.get('refundedAt') ? String(form.get('refundedAt')).slice(0, 30) : new Date().toISOString().slice(0, 10);
+      const set = {
+        cashbackRefunded: true,
+        cashbackRefundedAt: refundedAt,
+        cashbackRefundNote: note,
+        cashbackRefundedBy: session.user?.email || session.user?.id || null,
+        updatedAt: new Date(),
+      };
+      // File bukti opsional
+      if (file && typeof file.arrayBuffer === 'function') {
+        const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+        if (!ALLOWED.includes(file.type)) return err('Bukti hanya PDF, JPG, PNG, atau WEBP', 400);
+        if (!file.size || file.size > 10 * 1024 * 1024) return err('Ukuran bukti maksimal 10MB', 400);
+        const bytes = Buffer.from(new Uint8Array(await file.arrayBuffer()));
+        const safeName = String(file.name || 'bukti-cashback').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 150);
+        const relDir = `cashback/${id}`;
+        const uploadRoot = nodePath.join(process.cwd(), 'data', 'uploads');
+        fs.mkdirSync(nodePath.join(uploadRoot, relDir), { recursive: true });
+        // hapus bukti lama bila ada
+        if (so.cashbackProofKey) { try { fs.unlinkSync(nodePath.join(uploadRoot, so.cashbackProofKey)); } catch {} }
+        const storageKey = `${relDir}/${uuidv4()}_${safeName}`;
+        fs.writeFileSync(nodePath.join(uploadRoot, storageKey), bytes);
+        set.cashbackProofKey = storageKey;
+        set.cashbackProofName = safeName;
+        set.cashbackProofType = file.type;
+      }
+      db.update(s.salesOrder).set(set).where(eq(s.salesOrder.id, id)).run();
+      const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      return json({ data: { id, cashbackRefunded: true, cashbackRefundedAt: refundedAt, cashbackRefundNote: note, cashbackRefundedBy: set.cashbackRefundedBy, hasProof: !!updated.cashbackProofKey, proofName: updated.cashbackProofName, proofUrl: updated.cashbackProofKey ? `/api/sales-orders/${id}/cashback-proof` : null } }, { status: 201 });
+    }
+
+    // GET /sales-orders/:id/cashback-proof — sajikan file bukti pengembalian cashback (authenticated).
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-proof' && method === 'GET') {
+      const { error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so || !so.cashbackProofKey) return err('Bukti tidak ditemukan', 404);
+      const abs = nodePath.join(process.cwd(), 'data', 'uploads', so.cashbackProofKey);
+      if (!fs.existsSync(abs)) return err('File bukti tidak ditemukan di storage', 404);
+      const buf = fs.readFileSync(abs);
+      const ct = so.cashbackProofType || 'application/octet-stream';
+      const disposition = (ct === 'application/pdf' || ct.startsWith('image/')) ? 'inline' : 'attachment';
+      return new NextResponse(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': ct,
+          'Content-Length': String(buf.length),
+          'Content-Disposition': `${disposition}; filename="${String(so.cashbackProofName || 'bukti-cashback').replace(/"/g, '')}"`,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+
+    // DELETE /sales-orders/:id/cashback-refund — batalkan tanda pengembalian & hapus bukti.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-refund' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      if (so.cashbackProofKey) { try { fs.unlinkSync(nodePath.join(process.cwd(), 'data', 'uploads', so.cashbackProofKey)); } catch {} }
+      db.update(s.salesOrder).set({
+        cashbackRefunded: false, cashbackRefundedAt: null, cashbackRefundNote: null, cashbackRefundedBy: null,
+        cashbackProofKey: null, cashbackProofName: null, cashbackProofType: null, updatedAt: new Date(),
+      }).where(eq(s.salesOrder.id, id)).run();
+      return json({ ok: true });
+    }
+
 
     // POST /sales-orders/:id/returns - retur penjualan (kembalikan stok ke inventory)
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'returns' && method === 'POST') {
