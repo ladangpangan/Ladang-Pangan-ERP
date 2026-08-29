@@ -3859,13 +3859,53 @@ async function handleRoute(request, { params }) {
       db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
       // Auto-create approval concern for SO Cancellation
       if (target === 'Cancelled') {
-        // Bebaskan semua kode simpan yang masih dialokasikan (belum dikonsumsi) kembali ke aktif
+        // Bebaskan semua kode simpan milik SO ini kembali ke 'active'. Termasuk yang sudah DIKONSUMSI
+        // (status 'used' saat SO Confirm/Packed/Shipped) — bukan hanya yang masih 'allocated'.
+        // Untuk stok yang sudah 'used', balik juga Kartu Stok dengan entri IN reversal agar saldo benar.
         const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.salesOrderId, id)).all();
+        let restoredW = 0, restoredQ = 0, restoredCount = 0;
         for (const al of allocs) {
           const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
-          if (stk && stk.status === 'allocated') {
-            db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, al.stockId)).run();
+          if (!stk || (stk.status !== 'allocated' && stk.status !== 'used')) continue;
+          const wasUsed = stk.status === 'used';
+          db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, al.stockId)).run();
+          restoredCount++;
+          if (wasUsed) {
+            const w = Number(stk.weight || al.weight || 0);
+            const q = Number(stk.quantity || al.quantity || 0);
+            restoredW += w; restoredQ += q;
+            recordLedger(db, {
+              ledgerDate: new Date(),
+              productId: al.productId || stk.productId,
+              coldStorageId: stk.coldStorageId || null,
+              zoneId: stk.zoneId || null,
+              movementType: 'IN',
+              referenceType: 'SO',
+              referenceId: id,
+              referenceNumber: so.soNumber,
+              weightIn: w,
+              qtyIn: q,
+              hppPerKg: Number(stk.hppPerKg || al.hppPerKg || 0),
+              kodeSimpan: al.kodeSimpan || stk.kodeSimpan || null,
+              stockId: al.stockId,
+              notes: `Reversal — pembatalan SO ${so.soNumber}`,
+              createdBy: session.user.email,
+            });
           }
+        }
+        // Aggregate transaction IN reversal (hanya jika ada stok yang benar-benar dikembalikan dari 'used')
+        if (restoredW > 0 || restoredQ > 0) {
+          db.insert(s.inventoryTransaction).values({
+            id: uuidv4(),
+            transactionDate: new Date(),
+            transactionType: 'IN',
+            referenceId: id,
+            referenceType: 'SO',
+            totalWeight: restoredW,
+            totalQuantity: restoredQ,
+            notes: `Reversal stok — pembatalan SO ${so.soNumber} (${restoredCount} kode simpan)`,
+            createdBy: session.user.email,
+          }).run();
         }
         createApproval({
           concernType: 'so_cancel',
