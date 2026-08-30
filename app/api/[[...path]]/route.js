@@ -319,6 +319,11 @@ async function handleRoute(request, { params }) {
   const method = request.method;
   const db = getDb();
 
+  // Ledger dirty-flag: any mutating request may change source data that the accounting ledger derives from.
+  // We mark the ledger dirty so the next accounting read regenerates journals (autoSync); pure reads reuse
+  // the last regeneration. This removes the heavy syncLedger() from EVERY accounting page load.
+  if (method !== 'GET' && method !== 'HEAD') { globalThis.__ledgerDirty = true; }
+
   // Phase 2 (MongoDB): ensure master data (products/cold_storages/zones) is present in Mongo.
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
@@ -647,8 +652,20 @@ async function handleRoute(request, { params }) {
         to: acct.toSec(url.searchParams.get('to')),
         asOf: acct.toSec(url.searchParams.get('asOf')),
       });
-      // Auto-post (regenerate auto journals) before reads, if enabled
-      const autoSync = () => { try { if (acct.getAcctSettings(raw).autoPost) acct.syncLedger(raw, { createdBy: uid }); } catch (e) { console.error('autoSync', e?.message); } };
+      // Auto-post (regenerate auto journals) before reads, if enabled.
+      // Guarded by a dirty-flag + 20s TTL so we only run the heavy syncLedger() when source data actually
+      // changed (any prior mutation set __ledgerDirty) or periodically (to catch cross-replica writes),
+      // instead of on EVERY accounting read. force=true bypasses the guard (used right after mutations).
+      const autoSync = (force = false) => {
+        try {
+          if (!acct.getAcctSettings(raw).autoPost) return;
+          const lt = (globalThis.__ledgerSyncTs = globalThis.__ledgerSyncTs || { at: 0 });
+          if (!force && !globalThis.__ledgerDirty && (Date.now() - lt.at) < 20000) return;
+          acct.syncLedger(raw, { createdBy: uid });
+          lt.at = Date.now();
+          globalThis.__ledgerDirty = false;
+        } catch (e) { console.error('autoSync', e?.message); }
+      };
 
       // ---- Chart of Accounts (MongoDB-authoritative) ----
       if (sub === 'accounts') {
@@ -2369,11 +2386,11 @@ async function handleRoute(request, { params }) {
       let query = db.select().from(s.purchaseOrder);
       if (conds.length) query = query.where(and(...conds));
       const rows = query.orderBy(desc(s.purchaseOrder.createdAt)).all();
-      // Enrich with supplier name
-      const enriched = rows.map(r => {
-        const sup = db.select({ code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, r.supplierId)).get();
-        return { ...r, supplier: sup };
-      });
+      // Enrich with supplier name (batch-load contacts once to avoid N+1)
+      const supIds = [...new Set(rows.map(r => r.supplierId).filter(Boolean))];
+      const cMap = {};
+      if (supIds.length) for (const c of db.select({ id: s.contacts.id, code: s.contacts.code, name: s.contacts.displayName }).from(s.contacts).where(inArray(s.contacts.id, supIds)).all()) cMap[c.id] = { code: c.code, name: c.name };
+      const enriched = rows.map(r => ({ ...r, supplier: cMap[r.supplierId] || null }));
       return json({ data: enriched });
     }
 
@@ -3102,10 +3119,11 @@ async function handleRoute(request, { params }) {
       let query = db.select().from(s.salesOrder);
       if (conds.length) query = query.where(and(...conds));
       const rows = query.orderBy(desc(s.salesOrder.createdAt)).all();
-      const enriched = rows.map(r => {
-        const c = db.select({ code: s.contacts.code, name: s.contacts.displayName, isSubscriber: s.contacts.isSubscriber }).from(s.contacts).where(eq(s.contacts.id, r.customerId)).get();
-        return { ...r, customer: c };
-      });
+      // Batch-load customers once (avoid N+1 contacts lookup per SO row)
+      const custIds = [...new Set(rows.map(r => r.customerId).filter(Boolean))];
+      const cMap = {};
+      if (custIds.length) for (const c of db.select({ id: s.contacts.id, code: s.contacts.code, name: s.contacts.displayName, isSubscriber: s.contacts.isSubscriber }).from(s.contacts).where(inArray(s.contacts.id, custIds)).all()) cMap[c.id] = { code: c.code, name: c.name, isSubscriber: c.isSubscriber };
+      const enriched = rows.map(r => ({ ...r, customer: cMap[r.customerId] || null }));
       return json({ data: enriched });
     }
 
@@ -5254,17 +5272,23 @@ async function handleRoute(request, { params }) {
         _poReconMemo[poId] = res;
         return res;
       };
+      // Batch-load reference tables ONCE (avoid N+1: previously ~4 queries per stock row).
+      const prodMap = {}; for (const p of db.select({ id: s.products.id, sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).all()) prodMap[p.id] = { sku: p.sku, name: p.name, unit: p.unit, category: p.category };
+      const csMap = {}; for (const c of db.select({ id: s.coldStorages.id, code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).all()) csMap[c.id] = { code: c.code, name: c.name };
+      const zoneMap = {}; for (const z of db.select({ id: s.zones.id, code: s.zones.code, name: s.zones.name }).from(s.zones).all()) zoneMap[z.id] = { code: z.code, name: z.name };
+      const poMap = {}; for (const po of db.select({ id: s.purchaseOrder.id, number: s.purchaseOrder.poNumber, poType: s.purchaseOrder.poType, orderDate: s.purchaseOrder.orderDate }).from(s.purchaseOrder).all()) poMap[po.id] = po;
+      const woMap = {}; for (const wo of db.select({ id: s.workOrder.id, number: s.workOrder.woNumber, mode: s.workOrder.mode, startDate: s.workOrder.startDate }).from(s.workOrder).all()) woMap[wo.id] = wo;
       const enriched = rows.map(r => {
-        const p = db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit, category: s.products.category }).from(s.products).where(eq(s.products.id, r.productId)).get();
-        const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, r.coldStorageId)).get();
-        const zone = r.zoneId ? db.select({ code: s.zones.code, name: s.zones.name }).from(s.zones).where(eq(s.zones.id, r.zoneId)).get() : null;
+        const p = prodMap[r.productId] || null;
+        const cs = csMap[r.coldStorageId] || null;
+        const zone = r.zoneId ? (zoneMap[r.zoneId] || null) : null;
         // Source lookup (PO/WO reference number for grouping)
         let source = null;
         if (r.sourceType === 'PO' && r.sourceBatch) {
-          source = db.select({ id: s.purchaseOrder.id, number: s.purchaseOrder.poNumber, poType: s.purchaseOrder.poType, orderDate: s.purchaseOrder.orderDate }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.sourceBatch)).get();
+          source = poMap[r.sourceBatch] || null;
           if (source) source = { ...source, ...poRecon(r.sourceBatch) };
         } else if (r.sourceType === 'WO' && r.sourceBatch) {
-          source = db.select({ id: s.workOrder.id, number: s.workOrder.woNumber, mode: s.workOrder.mode, startDate: s.workOrder.startDate }).from(s.workOrder).where(eq(s.workOrder.id, r.sourceBatch)).get();
+          source = woMap[r.sourceBatch] || null;
         }
         const daysToExpire = r.expiredDate ? Math.floor((new Date(r.expiredDate).getTime() - Date.now()) / (24*60*60*1000)) : null;
         const reserved = reservedMap[r.id] || { weight: 0, quantity: 0, sos: new Set() };
