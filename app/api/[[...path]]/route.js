@@ -356,7 +356,7 @@ async function handleRoute(request, { params }) {
     try {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
-      if (!isRead || Date.now() - (g.sales || 0) > 10000) { await salesMongo.ensureSalesReady(getRawSqlite()); g.sales = Date.now(); }
+      if (!isRead || Date.now() - (g.sales || 0) > 30000) { await salesMongo.ensureSalesReady(getRawSqlite()); g.sales = Date.now(); }
     } catch (e) { /* best-effort */ }
   }
 
@@ -368,7 +368,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawInv = getRawSqlite();
-      if (!isRead || Date.now() - (g.inventory || 0) > 10000) {
+      if (!isRead || Date.now() - (g.inventory || 0) > 30000) {
         await invMongo.ensureInventoryReady(rawInv);
         g.inventory = Date.now();
       }
@@ -384,7 +384,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawTx = getRawSqlite();
-      if (!isRead || Date.now() - (g.potx || 0) > 10000) {
+      if (!isRead || Date.now() - (g.potx || 0) > 30000) {
         await potxMongo.ensureReady(rawTx);
         g.potx = Date.now();
       }
@@ -400,7 +400,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawAo = getRawSqlite();
-      if (!isRead || Date.now() - (g.assetsOpname || 0) > 10000) {
+      if (!isRead || Date.now() - (g.assetsOpname || 0) > 30000) {
         await assetsOpnameMongo.ensureReady(rawAo);
         g.assetsOpname = Date.now();
       }
@@ -415,7 +415,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawWa = getRawSqlite();
-      if (!isRead || Date.now() - (g.woApproval || 0) > 10000) {
+      if (!isRead || Date.now() - (g.woApproval || 0) > 30000) {
         await woApprovalMongo.ensureReady(rawWa);
         g.woApproval = Date.now();
       }
@@ -432,7 +432,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawTt = getRawSqlite();
-      if (!isRead || Date.now() - (g.tallyTx || 0) > 10000) {
+      if (!isRead || Date.now() - (g.tallyTx || 0) > 30000) {
         await tallyTxMongo.ensureReady(rawTt);
         g.tallyTx = Date.now();
       }
@@ -448,7 +448,7 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       const rawMisc = getRawSqlite();
-      if (!isRead || Date.now() - (g.misc || 0) > 10000) {
+      if (!isRead || Date.now() - (g.misc || 0) > 30000) {
         await miscMongo.ensureReady(rawMisc);
         g.misc = Date.now();
       }
@@ -603,7 +603,7 @@ async function handleRoute(request, { params }) {
       
       // COA is MongoDB-authoritative (multi-replica safe). Refresh the local SQLite mirror from Mongo
       // before any accounting read/report/sync so the engine joins use the shared, up-to-date COA.
-      if (!isRead || Date.now() - (g.coa || 0) > 10000) {
+      if (!isRead || Date.now() - (g.coa || 0) > 30000) {
         await coaMongo.ensureCoaReady(raw);
         g.coa = Date.now();
       }
@@ -611,7 +611,7 @@ async function handleRoute(request, { params }) {
       // Journals & ledger are ALSO MongoDB-authoritative for user-entered data (manual journals,
       // Cashbook, opening balances, period closings). Hydrate the per-pod SQLite mirror from Mongo
       // before any read/sync so every replica sees the same shared financial data.
-      if (!isRead || Date.now() - (g.journals || 0) > 10000) {
+      if (!isRead || Date.now() - (g.journals || 0) > 30000) {
         await jmongo.ensureJournalsReady(raw);
         g.journals = Date.now();
       }
@@ -620,7 +620,7 @@ async function handleRoute(request, { params }) {
       // sales_order / so_item_stocks / sales_payments to regenerate SO auto journals (revenue, COGS,
       // payments, cashback), so hydrate the SO aggregate BEFORE the engine runs.
       // NOTE: Sales already cached globally at line 342, but we refresh here for accounting mutations.
-      if (!isRead || Date.now() - (g.sales || 0) > 10000) {
+      if (!isRead || Date.now() - (g.sales || 0) > 30000) {
         await salesMongo.ensureSalesReady(raw);
         g.sales = Date.now();
       }
