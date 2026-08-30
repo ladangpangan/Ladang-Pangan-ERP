@@ -34371,3 +34371,216 @@ agent_communication:
       - Accounting autoSync with dirty-flag + 20s TTL working correctly
       - Hydration read-TTL 30s working correctly (mutations bypass TTL)
       - Contacts added to master hydration (no FK errors)
+
+  - agent: "main"
+    message: |
+      FOLLOW-UP (Setarakan HPP Karkas): 10 lots still carried old grade HPP (34000). Reference = product.basePrice
+      (KRK-07/08/09/10=35000; KRK-06/11/12/13/14/15=34000). Set hpp_per_kg=basePrice for all Karkas lots
+      (Mongo+SQLite). 10 lots changed 34000->35000; 0 remaining mismatch.
+      VERIFY: GET /api/inventory/stocks?status=active — Karkas 0,7 & 1,0 all hppPerKg 35000; Karkas 0,8/0,9 35000;
+      Karkas 0,6/1,1/1,2/1,3/1,4/1,5 34000. Inventory still 433 lots, 0 missing name, no 500s.
+
+  - agent: "testing"
+    message: |
+      ✅ DATA FIX VERIFICATION COMPLETE: Karkas HPP/kg Standardization (6/6 tests passed, 100%)
+      
+      **VERIFICATION STATUS:** FULLY VERIFIED ✓
+      
+      **WHAT WAS VERIFIED:**
+      Data fix that standardized HPP/kg for all Karkas grade products to match each product's
+      reference basePrice. Previously, 10 lots (1 lot of Karkas 0,7 and 9 lots of Karkas 1,0)
+      had incorrect HPP/kg of 34000 instead of 35000. The data fix updated these to match the
+      correct basePrice (35000).
+      
+      **TEST ENVIRONMENT:**
+      - Base URL: https://so-po-loader.preview.emergentagent.com/api
+      - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
+      - Database: MongoDB Atlas (erp_prod) - source of truth
+      - Test approach: READ-ONLY verification (no data modifications)
+      - Test file: /app/backend_test_karkas_hpp.py
+      
+      **TEST RESULTS:**
+      
+      ✅ TEST 1 — Login as admin (PASSED):
+         - POST /api/auth/sign-in/email → 200 OK ✓
+         - Session cookie set: __Secure-better-auth.session_token ✓
+      
+      ✅ TEST 2 — GET /api/inventory/stocks?status=active (PASSED):
+         - Response: 200 OK ✓
+         - Total active stocks: 433 ✓
+      
+      ✅ TEST 3 — Verify inventory integrity (PASSED):
+         - Expected active lots: 433
+         - Actual active lots: 433 ✓
+         - Missing/empty product names: 0 ✓
+         - **CRITICAL VERIFICATION:**
+           ✅ Inventory count matches expected (433 active lots)
+           ✅ No missing or empty product names
+      
+      ✅ TEST 4 — Verify Karkas HPP/kg uniformity per grade (PASSED):
+         - Found 10 Karkas grade groups ✓
+         - Total Karkas lots: 170 ✓
+         
+         **Per-Grade Verification (ALL PASSED):**
+         
+         ✅ Karkas 0,6 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 1
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+         
+         ✅ Karkas 0,7 (Premium):
+            - Expected HPP/kg: Rp 35,000
+            - Lot count: 13
+            - Distinct HPP/kg values: [35000]
+            - Result: UNIFORM ✓ (all lots = Rp 35,000)
+            - **NOTE:** Previously had 1 lot at 34000, now ALL 13 lots at 35000 ✓
+         
+         ✅ Karkas 0,8 (Premium):
+            - Expected HPP/kg: Rp 35,000
+            - Lot count: 8
+            - Distinct HPP/kg values: [35000]
+            - Result: UNIFORM ✓ (all lots = Rp 35,000)
+         
+         ✅ Karkas 0,9 (Premium):
+            - Expected HPP/kg: Rp 35,000
+            - Lot count: 31
+            - Distinct HPP/kg values: [35000]
+            - Result: UNIFORM ✓ (all lots = Rp 35,000)
+         
+         ✅ Karkas 1,0 (Premium):
+            - Expected HPP/kg: Rp 35,000
+            - Lot count: 35
+            - Distinct HPP/kg values: [35000]
+            - Result: UNIFORM ✓ (all lots = Rp 35,000)
+            - **NOTE:** Previously had 9 lots at 34000, now ALL 35 lots at 35000 ✓
+         
+         ✅ Karkas 1,1 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 28
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+         
+         ✅ Karkas 1,2 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 14
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+         
+         ✅ Karkas 1,3 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 23
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+         
+         ✅ Karkas 1,4 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 15
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+         
+         ✅ Karkas 1,5 (Premium):
+            - Expected HPP/kg: Rp 34,000
+            - Lot count: 2
+            - Distinct HPP/kg values: [34000]
+            - Result: UNIFORM ✓ (all lots = Rp 34,000)
+      
+      ✅ TEST 5 — Test Summary (PASSED):
+         - Inventory: 433 active lots (expected 433) ✓
+         - Missing product names: 0 ✓
+         - Karkas HPP/kg uniformity: VERIFIED for all 10 grades ✓
+         - Total Karkas lots: 170 ✓
+      
+      ✅ TEST 6 — Check for HTTP 500 errors (PASSED):
+         - GET /api/inventory/stocks?status=active → 200 OK ✓
+         - GET /api/dashboard/summary → 200 OK ✓
+         - No HTTP 500 errors detected ✓
+      
+      **KEY FINDINGS:**
+      
+      ✅ **DATA FIX VERIFIED (10 lots corrected)**:
+      - Karkas 0,7 (Premium): Previously 1 lot at 34000, now ALL 13 lots at 35000 ✓
+      - Karkas 1,0 (Premium): Previously 9 lots at 34000, now ALL 35 lots at 35000 ✓
+      - Total corrected: 10 lots (1 + 9 = 10) ✓
+      - All corrected lots now match their product's basePrice reference
+      
+      ✅ **HPP/kg UNIFORMITY CONFIRMED**:
+      - All 10 Karkas grades have UNIFORM hppPerKg per grade
+      - Each grade's hppPerKg matches its expected basePrice value
+      - No mixed HPP values within any grade
+      - Total Karkas lots verified: 170 across 10 grades
+      
+      ✅ **INVENTORY INTEGRITY MAINTAINED**:
+      - Total active lots: 433 (unchanged) ✓
+      - Total active weight: 5458.7 kg (unchanged) ✓
+      - Missing product names: 0 (unchanged) ✓
+      - No data corruption or anomalies detected
+      
+      ✅ **EXPECTED VALUES MATCHED**:
+      - Karkas 0,6 (Premium): 34000 ✓
+      - Karkas 0,7 (Premium): 35000 ✓ (CORRECTED from 34000)
+      - Karkas 0,8 (Premium): 35000 ✓
+      - Karkas 0,9 (Premium): 35000 ✓
+      - Karkas 1,0 (Premium): 35000 ✓ (CORRECTED from 34000)
+      - Karkas 1,1 (Premium): 34000 ✓
+      - Karkas 1,2 (Premium): 34000 ✓
+      - Karkas 1,3 (Premium): 34000 ✓
+      - Karkas 1,4 (Premium): 34000 ✓
+      - Karkas 1,5 (Premium): 34000 ✓
+      
+      **ACTUAL VALUES OBSERVED:**
+      
+      Karkas Grade Distribution:
+      - Karkas 0,6: 1 lot @ Rp 34,000/kg
+      - Karkas 0,7: 13 lots @ Rp 35,000/kg (all uniform)
+      - Karkas 0,8: 8 lots @ Rp 35,000/kg (all uniform)
+      - Karkas 0,9: 31 lots @ Rp 35,000/kg (all uniform)
+      - Karkas 1,0: 35 lots @ Rp 35,000/kg (all uniform)
+      - Karkas 1,1: 28 lots @ Rp 34,000/kg (all uniform)
+      - Karkas 1,2: 14 lots @ Rp 34,000/kg (all uniform)
+      - Karkas 1,3: 23 lots @ Rp 34,000/kg (all uniform)
+      - Karkas 1,4: 15 lots @ Rp 34,000/kg (all uniform)
+      - Karkas 1,5: 2 lots @ Rp 34,000/kg (all uniform)
+      
+      Total Karkas Inventory:
+      - Total grades: 10
+      - Total lots: 170
+      - All lots have uniform HPP/kg per grade
+      
+      Inventory Totals:
+      - Active stocks: 433 lots
+      - Total weight: 5458.7 kg
+      - Missing product names: 0
+      
+      **NO CRITICAL ISSUES FOUND:**
+      
+      All data fix verification tests passed.
+      All 10 Karkas grades have uniform HPP/kg per grade.
+      All HPP/kg values match expected basePrice references.
+      Previously incorrect lots (10 total) now corrected to 35000.
+      Inventory integrity maintained (433 lots, 0 missing names).
+      No HTTP 500 errors.
+      
+      Test Coverage: 6/6 tests passed (100%)
+      - TEST 1: Login as admin ✓
+      - TEST 2: GET /api/inventory/stocks?status=active ✓
+      - TEST 3: Verify inventory integrity ✓
+      - TEST 4: Verify Karkas HPP/kg uniformity per grade ✓
+      - TEST 5: Test summary ✓
+      - TEST 6: Check for HTTP 500 errors ✓
+      
+      **CONCLUSION:**
+      
+      ✅ DATA FIX VERIFIED SUCCESSFUL
+      The Karkas HPP/kg standardization data fix is FULLY VERIFIED. All 10 Karkas grade
+      products now have uniform hppPerKg per grade, matching each product's basePrice
+      reference. The 10 previously incorrect lots (1 lot of Karkas 0,7 and 9 lots of
+      Karkas 1,0) have been successfully corrected from 34000 to 35000. Inventory
+      integrity is maintained with 433 active lots and 0 missing product names.
+      
+      **CRITICAL VERIFICATIONS:**
+      1. HPP/kg uniformity: ALL 10 Karkas grades have uniform HPP/kg per grade ✓
+      2. Expected values: ALL grades match their expected basePrice references ✓
+      3. Data fix: 10 lots corrected (1 Karkas 0,7 + 9 Karkas 1,0) from 34000 to 35000 ✓
+      4. Inventory integrity: 433 active lots, 0 missing product names ✓
+      5. No HTTP 500 errors throughout all tests ✓
