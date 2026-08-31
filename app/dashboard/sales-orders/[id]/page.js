@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet, Upload } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet, Upload, Pencil, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
@@ -595,7 +595,9 @@ function InfoTab({ so }) {
 
 function ItemsTab({ so, onSaved, canEdit }) {
   const canAllocate = canEdit && so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship';
+  const canEditItems = canEdit && so.pipelineStatus === 'Draft';
   const [allocFor, setAllocFor] = useState(null); // item being allocated
+  const [editOpen, setEditOpen] = useState(false);
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -603,11 +605,18 @@ function ItemsTab({ so, onSaved, canEdit }) {
           <CardTitle className="text-base">Items SO</CardTitle>
           {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Berat &amp; subtotal otomatis mengikuti kode simpan terpilih.</CardDescription>}
         </div>
-        {so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship' && (
-          <Badge variant={so.allAllocated ? 'default' : 'secondary'} className={so.allAllocated ? 'bg-emerald-600' : ''}>
-            {so.allAllocated ? 'Semua teralokasi' : 'Perlu alokasi kode simpan'}
-          </Badge>
-        )}
+        <div className="flex items-center gap-2">
+          {canEditItems && (
+            <Button size="sm" variant="outline" onClick={() => setEditOpen(true)} className="h-8">
+              <Pencil className="w-3.5 h-3.5 mr-1" />Edit Item
+            </Button>
+          )}
+          {so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship' && (
+            <Badge variant={so.allAllocated ? 'default' : 'secondary'} className={so.allAllocated ? 'bg-emerald-600' : ''}>
+              {so.allAllocated ? 'Semua teralokasi' : 'Perlu alokasi kode simpan'}
+            </Badge>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <Table>
@@ -662,7 +671,93 @@ function ItemsTab({ so, onSaved, canEdit }) {
       {allocFor && (
         <AllocateDialog so={so} item={allocFor} onClose={() => setAllocFor(null)} onSaved={() => { setAllocFor(null); onSaved(); }} />
       )}
+      {editOpen && (
+        <EditItemsDialog so={so} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); onSaved(); }} />
+      )}
     </Card>
+  );
+}
+
+function EditItemsDialog({ so, onClose, onSaved }) {
+  const { data: prodData } = useSWR('/api/products', fetcher);
+  const products = prodData?.data || [];
+  const [rows, setRows] = useState(() => (so.items || []).map(it => ({
+    productId: it.productId,
+    quantity: Number(it.quantity || 0),
+    weight: Number(it.weight || 0),
+    unitPrice: Number(it.unitPrice || 0),
+    discount: Number(it.discount || 0),
+  })));
+  const [saving, setSaving] = useState(false);
+  const upd = (i, k, v) => { const arr = [...rows]; arr[i] = { ...arr[i], [k]: v }; setRows(arr); };
+  const add = () => setRows([...rows, { productId: '', quantity: 1, weight: 0, unitPrice: 0, discount: 0 }]);
+  const remove = (i) => setRows(rows.filter((_, idx) => idx !== i));
+  const lineSubtotal = (r) => Number(r.unitPrice || 0) * Number(r.weight || r.quantity || 0) - Number(r.discount || 0);
+  const total = rows.reduce((a, r) => a + lineSubtotal(r), 0);
+  const hadAllocations = (so.items || []).some(it => (it.allocations || []).length > 0);
+  const save = async () => {
+    if (rows.length === 0) { toast.error('Minimal 1 item'); return; }
+    for (const r of rows) { if (!r.productId) { toast.error('Setiap item wajib memiliki produk'); return; } }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: rows.map(r => ({
+          productId: r.productId,
+          quantity: Number(r.quantity || 0),
+          weight: Number(r.weight || 0),
+          unitPrice: Number(r.unitPrice || 0),
+          discount: Number(r.discount || 0),
+        })) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success('Item SO diperbarui');
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Edit Item SO — {so.soNumber}</DialogTitle>
+          <DialogDescription>
+            Ubah produk, qty, berat, harga, dan diskon selama status Draft.
+            {hadAllocations && <span className="text-amber-600"> Perhatian: menyimpan akan menghapus alokasi kode simpan — alokasikan ulang setelah simpan.</span>}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+          {rows.map((r, i) => (
+            <div key={i} className="grid grid-cols-12 gap-2 items-end border-b pb-2">
+              <div className="col-span-4">
+                <Label className="text-xs">Produk</Label>
+                <Select value={r.productId} onValueChange={v => upd(i, 'productId', v)}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
+                  <SelectContent>
+                    {products.map(p => <SelectItem key={p.id} value={p.id}>{p.name}{p.sku ? ` (${p.sku})` : ''}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-1"><Label className="text-xs">Qty</Label><Input type="number" value={r.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} className="h-9" /></div>
+              <div className="col-span-2"><Label className="text-xs">Berat (kg)</Label><WeightInput value={r.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
+              <div className="col-span-2"><Label className="text-xs">Harga/kg</Label><CurrencyInput value={r.unitPrice} onChange={v => upd(i, 'unitPrice', v)} placeholder="0" /></div>
+              <div className="col-span-2"><Label className="text-xs">Diskon</Label><CurrencyInput value={r.discount} onChange={v => upd(i, 'discount', v)} placeholder="0" /></div>
+              <div className="col-span-1"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
+              <div className="col-span-12 text-right text-xs text-muted-foreground">Subtotal: Rp {Number(lineSubtotal(r)).toLocaleString('id-ID')}</div>
+            </div>
+          ))}
+          <Button size="sm" variant="outline" onClick={add}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
+        </div>
+        <div className="flex justify-between items-center pt-2 border-t">
+          <span className="text-sm text-muted-foreground">Total Barang</span>
+          <span className="font-bold text-emerald-700">Rp {Number(total).toLocaleString('id-ID')}</span>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
+          <Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan Item</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
