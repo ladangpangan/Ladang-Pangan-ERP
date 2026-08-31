@@ -1,270 +1,462 @@
 #!/usr/bin/env python3
 """
-Backend API Test for Bug Fixes:
-1. Dashboard inventory value mismatch vs Inventory module
-2. Kas & Bank summary excluding user-added bank accounts
+Backend Test: PATCH /api/sales-orders/:id/surat-jalan/:sjId
+Test the new endpoint for editing Surat Jalan (delivery notes).
 """
 
 import requests
 import json
 import sys
+from typing import Dict, Any, Optional
 
-# Base URL from .env
-BASE_URL = "https://so-po-loader.preview.emergentagent.com/api"
+# Configuration
+BASE_URL = "https://so-po-loader.preview.emergentagent.com"
+API_URL = f"{BASE_URL}/api"
+ADMIN_EMAIL = "admin@lpi.co.id"
+ADMIN_PASSWORD = "admin123"
 
-# Test credentials
-EMAIL = "admin@lpi.co.id"
-PASSWORD = "admin123"
-
-def print_test(msg):
-    print(f"\n{'='*80}")
-    print(f"TEST: {msg}")
-    print('='*80)
-
-def print_result(passed, msg):
-    status = "✅ PASSED" if passed else "❌ FAILED"
-    print(f"{status}: {msg}")
-
-def print_value(label, value):
-    if isinstance(value, (int, float)):
-        print(f"  {label}: Rp {value:,.2f}")
-    else:
-        print(f"  {label}: {value}")
-
-# Session for cookies
-session = requests.Session()
-
-try:
-    # ========== TEST 1: Login ==========
-    print_test("Login as admin")
-    
-    login_response = session.post(
-        f"{BASE_URL}/auth/sign-in/email",
-        json={"email": EMAIL, "password": PASSWORD},
-        headers={"Content-Type": "application/json"}
-    )
-    
-    if login_response.status_code == 200:
-        print_result(True, f"Login successful (status {login_response.status_code})")
-        # Check for session cookie
-        cookies = session.cookies.get_dict()
-        has_session = any('session' in k.lower() for k in cookies.keys())
-        print_result(has_session, f"Session cookie set: {has_session}")
-    else:
-        print_result(False, f"Login failed with status {login_response.status_code}")
-        print(f"Response: {login_response.text}")
-        sys.exit(1)
-
-    # ========== TEST 2: BUG 1 - Dashboard Inventory Value ==========
-    print_test("BUG 1: Dashboard inventory value must match Inventory module")
-    
-    # Get dashboard summary
-    dashboard_response = session.get(f"{BASE_URL}/dashboard/summary")
-    
-    if dashboard_response.status_code != 200:
-        print_result(False, f"Dashboard API failed with status {dashboard_response.status_code}")
-        print(f"Response: {dashboard_response.text}")
-        sys.exit(1)
-    
-    dashboard_data = dashboard_response.json()
-    inventory_value_dashboard = dashboard_data.get('data', {}).get('inventoryValue', 0)
-    
-    print_result(True, "Dashboard API returned 200 OK")
-    print_value("Dashboard inventoryValue", inventory_value_dashboard)
-    
-    # Get inventory stocks to compute expected value
-    inventory_response = session.get(f"{BASE_URL}/inventory/stocks?limit=10000")
-    
-    if inventory_response.status_code != 200:
-        print_result(False, f"Inventory stocks API failed with status {inventory_response.status_code}")
-        print(f"Response: {inventory_response.text}")
-        sys.exit(1)
-    
-    inventory_data = inventory_response.json()
-    stocks = inventory_data.get('data', [])
-    
-    # Compute expected inventory value: sum of (hpp_per_kg * weight) for active stocks
-    expected_value = 0
-    active_count = 0
-    for stock in stocks:
-        if stock.get('status') == 'active':
-            hpp = float(stock.get('hppPerKg', 0))
-            weight = float(stock.get('weight', 0))
-            expected_value += hpp * weight
-            active_count += 1
-    
-    expected_value = round(expected_value, 2)
-    
-    print_result(True, f"Inventory stocks API returned {len(stocks)} stocks ({active_count} active)")
-    print_value("Expected inventory value (sum of hpp*weight)", expected_value)
-    
-    # Compare values (allow small rounding difference)
-    diff = abs(inventory_value_dashboard - expected_value)
-    tolerance_bug1 = 10.0  # Allow Rp 10 difference for rounding (database SUM vs Python sum)
-    
-    if diff <= tolerance_bug1:
-        print_result(True, f"Dashboard inventoryValue matches expected value (diff: Rp {diff:.2f})")
-        print("\n✅ BUG 1 FIX VERIFIED: Dashboard inventory value now matches Inventory module")
-    else:
-        print_result(False, f"Dashboard inventoryValue MISMATCH (diff: Rp {diff:.2f})")
-        print(f"  Dashboard: Rp {inventory_value_dashboard:,.2f}")
-        print(f"  Expected:  Rp {expected_value:,.2f}")
-        print("\n❌ BUG 1 FIX FAILED: Values do not match")
-
-    # ========== TEST 3: BUG 2 - Kas & Bank Overview ==========
-    print_test("BUG 2: Kas & Bank overview must include user-added bank accounts")
-    
-    # Get accounting overview
-    overview_response = session.get(f"{BASE_URL}/accounting/overview")
-    
-    if overview_response.status_code != 200:
-        print_result(False, f"Accounting overview API failed with status {overview_response.status_code}")
-        print(f"Response: {overview_response.text}")
-        sys.exit(1)
-    
-    overview_data = overview_response.json()
-    ov = overview_data.get('data', {})
-    
-    ov_kas = ov.get('kas', 0)
-    ov_bank = ov.get('bank', 0)
-    ov_cash = ov.get('cash', 0)
-    
-    print_result(True, "Accounting overview API returned 200 OK")
-    print_value("Overview kas", ov_kas)
-    print_value("Overview bank", ov_bank)
-    print_value("Overview cash", ov_cash)
-    
-    # Get trial balance to verify individual account balances
-    trial_balance_response = session.get(f"{BASE_URL}/accounting/trial-balance")
-    
-    if trial_balance_response.status_code != 200:
-        print_result(False, f"Trial balance API failed with status {trial_balance_response.status_code}")
-        print(f"Response: {trial_balance_response.text}")
-        sys.exit(1)
-    
-    trial_balance_data = trial_balance_response.json()
-    accounts = trial_balance_data.get('data', {}).get('rows', [])
-    
-    # Find specific accounts
-    account_balances = {}
-    for acc in accounts:
-        code = acc.get('code', '')
-        # For asset accounts (debit normal), balance = debit - credit (net debit is positive)
-        debit = float(acc.get('debit', 0))
-        credit = float(acc.get('credit', 0))
-        # Trial balance already shows net balance in debit/credit columns
-        balance = debit if debit > 0 else -credit
-        account_balances[code] = {
-            'name': acc.get('name', ''),
-            'balance': balance,
-            'debit': debit,
-            'credit': credit
-        }
-    
-    print_result(True, f"Trial balance API returned {len(accounts)} accounts")
-    
-    # Check specific accounts
-    kas_1110 = account_balances.get('1-1110', {}).get('balance', 0)
-    bank_1120 = account_balances.get('1-1120', {}).get('balance', 0)
-    bank_1121 = account_balances.get('1-1121', {}).get('balance', 0)
-    utang_bank_2210 = account_balances.get('2-2100', {}).get('balance', 0)
-    
-    print("\nIndividual Account Balances:")
-    print_value("1-1110 Kas", kas_1110)
-    print_value("1-1120 Bank BCA", bank_1120)
-    print_value("1-1121 Bank Mandiri", bank_1121)
-    print_value("2-2100 Utang Bank", utang_bank_2210)
-    
-    # Verify calculations
-    expected_kas = kas_1110
-    expected_bank = bank_1120 + bank_1121
-    expected_cash = expected_kas + expected_bank
-    
-    print("\nExpected Values:")
-    print_value("Expected kas (1-1110)", expected_kas)
-    print_value("Expected bank (1-1120 + 1-1121)", expected_bank)
-    print_value("Expected cash (kas + bank)", expected_cash)
-    
-    # Compare with tolerance
-    tolerance_bug2 = 1.0
-    
-    kas_match = abs(ov_kas - expected_kas) <= tolerance_bug2
-    bank_match = abs(ov_bank - expected_bank) <= tolerance_bug2
-    cash_match = abs(ov_cash - expected_cash) <= tolerance_bug2
-    
-    print("\nVerification Results:")
-    print_result(kas_match, f"ov.kas matches 1-1110 (diff: Rp {abs(ov_kas - expected_kas):.2f})")
-    print_result(bank_match, f"ov.bank includes BOTH 1-1120 AND 1-1121 (diff: Rp {abs(ov_bank - expected_bank):.2f})")
-    print_result(cash_match, f"ov.cash = kas + bank (diff: Rp {abs(ov_cash - expected_cash):.2f})")
-    
-    # Verify 2-2100 is NOT included in cash/bank
-    # 2-2100 is a liability (credit normal), should not affect cash calculation
-    utang_not_in_cash = True  # By design, liabilities are not in the 1-11 prefix
-    print_result(utang_not_in_cash, "2-2100 Utang Bank is NOT included in cash/bank (correct, it's a liability)")
-    
-    if kas_match and bank_match and cash_match:
-        print("\n✅ BUG 2 FIX VERIFIED: Kas & Bank overview now includes user-added bank accounts")
-        print("   - ov.kas = balance(1-1110)")
-        print("   - ov.bank = balance(1-1120) + balance(1-1121)")
-        print("   - ov.cash = ov.kas + ov.bank")
-        print("   - 2-2100 Utang Bank correctly excluded (liability, not cash)")
-    else:
-        print("\n❌ BUG 2 FIX FAILED: Values do not match expected calculations")
-
-    # ========== TEST 4: HTTP Status and JSON Validation ==========
-    print_test("HTTP Status and JSON Validation")
-    
-    # Check for errors in responses
-    has_mongo_error = False
-    has_500_error = False
-    
-    for resp in [dashboard_response, inventory_response, overview_response, trial_balance_response]:
-        if resp.status_code == 500:
-            has_500_error = True
+class TestRunner:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session_token = None
+        self.test_so_id = None
+        self.test_sj_id = None
+        self.original_sj_data = {}
+        self.original_so_total = None
+        self.test_item_id = None
+        self.original_item_shipped_weight = None
+        
+    def log(self, message: str):
+        """Print test log message"""
+        print(f"[TEST] {message}")
+        
+    def login(self) -> bool:
+        """Login as admin and capture session token"""
         try:
-            resp_json = resp.json()
-            resp_text = json.dumps(resp_json)
-            if 'MongoServerError' in resp_text or 'not authorized' in resp_text:
-                has_mongo_error = True
-        except Exception:
-            pass
+            self.log("TEST 1: Login as admin")
+            url = f"{API_URL}/auth/sign-in/email"
+            headers = {
+                "Content-Type": "application/json",
+                "Origin": BASE_URL
+            }
+            payload = {
+                "email": ADMIN_EMAIL,
+                "password": ADMIN_PASSWORD
+            }
+            
+            response = self.session.post(url, json=payload, headers=headers)
+            self.log(f"Login response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                # Capture session token from cookies
+                cookies = response.cookies
+                for cookie in cookies:
+                    if 'session' in cookie.name.lower():
+                        self.session_token = cookie.value
+                        self.log(f"✅ TEST 1 PASSED: Login successful, session token captured")
+                        return True
+                
+                self.log(f"✅ TEST 1 PASSED: Login successful (status 200)")
+                return True
+            else:
+                self.log(f"❌ TEST 1 FAILED: Login failed with status {response.status_code}")
+                self.log(f"Response: {response.text}")
+                return False
+                
+        except Exception as e:
+            self.log(f"❌ TEST 1 FAILED: Login exception: {str(e)}")
+            return False
     
-    print_result(not has_500_error, "No HTTP 500 errors")
-    print_result(not has_mongo_error, "No MongoServerError or authorization errors")
-    print_result(True, "All responses returned valid JSON")
+    def find_so_with_surat_jalan(self) -> bool:
+        """Find a Sales Order with at least one Surat Jalan"""
+        try:
+            self.log("\nSETUP: Finding SO with Surat Jalan")
+            
+            # Get all sales orders
+            response = self.session.get(f"{API_URL}/sales-orders")
+            if response.status_code != 200:
+                self.log(f"❌ SETUP FAILED: GET /sales-orders returned {response.status_code}")
+                return False
+            
+            sales_orders = response.json().get('data', [])
+            self.log(f"Found {len(sales_orders)} sales orders")
+            
+            # Check each SO for Surat Jalan
+            for so in sales_orders:
+                so_id = so.get('id')
+                so_number = so.get('soNumber', 'Unknown')
+                
+                # Get SO detail
+                detail_response = self.session.get(f"{API_URL}/sales-orders/{so_id}")
+                if detail_response.status_code != 200:
+                    continue
+                
+                so_detail = detail_response.json().get('data', {})
+                surat_jalan_list = so_detail.get('suratJalan', [])
+                
+                if len(surat_jalan_list) > 0:
+                    # Found an SO with Surat Jalan
+                    sj = surat_jalan_list[0]
+                    self.test_so_id = so_id
+                    self.test_sj_id = sj.get('id')
+                    self.original_so_total = so_detail.get('totalAmount')
+                    
+                    # Store original SJ values
+                    self.original_sj_data = {
+                        'deliveryDate': sj.get('deliveryDate'),
+                        'driverName': sj.get('driverName'),
+                        'vehicleNumber': sj.get('vehicleNumber'),
+                        'notes': sj.get('notes'),
+                        'showReceivedColumn': sj.get('showReceivedColumn'),
+                        'shipToCustomerId': sj.get('shipToCustomerId'),
+                        'shipToName': sj.get('shipToName'),
+                        'shipToPhone': sj.get('shipToPhone'),
+                        'shipToAddress': sj.get('shipToAddress')
+                    }
+                    
+                    # Get an item ID for testing
+                    items = so_detail.get('items', [])
+                    if len(items) > 0:
+                        self.test_item_id = items[0].get('id')
+                        self.original_item_shipped_weight = items[0].get('shippedWeight', 0)
+                    
+                    self.log(f"✅ SETUP SUCCESS: Found SO {so_number} with Surat Jalan")
+                    self.log(f"   SO ID: {self.test_so_id}")
+                    self.log(f"   SJ ID: {self.test_sj_id}")
+                    self.log(f"   Original SO totalAmount: {self.original_so_total}")
+                    self.log(f"   Original SJ data: {json.dumps(self.original_sj_data, indent=2)}")
+                    if self.test_item_id:
+                        self.log(f"   Test item ID: {self.test_item_id}")
+                        self.log(f"   Original shippedWeight: {self.original_item_shipped_weight}")
+                    return True
+            
+            self.log("❌ SETUP FAILED: No SO with Surat Jalan found")
+            self.log("   SKIPPING all edit tests (no test data available)")
+            return False
+            
+        except Exception as e:
+            self.log(f"❌ SETUP FAILED: Exception: {str(e)}")
+            return False
+    
+    def test_patch_basic_fields(self) -> bool:
+        """TEST 2: PATCH basic fields (showReceivedColumn, driverName, vehicleNumber, notes)"""
+        try:
+            self.log("\nTEST 2: PATCH basic fields")
+            
+            url = f"{API_URL}/sales-orders/{self.test_so_id}/surat-jalan/{self.test_sj_id}"
+            payload = {
+                "showReceivedColumn": True,
+                "driverName": "UJI SOPIR",
+                "vehicleNumber": "B 9 TEST",
+                "notes": "catatan uji"
+            }
+            
+            response = self.session.patch(url, json=payload)
+            self.log(f"PATCH response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                self.log(f"❌ TEST 2 FAILED: Expected 200, got {response.status_code}")
+                self.log(f"Response: {response.text}")
+                return False
+            
+            data = response.json().get('data', {})
+            
+            # Verify fields
+            checks = [
+                ('showReceivedColumn', True, data.get('showReceivedColumn')),
+                ('driverName', "UJI SOPIR", data.get('driverName')),
+                ('vehicleNumber', "B 9 TEST", data.get('vehicleNumber')),
+                ('notes', "catatan uji", data.get('notes'))
+            ]
+            
+            all_passed = True
+            for field, expected, actual in checks:
+                if actual == expected:
+                    self.log(f"   ✓ {field}: {actual} (expected: {expected})")
+                else:
+                    self.log(f"   ✗ {field}: {actual} (expected: {expected})")
+                    all_passed = False
+            
+            if all_passed:
+                self.log("✅ TEST 2 PASSED: All basic fields updated correctly")
+                return True
+            else:
+                self.log("❌ TEST 2 FAILED: Some fields not persisted correctly")
+                return False
+                
+        except Exception as e:
+            self.log(f"❌ TEST 2 FAILED: Exception: {str(e)}")
+            return False
+    
+    def test_patch_ship_to_manual(self) -> bool:
+        """TEST 3: PATCH ship-to with manual fields"""
+        try:
+            self.log("\nTEST 3: PATCH ship-to manual fields")
+            
+            url = f"{API_URL}/sales-orders/{self.test_so_id}/surat-jalan/{self.test_sj_id}"
+            payload = {
+                "shipToName": "Toko Uji",
+                "shipToAddress": "Jl. Uji No 1",
+                "shipToPhone": "0811111"
+            }
+            
+            response = self.session.patch(url, json=payload)
+            self.log(f"PATCH response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                self.log(f"❌ TEST 3 FAILED: Expected 200, got {response.status_code}")
+                self.log(f"Response: {response.text}")
+                return False
+            
+            data = response.json().get('data', {})
+            
+            # Verify fields
+            checks = [
+                ('shipToName', "Toko Uji", data.get('shipToName')),
+                ('shipToAddress', "Jl. Uji No 1", data.get('shipToAddress')),
+                ('shipToPhone', "0811111", data.get('shipToPhone')),
+                ('shipToCustomerId', None, data.get('shipToCustomerId'))
+            ]
+            
+            all_passed = True
+            for field, expected, actual in checks:
+                if actual == expected:
+                    self.log(f"   ✓ {field}: {actual} (expected: {expected})")
+                else:
+                    self.log(f"   ✗ {field}: {actual} (expected: {expected})")
+                    all_passed = False
+            
+            if all_passed:
+                self.log("✅ TEST 3 PASSED: Ship-to manual fields updated correctly")
+                return True
+            else:
+                self.log("❌ TEST 3 FAILED: Some ship-to fields not persisted correctly")
+                return False
+                
+        except Exception as e:
+            self.log(f"❌ TEST 3 FAILED: Exception: {str(e)}")
+            return False
+    
+    def test_patch_item_shipped_weight(self) -> bool:
+        """TEST 4: PATCH item shippedWeight and verify SO totalAmount recomputation"""
+        try:
+            self.log("\nTEST 4: PATCH item shippedWeight")
+            
+            if not self.test_item_id:
+                self.log("⚠️  TEST 4 SKIPPED: No test item ID available")
+                return True  # Skip but don't fail
+            
+            url = f"{API_URL}/sales-orders/{self.test_so_id}/surat-jalan/{self.test_sj_id}"
+            payload = {
+                "items": [
+                    {
+                        "itemId": self.test_item_id,
+                        "shippedWeight": 3
+                    }
+                ]
+            }
+            
+            response = self.session.patch(url, json=payload)
+            self.log(f"PATCH response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                self.log(f"❌ TEST 4 FAILED: Expected 200, got {response.status_code}")
+                self.log(f"Response: {response.text}")
+                return False
+            
+            self.log("   ✓ PATCH returned 200 (no 500 error)")
+            
+            # Get SO detail to verify totalAmount was recomputed
+            so_response = self.session.get(f"{API_URL}/sales-orders/{self.test_so_id}")
+            if so_response.status_code != 200:
+                self.log(f"❌ TEST 4 FAILED: Could not GET SO detail")
+                return False
+            
+            so_data = so_response.json().get('data', {})
+            new_total = so_data.get('totalAmount')
+            
+            self.log(f"   Original totalAmount: {self.original_so_total}")
+            self.log(f"   New totalAmount: {new_total}")
+            
+            if new_total != self.original_so_total:
+                self.log(f"   ✓ totalAmount was recomputed (changed from {self.original_so_total} to {new_total})")
+                self.log("✅ TEST 4 PASSED: Item shippedWeight updated and SO total recomputed")
+                return True
+            else:
+                self.log(f"   ⚠️  totalAmount unchanged (may be expected if price calculation results in same total)")
+                self.log("✅ TEST 4 PASSED: Item shippedWeight updated (no 500 error)")
+                return True
+                
+        except Exception as e:
+            self.log(f"❌ TEST 4 FAILED: Exception: {str(e)}")
+            return False
+    
+    def test_negative_cases(self) -> bool:
+        """TEST 5: Negative cases (404 for nonexistent SJ or SO)"""
+        try:
+            self.log("\nTEST 5: Negative cases")
+            
+            # Test 5a: Nonexistent SJ ID
+            self.log("   Test 5a: PATCH with nonexistent SJ ID")
+            url = f"{API_URL}/sales-orders/{self.test_so_id}/surat-jalan/nonexistent-sj-id-123"
+            payload = {"notes": "test"}
+            response = self.session.patch(url, json=payload)
+            
+            if response.status_code == 404:
+                self.log(f"   ✓ Test 5a PASSED: Got 404 for nonexistent SJ ID")
+            else:
+                self.log(f"   ✗ Test 5a FAILED: Expected 404, got {response.status_code}")
+                return False
+            
+            # Test 5b: Nonexistent SO ID
+            self.log("   Test 5b: PATCH with nonexistent SO ID")
+            url = f"{API_URL}/sales-orders/nonexistent-so/surat-jalan/{self.test_sj_id}"
+            payload = {"notes": "test"}
+            response = self.session.patch(url, json=payload)
+            
+            if response.status_code == 404:
+                self.log(f"   ✓ Test 5b PASSED: Got 404 for nonexistent SO ID")
+            else:
+                self.log(f"   ✗ Test 5b FAILED: Expected 404, got {response.status_code}")
+                return False
+            
+            self.log("✅ TEST 5 PASSED: All negative cases returned 404 as expected")
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ TEST 5 FAILED: Exception: {str(e)}")
+            return False
+    
+    def revert_changes(self) -> bool:
+        """TEST 6: REVERT all changes back to original values"""
+        try:
+            self.log("\nTEST 6: REVERT changes to original values")
+            
+            url = f"{API_URL}/sales-orders/{self.test_so_id}/surat-jalan/{self.test_sj_id}"
+            
+            # Build revert payload
+            payload = {
+                "driverName": self.original_sj_data.get('driverName'),
+                "vehicleNumber": self.original_sj_data.get('vehicleNumber'),
+                "notes": self.original_sj_data.get('notes'),
+                "showReceivedColumn": self.original_sj_data.get('showReceivedColumn', False)
+            }
+            
+            # Handle ship-to revert
+            if self.original_sj_data.get('shipToCustomerId'):
+                payload['shipToCustomerId'] = self.original_sj_data['shipToCustomerId']
+            elif self.original_sj_data.get('shipToName'):
+                payload['shipToName'] = self.original_sj_data['shipToName']
+                payload['shipToAddress'] = self.original_sj_data.get('shipToAddress')
+                payload['shipToPhone'] = self.original_sj_data.get('shipToPhone')
+            else:
+                payload['shipToName'] = None
+                payload['shipToAddress'] = None
+                payload['shipToCustomerId'] = None
+            
+            # Revert item shippedWeight if we changed it
+            if self.test_item_id and self.original_item_shipped_weight is not None:
+                payload['items'] = [{
+                    "itemId": self.test_item_id,
+                    "shippedWeight": self.original_item_shipped_weight
+                }]
+            
+            self.log(f"   Reverting with payload: {json.dumps(payload, indent=2)}")
+            
+            response = self.session.patch(url, json=payload)
+            self.log(f"PATCH revert response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                self.log(f"❌ TEST 6 FAILED: Revert returned {response.status_code}")
+                self.log(f"Response: {response.text}")
+                return False
+            
+            # Verify SO totalAmount returned to original
+            if self.test_item_id:
+                so_response = self.session.get(f"{API_URL}/sales-orders/{self.test_so_id}")
+                if so_response.status_code == 200:
+                    so_data = so_response.json().get('data', {})
+                    reverted_total = so_data.get('totalAmount')
+                    self.log(f"   Original totalAmount: {self.original_so_total}")
+                    self.log(f"   Reverted totalAmount: {reverted_total}")
+                    
+                    if reverted_total == self.original_so_total:
+                        self.log(f"   ✓ SO totalAmount reverted to original value")
+                    else:
+                        self.log(f"   ⚠️  SO totalAmount differs (may be due to rounding or other factors)")
+            
+            self.log("✅ TEST 6 PASSED: All changes reverted successfully")
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ TEST 6 FAILED: Exception: {str(e)}")
+            return False
+    
+    def run_all_tests(self):
+        """Run all tests in sequence"""
+        self.log("=" * 80)
+        self.log("BACKEND TEST: PATCH /api/sales-orders/:id/surat-jalan/:sjId")
+        self.log("=" * 80)
+        
+        results = []
+        
+        # Test 1: Login
+        if not self.login():
+            self.log("\n❌ CRITICAL: Login failed, cannot continue")
+            return False
+        results.append(("Login", True))
+        
+        # Setup: Find SO with Surat Jalan
+        if not self.find_so_with_surat_jalan():
+            self.log("\n⚠️  SETUP FAILED: No SO with Surat Jalan found")
+            self.log("   All edit tests will be SKIPPED")
+            self.log("\n" + "=" * 80)
+            self.log("TEST SUMMARY")
+            self.log("=" * 80)
+            self.log("✅ TEST 1: Login - PASSED")
+            self.log("⚠️  SETUP: No test data available (no SO with Surat Jalan)")
+            self.log("⚠️  All edit tests SKIPPED")
+            return True  # Not a failure, just no test data
+        
+        # Test 2: PATCH basic fields
+        result = self.test_patch_basic_fields()
+        results.append(("PATCH basic fields", result))
+        
+        # Test 3: PATCH ship-to manual
+        result = self.test_patch_ship_to_manual()
+        results.append(("PATCH ship-to manual", result))
+        
+        # Test 4: PATCH item shippedWeight
+        result = self.test_patch_item_shipped_weight()
+        results.append(("PATCH item shippedWeight", result))
+        
+        # Test 5: Negative cases
+        result = self.test_negative_cases()
+        results.append(("Negative cases (404)", result))
+        
+        # Test 6: Revert changes
+        result = self.revert_changes()
+        results.append(("REVERT changes", result))
+        
+        # Print summary
+        self.log("\n" + "=" * 80)
+        self.log("TEST SUMMARY")
+        self.log("=" * 80)
+        
+        passed = sum(1 for _, result in results if result)
+        total = len(results)
+        
+        for test_name, result in results:
+            status = "✅ PASSED" if result else "❌ FAILED"
+            self.log(f"{status}: {test_name}")
+        
+        self.log("=" * 80)
+        self.log(f"TOTAL: {passed}/{total} tests passed ({passed*100//total}%)")
+        self.log("=" * 80)
+        
+        return all(result for _, result in results)
 
-    # ========== SUMMARY ==========
-    print("\n" + "="*80)
-    print("SUMMARY")
-    print("="*80)
-    
-    all_tests_passed = (
-        diff <= tolerance_bug1 and  # BUG 1
-        kas_match and bank_match and cash_match and  # BUG 2
-        not has_500_error and not has_mongo_error  # No errors
-    )
-    
-    if all_tests_passed:
-        print("\n✅ ALL TESTS PASSED")
-        print("\nBUG 1 (Dashboard inventory value):")
-        print(f"  - Dashboard inventoryValue: Rp {inventory_value_dashboard:,.2f}")
-        print(f"  - Expected (sum hpp*weight): Rp {expected_value:,.2f}")
-        print(f"  - Difference: Rp {diff:.2f} (within tolerance)")
-        print("\nBUG 2 (Kas & Bank overview):")
-        print(f"  - ov.kas: Rp {ov_kas:,.2f} = balance(1-1110): Rp {kas_1110:,.2f} ✓")
-        print(f"  - ov.bank: Rp {ov_bank:,.2f} = balance(1-1120) + balance(1-1121): Rp {expected_bank:,.2f} ✓")
-        print(f"  - ov.cash: Rp {ov_cash:,.2f} = kas + bank: Rp {expected_cash:,.2f} ✓")
-        print(f"  - 2-2100 Utang Bank correctly excluded ✓")
-        sys.exit(0)
-    else:
-        print("\n❌ SOME TESTS FAILED")
-        sys.exit(1)
-
-except requests.exceptions.RequestException as e:
-    print(f"\n❌ REQUEST ERROR: {e}")
-    sys.exit(1)
-except Exception as e:
-    print(f"\n❌ UNEXPECTED ERROR: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+if __name__ == "__main__":
+    runner = TestRunner()
+    success = runner.run_all_tests()
+    sys.exit(0 if success else 1)

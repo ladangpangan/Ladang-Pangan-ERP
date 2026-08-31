@@ -205,30 +205,41 @@ function Stat({ label, value, color = 'slate' }) {
 }
 
 function GroupedView({ rows, selected, toggle, canOperate, canManage, products, mutate, expandedGroups, setExpandedGroups }) {
-  // Group by sourceType + sourceBatch (or 'manual' if empty)
+  // Grouping:
+  //  - PO/WO lots -> grouped by source batch (sourceType::sourceBatch)
+  //  - MANUAL-input lots -> grouped PER PRODUCT (MANUAL::productId) so item changes are easy to
+  //    cross-check per product and reconcile against Laporan Inventory per produk.
   const groups = {};
   for (const r of rows) {
-    const key = r.sourceType && r.sourceBatch ? `${r.sourceType}::${r.sourceBatch}` : 'MANUAL';
+    const isManual = !(r.sourceType && r.sourceBatch);
+    const key = isManual ? `MANUAL::${r.productId || 'none'}` : `${r.sourceType}::${r.sourceBatch}`;
     if (!groups[key]) {
       groups[key] = {
         key,
-        sourceType: r.sourceType || 'MANUAL',
+        sourceType: isManual ? 'MANUAL' : r.sourceType,
+        isManual,
+        productId: isManual ? (r.productId || null) : null,
+        productName: isManual ? (r.product?.name || '(Tanpa produk)') : null,
+        productSku: isManual ? (r.product?.sku || null) : null,
         sourceNumber: r.source?.number || null,
         sourceOrderDate: r.source?.orderDate || r.source?.startDate || null,
         recon: (r.sourceType === 'PO' && r.source) ? { sjWeight: r.source.sjWeight || 0, tallyWeight: r.source.tallyWeight || 0, tallyVariance: r.source.tallyVariance || 0 } : null,
         items: [],
         totalWeight: 0,
+        totalQty: 0,
         productSet: new Set(),
       };
     }
     groups[key].items.push(r);
     groups[key].totalWeight += Number(r.weight || 0);
+    groups[key].totalQty += Number(r.quantity || 0);
     if (r.product?.name) groups[key].productSet.add(r.product.name);
   }
   const groupsList = Object.values(groups).sort((a, b) => {
-    // MANUAL last, else newest source first
-    if (a.sourceType === 'MANUAL') return 1;
-    if (b.sourceType === 'MANUAL') return -1;
+    // Source groups (PO/WO) first (newest first), then MANUAL groups sorted by product name.
+    if (a.isManual && !b.isManual) return 1;
+    if (b.isManual && !a.isManual) return -1;
+    if (a.isManual && b.isManual) return (a.productName || '').localeCompare(b.productName || '', 'id');
     return (b.sourceOrderDate || 0) - (a.sourceOrderDate || 0);
   });
 
@@ -237,8 +248,8 @@ function GroupedView({ rows, selected, toggle, canOperate, canManage, products, 
   return (
     <div className="divide-y">
       {groupsList.map(g => {
-        // Default: PO groups CLOSED, other sources (WO/MANUAL) OPEN. User can toggle.
-        const defaultOpen = g.sourceType !== 'PO';
+        // Default: WO groups OPEN; PO & per-product MANUAL groups CLOSED (clean per-product summary). Toggleable.
+        const defaultOpen = g.sourceType === 'WO';
         const isExpanded = expandedGroups[g.key] === undefined ? defaultOpen : expandedGroups[g.key];
         const Icon = g.sourceType === 'PO' ? ShoppingCart : g.sourceType === 'WO' ? ClipboardList : Package;
         const badgeColor = g.sourceType === 'PO' ? 'bg-blue-100 text-blue-700 border-blue-200' :
@@ -255,14 +266,24 @@ function GroupedView({ rows, selected, toggle, canOperate, canManage, products, 
               <Icon className="w-5 h-5 text-slate-600" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="outline" className={`font-mono text-xs ${badgeColor}`}>
-                    {g.sourceType}{g.sourceNumber ? ` · ${g.sourceNumber}` : ''}
-                  </Badge>
-                  <span className="text-sm font-semibold">{g.items.length} kode simpan</span>
-                  <span className="text-xs text-muted-foreground">
-                    · {Array.from(g.productSet).slice(0, 2).join(', ')}
-                    {g.productSet.size > 2 && ` +${g.productSet.size - 2} lain`}
-                  </span>
+                  {g.isManual ? (
+                    <>
+                      <Badge variant="outline" className="font-mono text-xs bg-slate-100 text-slate-700 border-slate-200">MANUAL</Badge>
+                      <span className="text-sm font-semibold">{g.productName}{g.productSku ? ` · ${g.productSku}` : ''}</span>
+                      <span className="text-xs text-muted-foreground">· {g.items.length} kode simpan · {g.totalQty} kemasan</span>
+                    </>
+                  ) : (
+                    <>
+                      <Badge variant="outline" className={`font-mono text-xs ${badgeColor}`}>
+                        {g.sourceType}{g.sourceNumber ? ` · ${g.sourceNumber}` : ''}
+                      </Badge>
+                      <span className="text-sm font-semibold">{g.items.length} kode simpan</span>
+                      <span className="text-xs text-muted-foreground">
+                        · {Array.from(g.productSet).slice(0, 2).join(', ')}
+                        {g.productSet.size > 2 && ` +${g.productSet.size - 2} lain`}
+                      </span>
+                    </>
+                  )}
                 </div>
                 {g.sourceOrderDate && (
                   <div className="text-xs text-muted-foreground mt-0.5">
