@@ -319,6 +319,12 @@ async function handleRoute(request, { params }) {
   const method = request.method;
   const db = getDb();
 
+  // [PERF] temporary instrumentation — logs any phase taking >80ms so we can find hydration bottlenecks.
+  const __perfOn = process.env.PERF_TRACE === '1';
+  let __ts = Date.now();
+  const lap = (label) => { if (!__perfOn) return; const d = Date.now() - __ts; if (d > 80) console.log(`[PERF] ${method} ${route} :: ${label} = ${d}ms`); __ts = Date.now(); };
+
+
   // Ledger dirty-flag: any mutating request may change source data that the accounting ledger derives from.
   // We mark the ledger dirty so the next accounting read regenerates journals (autoSync); pure reads reuse
   // the last regeneration. This removes the heavy syncLedger() from EVERY accounting page load.
@@ -327,140 +333,106 @@ async function handleRoute(request, { params }) {
   // Phase 2 (MongoDB): ensure master data (products/cold_storages/zones) is present in Mongo.
   // Idempotent + guarded (returns instantly after the first successful sync per process).
   try { await md.ensureMasterSync(); } catch (e) { /* non-fatal */ }
+  lap('ensureMasterSync');
 
   // Mongo -> SQLite hydration for master data (products/cold_storages/zones). Mongo is authoritative;
   // this keeps every pod's SQLite mirror in sync so transaction joins (e.g. inventory kode simpan ->
   // product name) never resolve empty due to drift. Short TTL guard to bound overhead.
   try {
     const gm = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-    if (Date.now() - (gm.master || 0) > 30000) { await md.hydrateMasterFromMongo(); gm.master = Date.now(); }
+    if (Date.now() - (gm.master || 0) > 300000) { await md.hydrateMasterFromMongo(); gm.master = Date.now(); }
   } catch (e) { /* non-fatal */ }
+  lap('hydrateMaster');
 
   // Warm the in-memory notification-recipient cache in THIS module instance (boot.js primes a possibly
   // different instance in dev/multi-bundle). Idempotent + cheap (only queries Mongo when empty) so
   // createNotification() can reliably resolve supervisor/direktur recipients.
   try { await authUsers.ensureUserCache(); } catch (e) { /* non-fatal */ }
+  lap('ensureUserCache');
 
   // ONE-TIME data fix (guarded by a mongo_migration marker): seed HPP onto existing stock & SO
   // allocations from product.base_price ("Harga Modal / HPP"). Runs directly on Mongo BEFORE the
   // hydration below, so the corrected cost basis flows into every replica's SQLite on hydrate and
   // existing Sales Orders show the right HPP / gross profit. No-op after it has run once.
   try { await ensureHppBackfill(); } catch (e) { /* non-fatal */ }
+  lap('ensureHppBackfill');
 
   // Phase 3 (MongoDB): the Sales Order aggregate (sales_order + items + stock allocations + payments +
   // returns) is MongoDB-authoritative for multi-replica consistency. Hydrate the per-pod SQLite mirror
   // from Mongo before ANY request that READS or WRITES sales data (mutations under sales-orders/
   // tally-outbound; reads on dashboard, reports, accounting, sales-reports, inventory-reports, contacts)
   // so every pod serves the same SO numbers (AR, today sales, commissions). Read-only full-replace.
-  if (SALES_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      if (!isRead || Date.now() - (g.sales || 0) > 30000) { await salesMongo.ensureSalesReady(getRawSqlite()); g.sales = Date.now(); }
-    } catch (e) { /* best-effort */ }
-  }
+  // ---- PARALLEL Mongo->SQLite hydration for ALL matching phases (PERF) ----
+  // Previously each phase (sales / inventory / potx / assets+opname / wo+approval / tally+tx / misc)
+  // hydrated SEQUENTIALLY — a cold page load waited on ~6 full-collection round-trips to Atlas back to
+  // back (~15-19s). We now fire the network reads for EVERY matching phase in PARALLEL. Each module's
+  // better-sqlite3 write stays fully synchronous & atomic (no await between its pragma OFF/ON), so the
+  // parallel awaits only overlap the NETWORK waits — never the SQLite writes — so no interleave/corruption.
+  // Result: cold hydration time ~= max(phase) instead of sum(phases).
+  {
+    const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+    const isRead = method === 'GET' || method === 'HEAD';
+    const isMut = !isRead;
+    const p0 = path[0];
+    const raw = getRawSqlite();
+    // Per-phase read TTL (ms). inventory_stock reads are the slowest single Mongo query on the user's
+    // Atlas tier (~3s for the full lot list), so it gets a longer TTL — its data is kept fresh on the
+    // mutating pod anyway (mutations always force a re-hydrate), so a longer READ cache only affects how
+    // quickly OTHER replicas see a change (bounded, acceptable for stock display).
+    const TTLS = { inventory: 180000 };
+    const stale = (k) => isMut || Date.now() - (g[k] || 0) > (TTLS[k] || 60000);
 
-  // Phase 4 (MongoDB): inventory_stock (physical stock lots + allocation status + quantities) is
-  // MongoDB-authoritative. Hydrate the per-pod SQLite mirror before any request that reads/writes stock,
-  // and (for mutating requests) snapshot the stock signatures so we can diff-persist only what changed.
-  if (INVENTORY_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawInv = getRawSqlite();
-      if (!isRead || Date.now() - (g.inventory || 0) > 30000) {
-        await invMongo.ensureInventoryReady(rawInv);
-        g.inventory = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') invMongo.captureSnapshot(request, rawInv);
-    } catch (e) { /* best-effort */ }
-  }
+    // PERF: for the HOT transactional LIST/read endpoints we hydrate ONLY the collections that
+    // handler actually reads (verified in code), instead of the broad defensive path-sets. This cuts
+    // the biggest daily pages from ~6s to ~1-2s on a cold (TTL-expired) load. `only=null` => keep the
+    // full defensive matching (used for mutations, detail views, and aggregator pages).
+    // master data (products/cold_storages/zones/contacts) is hydrated separately above, so it is
+    // always available regardless of `only`.
+    let only = null;
+    if (isRead) {
+      if (route === '/sales-orders') only = new Set(['sales']);                 // reads sales_order + contacts(master)
+      else if (route === '/purchase-orders') only = new Set(['potx']);          // reads purchase_order + contacts(master)
+      else if (route === '/inventory/stocks') only = new Set(['inventory', 'sales']); // reads inventory_stock + Draft SO reservations
+    }
+    const want = (phase, broadHas) => (only ? only.has(phase) : broadHas);
+    const tasks = [];
+    const snappers = []; // captureSnapshot fns run AFTER all hydrations (mutations only)
 
-  // Phase 5 (MongoDB): Purchase Order aggregate + commission + SO-extra (surat jalan / retur /
-  // penerimaan) are MongoDB-authoritative. Hydrate the per-pod SQLite mirror for these paths and,
-  // on mutations, snapshot so we diff-persist only the changed rows (concurrency-safe).
-  if (POTX_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawTx = getRawSqlite();
-      if (!isRead || Date.now() - (g.potx || 0) > 30000) {
-        await potxMongo.ensureReady(rawTx);
-        g.potx = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') potxMongo.captureSnapshot(request, rawTx);
-    } catch (e) { /* best-effort */ }
+    if (want('sales', SALES_PATHS.has(p0)) && stale('sales')) tasks.push((async () => { try { await salesMongo.ensureSalesReady(raw); g.sales = Date.now(); } catch { /* best-effort */ } })());
+    if (want('inventory', INVENTORY_PATHS.has(p0))) {
+      if (stale('inventory')) tasks.push((async () => { try { await invMongo.ensureInventoryReady(raw); g.inventory = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => invMongo.captureSnapshot(request, raw));
+    }
+    if (want('potx', POTX_PATHS.has(p0))) {
+      if (stale('potx')) tasks.push((async () => { try { await potxMongo.ensureReady(raw); g.potx = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => potxMongo.captureSnapshot(request, raw));
+    }
+    if (want('assetsOpname', ASSETS_OPNAME_PATHS.has(p0))) {
+      if (stale('assetsOpname')) tasks.push((async () => { try { await assetsOpnameMongo.ensureReady(raw); g.assetsOpname = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => assetsOpnameMongo.captureSnapshot(request, raw));
+    }
+    if (want('woApproval', WO_APPROVAL_PATHS.has(p0))) {
+      if (stale('woApproval')) tasks.push((async () => { try { await woApprovalMongo.ensureReady(raw); g.woApproval = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => woApprovalMongo.captureSnapshot(request, raw));
+    }
+    if (want('tallyTx', TALLY_TX_PATHS.has(p0))) {
+      if (stale('tallyTx')) tasks.push((async () => { try { await tallyTxMongo.ensureReady(raw); g.tallyTx = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => tallyTxMongo.captureSnapshot(request, raw));
+    }
+    if (want('misc', MISC_PATHS.has(p0))) {
+      if (stale('misc')) tasks.push((async () => { try { await miscMongo.ensureReady(raw); g.misc = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => miscMongo.captureSnapshot(request, raw));
+    }
+    if (tasks.length) { try { await Promise.all(tasks); } catch { /* best-effort */ } }
+    for (const fn of snappers) { try { fn(); } catch { /* best-effort */ } }
   }
-
-  // Phase 6 (MongoDB): fixed_assets + stock_opname(+items) are MongoDB-authoritative. The accounting
-  // engine reads them for depreciation & shrinkage auto journals, so hydrate before any accounting/opname
-  // request; on mutations, snapshot for concurrency-safe diff-persist.
-  if (ASSETS_OPNAME_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawAo = getRawSqlite();
-      if (!isRead || Date.now() - (g.assetsOpname || 0) > 30000) {
-        await assetsOpnameMongo.ensureReady(rawAo);
-        g.assetsOpname = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') assetsOpnameMongo.captureSnapshot(request, rawAo);
-    } catch (e) { /* best-effort */ }
-  }
-
-  // Phase 7 (MongoDB): Work Order (produksi) + approvals are MongoDB-authoritative. Hydrate the per-pod
-  // SQLite mirror for these paths and, on mutations, snapshot so we diff-persist only changed rows.
-  if (WO_APPROVAL_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawWa = getRawSqlite();
-      if (!isRead || Date.now() - (g.woApproval || 0) > 30000) {
-        await woApprovalMongo.ensureReady(rawWa);
-        g.woApproval = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') woApprovalMongo.captureSnapshot(request, rawWa);
-    } catch (e) { /* best-effort */ }
-  }
-
-  // Phase 9 (MongoDB): tally_session(+items) + inventory_transaction are MongoDB-authoritative so a
-  // tally draft created on one replica can be finalized on another, and inbound/outbound/transfer/opname
-  // operation records + tally weight reads are consistent across pods. Hydrate before any request that
-  // reads/writes these tables; on mutations, snapshot for concurrency-safe diff-persist.
-  if (TALLY_TX_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawTt = getRawSqlite();
-      if (!isRead || Date.now() - (g.tallyTx || 0) > 30000) {
-        await tallyTxMongo.ensureReady(rawTt);
-        g.tallyTx = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') tallyTxMongo.captureSnapshot(request, rawTt);
-    } catch (e) { /* best-effort */ }
-  }
-
-  // Phase 10 (MongoDB): notifications + contact_customers + contact_documents + app_settings are
-  // MongoDB-authoritative. Hydrate the per-pod SQLite mirror for these paths and, on mutations,
-  // snapshot so we diff-persist only changed rows (concurrency-safe).
-  if (MISC_PATHS.has(path[0])) {
-    try {
-      const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
-      const isRead = method === 'GET' || method === 'HEAD';
-      const rawMisc = getRawSqlite();
-      if (!isRead || Date.now() - (g.misc || 0) > 30000) {
-        await miscMongo.ensureReady(rawMisc);
-        g.misc = Date.now();
-      }
-      if (method !== 'GET' && method !== 'HEAD') miscMongo.captureSnapshot(request, rawMisc);
-    } catch (e) { /* best-effort */ }
-  }
+  lap('phases-parallel');
 
   // VERIFICATION (multi-replica single-source-of-truth audit): for the read-only Dashboard &
   // Inventory report paths, print to the terminal that the data being served was hydrated straight
   // from MongoDB (the single source of truth) — with LIVE collection counts read directly from Mongo.
   // This makes it auditable that no stale per-pod SQLite data is served. Best-effort; never blocks.
-  if (method === 'GET' && (path[0] === 'dashboard' || path[0] === 'inventory-reports')) {
+  if (process.env.AUDIT_DATASOURCE_LOG === '1' && method === 'GET' && (path[0] === 'dashboard' || path[0] === 'inventory-reports')) {
     try {
       const mdb = getMongoDb();
       const [invStock, salesOrder, invTx, stockLedger] = await Promise.all([
@@ -601,28 +573,15 @@ async function handleRoute(request, { params }) {
       const g = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
       const isRead = method === 'GET' || method === 'HEAD';
       
-      // COA is MongoDB-authoritative (multi-replica safe). Refresh the local SQLite mirror from Mongo
-      // before any accounting read/report/sync so the engine joins use the shared, up-to-date COA.
-      if (!isRead || Date.now() - (g.coa || 0) > 30000) {
-        await coaMongo.ensureCoaReady(raw);
-        g.coa = Date.now();
-      }
-      
-      // Journals & ledger are ALSO MongoDB-authoritative for user-entered data (manual journals,
-      // Cashbook, opening balances, period closings). Hydrate the per-pod SQLite mirror from Mongo
-      // before any read/sync so every replica sees the same shared financial data.
-      if (!isRead || Date.now() - (g.journals || 0) > 30000) {
-        await jmongo.ensureJournalsReady(raw);
-        g.journals = Date.now();
-      }
-      
-      // Sales Orders are MongoDB-authoritative too — the accounting engine (syncLedger) reads
-      // sales_order / so_item_stocks / sales_payments to regenerate SO auto journals (revenue, COGS,
-      // payments, cashback), so hydrate the SO aggregate BEFORE the engine runs.
-      // NOTE: Sales already cached globally at line 342, but we refresh here for accounting mutations.
-      if (!isRead || Date.now() - (g.sales || 0) > 30000) {
-        await salesMongo.ensureSalesReady(raw);
-        g.sales = Date.now();
+      // COA + Journals + Sales are all MongoDB-authoritative. Hydrate the per-pod SQLite mirror from
+      // Mongo before any accounting read/report/sync so the engine joins use shared, up-to-date data.
+      // Run the independent network reads in PARALLEL (60s TTL) to cut accounting cold load.
+      {
+        const acctTasks = [];
+        if (!isRead || Date.now() - (g.coa || 0) > 60000) acctTasks.push((async () => { await coaMongo.ensureCoaReady(raw); g.coa = Date.now(); })());
+        if (!isRead || Date.now() - (g.journals || 0) > 60000) acctTasks.push((async () => { await jmongo.ensureJournalsReady(raw); g.journals = Date.now(); })());
+        if (!isRead || Date.now() - (g.sales || 0) > 60000) acctTasks.push((async () => { await salesMongo.ensureSalesReady(raw); g.sales = Date.now(); })());
+        if (acctTasks.length) { try { await Promise.all(acctTasks); } catch { /* best-effort */ } }
       }
 
       // VERIFICATION (multi-replica single-source-of-truth audit for FINANCIAL REPORTS):
@@ -631,7 +590,7 @@ async function handleRoute(request, { params }) {
       // MongoDB — with LIVE collection counts read directly from Mongo (gl_accounts, journal_entries,
       // journal_lines, period_closings, sales_order). This makes it auditable that no stale per-pod
       // SQLite financial data is served across replicas. Best-effort; never blocks the request.
-      if (method === 'GET') {
+      if (process.env.AUDIT_DATASOURCE_LOG === '1' && method === 'GET') {
         try {
           const mdb = getMongoDb();
           const [glAccounts, journalEntries, journalLines, periodClosings, salesOrder] = await Promise.all([
