@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package, Archive, ArchiveRestore } from 'lucide-react';
+import { Boxes, Search, Loader2, ArrowRightLeft, PackageMinus, Scissors, ClipboardCheck, AlertTriangle, Trash2, Plus, Eye, LayoutList, LayoutGrid, ChevronDown, ChevronRight, ShoppingCart, ClipboardList, Package, Archive, ArchiveRestore, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel } from '@/lib/constants';
@@ -153,7 +153,7 @@ export default function InventoryPage() {
           {isLoading && <div className="p-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
           {!isLoading && rows.length === 0 && <div className="p-8 text-center text-muted-foreground">Belum ada stock</div>}
           {!isLoading && rows.length > 0 && viewMode === 'grouped' && (
-            <GroupedView rows={rows} selected={selected} toggle={toggle} canOperate={canOperate} mutate={mutate} expandedGroups={expandedGroups} setExpandedGroups={setExpandedGroups} />
+            <GroupedView rows={rows} selected={selected} toggle={toggle} canOperate={canOperate} canManage={canManage} products={prods?.data || []} mutate={mutate} expandedGroups={expandedGroups} setExpandedGroups={setExpandedGroups} />
           )}
           {!isLoading && rows.length > 0 && viewMode === 'flat' && (
           <Table>
@@ -182,6 +182,7 @@ export default function InventoryPage() {
                   <TableCell><Badge className={r.status === 'active' ? 'bg-emerald-100 text-emerald-700' : r.status === 'damaged' ? 'bg-red-100 text-red-700' : r.status === 'opened' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}>{r.status}</Badge></TableCell>
                   <TableCell className="space-x-1">
                     <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                    {canManage && r.status === 'active' && <EditStockButton stock={r} products={prods?.data || []} onDone={mutate} />}
                     {canOperate && (r.packagingType === 'karung' || r.packagingType === 'colly') && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
                     {canManage && (view === 'archived'
                       ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
@@ -203,7 +204,7 @@ function Stat({ label, value, color = 'slate' }) {
   return <Card><CardContent className="pt-6"><div className="text-xs text-muted-foreground uppercase">{label}</div><div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div></CardContent></Card>;
 }
 
-function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroups, setExpandedGroups }) {
+function GroupedView({ rows, selected, toggle, canOperate, canManage, products, mutate, expandedGroups, setExpandedGroups }) {
   // Group by sourceType + sourceBatch (or 'manual' if empty)
   const groups = {};
   for (const r of rows) {
@@ -332,6 +333,7 @@ function GroupedView({ rows, selected, toggle, canOperate, mutate, expandedGroup
                         </TableCell>
                         <TableCell className="space-x-1">
                           <Link href={`/dashboard/inventory/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                          {canManage && r.status === 'active' && <EditStockButton stock={r} products={products} onDone={mutate} />}
                           {canOperate && (r.packagingType === 'karung' || r.packagingType === 'colly') && r.status === 'active' && <SplitKarungButton stock={r} onDone={mutate} />}
                         </TableCell>
                       </TableRow>
@@ -470,7 +472,7 @@ function SplitKarungButton({ stock, onDone }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button size="icon" variant="ghost" title="Buka Karung"><Scissors className="w-4 h-4" /></Button></DialogTrigger>
       <DialogContent className="max-w-xl">
-        <DialogHeader><DialogTitle>Buka Karung {stock.kodeSimpan}</DialogTitle><DialogDescription>Karung akan disegel (opened), setiap kemasan mendapatkan kode simpan baru. HPP/kg mengikuti karung asal.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Buka Karung {stock.kodeSimpan}</DialogTitle><DialogDescription>Karung akan disegel (opened). Kosongkan Kode Simpan untuk otomatis, atau isi manual (harus unik). HPP/kg mengikuti karung asal.</DialogDescription></DialogHeader>
         <div className="space-y-3">
           <div className="text-sm p-3 bg-slate-50 rounded flex flex-wrap gap-x-4 gap-y-1">
             <span>Berat karung: <b>{stock.weight} kg</b></span>
@@ -479,8 +481,8 @@ function SplitKarungButton({ stock, onDone }) {
           </div>
           {packs.map((p, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-2 text-sm font-semibold pb-2">Pack {i + 1}</div>
-              <div className="col-span-3"><Label className="text-xs">Berat (kg)</Label><WeightInput value={p.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
+              <div className="col-span-1 text-sm font-semibold pb-2">#{i + 1}</div>
+              <div className="col-span-2"><Label className="text-xs">Berat (kg)</Label><WeightInput value={p.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
               <div className="col-span-2"><Label className="text-xs">Qty</Label><Input type="number" value={p.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} /></div>
               <div className="col-span-3">
                 <Label className="text-xs">Kemasan</Label>
@@ -491,12 +493,81 @@ function SplitKarungButton({ stock, onDone }) {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="col-span-2"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
+              <div className="col-span-3"><Label className="text-xs">Kode Simpan</Label><Input value={p.kodeSimpan || ''} onChange={e => upd(i, 'kodeSimpan', e.target.value)} placeholder="(otomatis)" className="h-9 font-mono text-xs" /></div>
+              <div className="col-span-1"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
             </div>
           ))}
           <Button size="sm" variant="outline" onClick={add}><Plus className="w-4 h-4 mr-1" />Tambah Kemasan</Button>
         </div>
         <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buka Karung</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+function EditStockButton({ stock, products, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const toDateInput = (d) => { if (!d) return ''; try { return format(new Date(d), 'yyyy-MM-dd'); } catch { return ''; } };
+  const [productId, setProductId] = useState(stock.productId);
+  const [expiredDate, setExpiredDate] = useState(toDateInput(stock.expiredDate));
+  const [kodeSimpan, setKodeSimpan] = useState(stock.kodeSimpan || '');
+  const reset = () => { setProductId(stock.productId); setExpiredDate(toDateInput(stock.expiredDate)); setKodeSimpan(stock.kodeSimpan || ''); };
+  const productChanged = productId !== stock.productId;
+  const newProduct = (products || []).find(p => p.id === productId);
+  const save = async () => {
+    const payload = {};
+    if (productId && productId !== stock.productId) payload.productId = productId;
+    if ((kodeSimpan || '').trim() !== (stock.kodeSimpan || '')) payload.kodeSimpan = (kodeSimpan || '').trim();
+    const origDate = toDateInput(stock.expiredDate);
+    if ((expiredDate || '') !== origDate) payload.expiredDate = expiredDate || null;
+    if (Object.keys(payload).length === 0) { toast.info('Tidak ada perubahan'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/inventory/stocks/${stock.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success(`Kode simpan diperbarui${payload.productId ? ' (HPP/kg disetel ke Harga Modal produk baru)' : ''}`);
+      setOpen(false); onDone();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) reset(); }}>
+      <DialogTrigger asChild><Button size="icon" variant="ghost" title="Edit Kode Simpan"><Pencil className="w-4 h-4 text-blue-600" /></Button></DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit Kode Simpan</DialogTitle>
+          <DialogDescription>Ubah produk, tanggal kadaluarsa, atau kode simpan lot ini. Hanya lot aktif &amp; belum dialokasikan yang bisa diedit.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs">Kode Simpan</Label>
+            <Input value={kodeSimpan} onChange={e => setKodeSimpan(e.target.value)} className="font-mono" placeholder="Kode simpan" />
+          </div>
+          <div>
+            <Label className="text-xs">Produk</Label>
+            <Select value={productId} onValueChange={setProductId}>
+              <SelectTrigger><SelectValue placeholder="Pilih produk" /></SelectTrigger>
+              <SelectContent>
+                {(products || []).map(p => <SelectItem key={p.id} value={p.id}>{p.name}{p.sku ? ` (${p.sku})` : ''}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {productChanged && (
+              <p className="text-[11px] text-amber-600 mt-1">
+                HPP/kg akan disetel ke Harga Modal produk baru{newProduct ? `: Rp ${Number(newProduct.basePrice || 0).toLocaleString('id-ID')}` : ''}.
+              </p>
+            )}
+          </div>
+          <div>
+            <Label className="text-xs">Tanggal Kadaluarsa</Label>
+            <Input type="date" value={expiredDate} onChange={e => setExpiredDate(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Batal</Button>
+          <Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

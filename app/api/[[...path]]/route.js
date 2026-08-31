@@ -5315,6 +5315,56 @@ async function handleRoute(request, { params }) {
       return json({ data: { ...stk, product: p, coldStorage: cs, zone, source, inboundTransaction: inTx, children, parent } });
     }
 
+    // PATCH /inventory/stocks/:id - edit a stock lot (product, expiry date, kode simpan).
+    // Guardrails: only ACTIVE + UNALLOCATED lots can be edited (blocks opened/used/sold lots and lots
+    // already reserved/allocated to any SO) so valuation & traceability stay intact. When the product is
+    // changed the HPP/kg is reset to the NEW product's basePrice (Harga Modal). kode_simpan must be unique.
+    if (route.startsWith('/inventory/stocks/') && path.length === 3 && (method === 'PATCH' || method === 'PUT')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[2];
+      const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get();
+      if (!stk) return err('Not found', 404);
+      if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} tidak dapat diedit (status: ${stk.status}). Hanya lot aktif yang bisa diedit.`);
+      // Block if allocated/reserved to ANY sales order (draft reservation or confirmed allocation).
+      const alloc = db.select({ c: sql`count(*)` }).from(s.salesOrderItems).where(eq(s.salesOrderItems.stockCodeId, id)).get();
+      if (Number(alloc?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan ke SO — tidak dapat diedit. Lepas alokasi terlebih dahulu.`);
+      // Block if this lot is a split parent (has children).
+      const kids = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(eq(s.inventoryStock.parentStockId, id)).get();
+      if (Number(kids?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dibuka (split) — tidak dapat diedit.`);
+
+      const body = await request.json();
+      const update = {};
+      // Product change -> reset HPP/kg to new product's basePrice (a-ii).
+      if (body.productId !== undefined && body.productId && body.productId !== stk.productId) {
+        const np = db.select().from(s.products).where(eq(s.products.id, body.productId)).get();
+        if (!np) return err('Produk tidak ditemukan', 400);
+        update.productId = body.productId;
+        update.hppPerKg = Number(np.basePrice || 0);
+      }
+      // Expiry date (allow clearing with null/empty).
+      if (body.expiredDate !== undefined) {
+        update.expiredDate = body.expiredDate ? new Date(body.expiredDate) : null;
+      }
+      // Kode simpan (must be unique across lots).
+      if (body.kodeSimpan !== undefined) {
+        const nk = String(body.kodeSimpan || '').trim();
+        if (!nk) return err('Kode simpan tidak boleh kosong', 400);
+        if (nk !== stk.kodeSimpan) {
+          const dup = db.select({ id: s.inventoryStock.id }).from(s.inventoryStock).where(and(eq(s.inventoryStock.kodeSimpan, nk), sql`${s.inventoryStock.id} != ${id}`)).get();
+          if (dup) return err(`Kode simpan "${nk}" sudah dipakai lot lain`, 400);
+          update.kodeSimpan = nk;
+        }
+      }
+      if (Object.keys(update).length === 0) return err('Tidak ada perubahan', 400);
+      update.updatedAt = new Date();
+      db.update(s.inventoryStock).set(update).where(eq(s.inventoryStock.id, id)).run();
+      const updated = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get();
+      const p = db.select().from(s.products).where(eq(s.products.id, updated.productId)).get();
+      return json({ data: { ...updated, product: p } });
+    }
+
+
     // GET /inventory/next-kode-simpan?count=N - preview upcoming kode simpan (does NOT consume)
     if (route === '/inventory/next-kode-simpan' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -5809,16 +5859,29 @@ async function handleRoute(request, { params }) {
           .where(and(eq(s.purchaseOrderItems.purchaseOrderId, parent.sourceBatch), eq(s.purchaseOrderItems.productId, parent.productId))).get();
         if (Number(poIt?.hpp || 0) > 0) effHpp = Number(poIt.hpp);
       }
+      // Pre-validate any MANUAL kode simpan supplied per pack: non-empty, unique vs existing lots and
+      // vs other packs in this same split. Packs without a manual code fall back to auto nextKodeSimpan().
+      const manualCodes = [];
+      for (const p of packs) {
+        if (p.kodeSimpan !== undefined && String(p.kodeSimpan || '').trim()) {
+          const nk = String(p.kodeSimpan).trim();
+          if (manualCodes.includes(nk)) return err(`Kode simpan "${nk}" terduplikasi di antara kemasan`, 400);
+          const dup = db.select({ id: s.inventoryStock.id }).from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, nk)).get();
+          if (dup) return err(`Kode simpan "${nk}" sudah dipakai lot lain`, 400);
+          manualCodes.push(nk);
+        }
+      }
       const createdIds = [];
       for (const p of packs) {
         const pkg = VALID_PKG.includes(p.packagingType) ? p.packagingType : 'pack';
         const stkId = uuidv4();
+        const kode = (p.kodeSimpan !== undefined && String(p.kodeSimpan || '').trim()) ? String(p.kodeSimpan).trim() : nextKodeSimpan();
         db.insert(s.inventoryStock).values({
           id: stkId,
           productId: parent.productId,
           coldStorageId: parent.coldStorageId,
           zoneId: parent.zoneId,
-          kodeSimpan: nextKodeSimpan(),
+          kodeSimpan: kode,
           packagingType: pkg,
           parentStockId: parent.id,
           quantity: Number(p.quantity || 1),
