@@ -4013,6 +4013,65 @@ async function handleRoute(request, { params }) {
       return json({ data: sj }, { status: 201 });
     }
 
+    // PATCH /sales-orders/:id/surat-jalan/:sjId - edit an existing Surat Jalan (delivery note).
+    if (route.startsWith('/sales-orders/') && path.length === 4 && path[2] === 'surat-jalan' && (method === 'PATCH' || method === 'PUT')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const id = path[1];
+      const sjId = path[3];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      const existingSj = db.select().from(s.suratJalan).where(eq(s.suratJalan.id, sjId)).get();
+      if (!existingSj || existingSj.salesOrderId !== id) return err('Surat Jalan tidak ditemukan', 404);
+      const body = await request.json();
+      const update = {};
+      if (body.deliveryDate !== undefined) update.deliveryDate = body.deliveryDate ? new Date(body.deliveryDate) : null;
+      if (body.driverName !== undefined) update.driverName = body.driverName || null;
+      if (body.vehicleNumber !== undefined) update.vehicleNumber = body.vehicleNumber || null;
+      if (body.notes !== undefined) update.notes = body.notes || null;
+      if (body.showReceivedColumn !== undefined) update.showReceivedColumn = !!body.showReceivedColumn;
+      // Ship-to destination (customer of an Agen/Dropshipper, manual, or reset to default).
+      if (body.shipToCustomerId !== undefined || body.shipToName !== undefined || body.shipToAddress !== undefined) {
+        if (body.shipToCustomerId) {
+          const cc = db.select().from(s.contactCustomers).where(eq(s.contactCustomers.id, body.shipToCustomerId)).get();
+          if (cc) Object.assign(update, { shipToCustomerId: cc.id, shipToName: cc.name, shipToPhone: cc.phone || null, shipToAddress: cc.address || null });
+        } else if (body.shipToName || body.shipToAddress) {
+          Object.assign(update, { shipToCustomerId: null, shipToName: body.shipToName || null, shipToPhone: body.shipToPhone || null, shipToAddress: body.shipToAddress || null });
+        } else {
+          Object.assign(update, { shipToCustomerId: null, shipToName: null, shipToPhone: null, shipToAddress: null });
+        }
+      }
+      if (Object.keys(update).length > 0) {
+        db.update(s.suratJalan).set(update).where(eq(s.suratJalan.id, sjId)).run();
+      }
+      // Optional: edit RIIL shipped weight per item (recompute SO totals + dropship GRN sync, same as create).
+      let anyShipped = false;
+      if (Array.isArray(body.items)) {
+        for (const it of body.items) {
+          if (it.itemId && it.shippedWeight !== undefined && it.shippedWeight !== null && it.shippedWeight !== '') {
+            db.update(s.salesOrderItems).set({ shippedWeight: Number(it.shippedWeight) }).where(eq(s.salesOrderItems.id, it.itemId)).run();
+            anyShipped = true;
+          }
+        }
+      }
+      if (anyShipped) {
+        const soItemsNow = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+        let subT = 0, discT = 0;
+        for (const it of soItemsNow) {
+          const eff = Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || it.quantity || 0);
+          const line = Number(it.unitPrice) * eff;
+          const disc = Number(it.discount || 0);
+          subT += line; discT += disc;
+          db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
+        }
+        db.update(s.salesOrder).set({ totalAmount: subT - discT, discountTotal: discT, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
+        if (so.fulfillmentType === 'dropship' && so.autoPoId) syncDropshipPoGrn(id, session.user.name);
+      }
+      const updated = db.select().from(s.suratJalan).where(eq(s.suratJalan.id, sjId)).get();
+      return json({ data: updated });
+    }
+
+
     // POST /sales-orders/:id/payments
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'payments' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;

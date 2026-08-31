@@ -843,6 +843,95 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
   );
 }
 
+function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ deliveryDate: '', driverName: '', vehicleNumber: '', notes: '' });
+  const [shipMode, setShipMode] = useState('default');
+  const [shipManual, setShipManual] = useState({ shipToName: '', shipToPhone: '', shipToAddress: '' });
+  const [showReceived, setShowReceived] = useState(false);
+  const [itemWeights, setItemWeights] = useState({});
+  const openDialog = (o) => {
+    if (o) {
+      setForm({
+        deliveryDate: sj.deliveryDate ? new Date(sj.deliveryDate).toISOString().slice(0, 10) : '',
+        driverName: sj.driverName || '',
+        vehicleNumber: sj.vehicleNumber || '',
+        notes: sj.notes || '',
+      });
+      setShowReceived(!!(sj.showReceivedColumn ?? sj.show_received_column));
+      if (sj.shipToCustomerId) { setShipMode(sj.shipToCustomerId); }
+      else if (sj.shipToName) { setShipMode('manual'); setShipManual({ shipToName: sj.shipToName || '', shipToPhone: sj.shipToPhone || '', shipToAddress: sj.shipToAddress || '' }); }
+      else { setShipMode('default'); setShipManual({ shipToName: '', shipToPhone: '', shipToAddress: '' }); }
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      setItemWeights(init);
+    }
+    setOpen(o);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      let payload = { ...form, showReceivedColumn: showReceived, items: (so.items || []).map(it => ({ itemId: it.id, shippedWeight: Number(itemWeights[it.id] || 0) })) };
+      if (shipMode === 'manual') payload = { ...payload, ...shipManual };
+      else if (shipMode !== 'default') payload = { ...payload, shipToCustomerId: shipMode };
+      else payload = { ...payload, shipToCustomerId: null, shipToName: null, shipToAddress: null };
+      const res = await fetch(`/api/sales-orders/${so.id}/surat-jalan/${sj.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Surat Jalan ' + sj.sjNumber + ' diperbarui');
+      setOpen(false); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={openDialog}>
+      <DialogTrigger asChild><Button size="sm" variant="ghost" title="Edit Surat Jalan"><Pencil className="w-4 h-4" /></Button></DialogTrigger>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Edit Surat Jalan {sj.sjNumber}</DialogTitle></DialogHeader>
+        <div className="grid grid-cols-2 gap-3">
+          <F label="Tanggal Kirim"><Input type="date" value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
+          <F label="Nama Sopir"><Input value={form.driverName} onChange={e => setForm({ ...form, driverName: e.target.value })} /></F>
+          <F label="No Kendaraan" className="col-span-2"><Input value={form.vehicleNumber} onChange={e => setForm({ ...form, vehicleNumber: e.target.value })} placeholder="B 1234 XYZ" /></F>
+          <F label="Tujuan Pengiriman" className="col-span-2">
+            <Select value={shipMode} onValueChange={setShipMode}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Alamat {so.customer?.displayName || 'Pembeli'} (default)</SelectItem>
+                {endCustomers.map(cc => <SelectItem key={cc.id} value={cc.id}>{cc.name}{cc.city ? ` · ${cc.city}` : ''}</SelectItem>)}
+                <SelectItem value="manual">Alamat manual…</SelectItem>
+              </SelectContent>
+            </Select>
+          </F>
+          {shipMode === 'manual' && (
+            <>
+              <F label="Nama Penerima"><Input value={shipManual.shipToName} onChange={e => setShipManual({ ...shipManual, shipToName: e.target.value })} /></F>
+              <F label="Telepon"><Input value={shipManual.shipToPhone} onChange={e => setShipManual({ ...shipManual, shipToPhone: e.target.value })} /></F>
+              <F label="Alamat" className="col-span-2"><Textarea rows={2} value={shipManual.shipToAddress} onChange={e => setShipManual({ ...shipManual, shipToAddress: e.target.value })} /></F>
+            </>
+          )}
+          <div className="col-span-2 border rounded-lg p-2">
+            <div className="text-xs font-semibold mb-1">Berat Kirim RIIL per item (hari-H)</div>
+            <div className="space-y-1">
+              {(so.items || []).map(it => (
+                <div key={it.id} className="flex items-center gap-2 text-sm">
+                  <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                  <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="col-span-2 flex items-center gap-2">
+            <Switch checked={showReceived} onCheckedChange={setShowReceived} />
+            <span className="text-sm">Tampilkan kolom "Berat Diterima" di Surat Jalan (kosong untuk ttd penerima)</span>
+          </div>
+          <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
+        </div>
+        <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan Perubahan</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
 function SjTab({ so, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ deliveryDate: new Date().toISOString().slice(0,10), driverName: '', vehicleNumber: '', notes: '' });
@@ -946,6 +1035,7 @@ function SjTab({ so, onSaved, canOperate }) {
                   const buildDoc = () => generateSuratJalanPDF({ ...sj, mapsUrl }, so);
                   return (
                     <>
+                      {canOperate && <EditSuratJalanDialog so={so} sj={sj} endCustomers={endCustomers} onSaved={onSaved} />}
                       <Button size="sm" variant="ghost" onClick={() => {
                         try { const url = buildDoc().output('bloburl'); window.open(url, '_blank'); }
                         catch (e) { console.error('View SJ error:', e); toast.error('Gagal menampilkan SJ: ' + (e.message || 'unknown')); }
