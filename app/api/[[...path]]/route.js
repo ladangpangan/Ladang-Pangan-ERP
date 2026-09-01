@@ -3719,6 +3719,52 @@ async function handleRoute(request, { params }) {
       return json({ ok: true });
     }
 
+    // POST /sales-orders/:id/invoice-basis - change invoice weight basis (shipped|received) and RE-COMPUTE
+    // the invoice total for an already-Invoiced SO (correction of a wrong basis pick at invoicing time).
+    // Mirrors the Invoiced-transition math. Accounting revenue auto-resyncs from the new SO total.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'invoice-basis' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      if (so.pipelineStatus !== 'Invoiced') return err('Basis invoice hanya dapat diubah pada SO berstatus Invoiced');
+      const body = await request.json();
+      const basis = body.basis === 'received' ? 'received' : 'shipped';
+      const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      // received per produk dari Receipts (Penerimaan Customer) untuk basis 'received'
+      let recvByProduct = {};
+      if (basis === 'received') {
+        const recs = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).all();
+        for (const rc of recs) {
+          const ri = db.select().from(s.salesOrderReceiptItems).where(eq(s.salesOrderReceiptItems.receiptId, rc.id)).all();
+          for (const li of ri) recvByProduct[li.productId] = (recvByProduct[li.productId] || 0) + Number(li.receivedWeight || 0);
+        }
+      }
+      let subtotal = 0, discountTotal = 0;
+      for (const it of items) {
+        let w;
+        if (basis === 'received') {
+          // Prefer the receipt weight (source of truth for "diterima") over any stale item value.
+          if (recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId];
+          else w = Number(it.receivedWeight || 0) || Number(it.shippedWeight || it.weight || 0);
+          db.update(s.salesOrderItems).set({ receivedWeight: w }).where(eq(s.salesOrderItems.id, it.id)).run();
+        } else {
+          w = Number(it.shippedWeight || it.weight || 0);
+        }
+        const line = Number(it.unitPrice) * w;
+        const disc = Number(it.discount || 0);
+        subtotal += line; discountTotal += disc;
+        db.update(s.salesOrderItems).set({ subtotal: line - disc }).where(eq(s.salesOrderItems.id, it.id)).run();
+      }
+      const totalAmount = subtotal - discountTotal + ((so.shippingBearer === 'buyer') ? Number(so.shippingCost || 0) : 0);
+      db.update(s.salesOrder).set({ invoiceWeightBasis: basis, totalAmount, discountTotal, updatedAt: new Date() }).where(eq(s.salesOrder.id, id)).run();
+      try { globalThis.__ledgerDirty = true; } catch { /* best-effort */ }
+      const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      return json({ data: updated, basis, totalAmount });
+    }
+
+
     // POST /sales-orders/:id/status - transition
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'status' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
