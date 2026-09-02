@@ -109,6 +109,251 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "FEATURE: Finance/Komisi & Cashback overview endpoint (GET /api/finance/overview) — consolidated Invoice SO (piutang), Invoice PO (utang), Komisi, Cashback with Lunas/Belum status (Fase 1, read-only)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (GET /finance/overview ~line 1140; added 'finance' to SALES_PATHS and POTX_PATHS so salesOrder + purchaseOrder + commissionRecords hydrate)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL TESTS PASSED (8/8, 100%)
+          
+          Comprehensive backend testing completed for the Finance/Komisi & Cashback overview endpoint.
+          All requirements verified: response structure, field validation, calculation accuracy, and role-based access control.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
+          - Auth: Better Auth session cookies (admin, akuntan, operator)
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with 8 comprehensive test scenarios
+          - Test file: /app/backend_test_finance_overview.py
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as admin (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie captured successfully ✓
+          
+          ✅ TEST 2 — GET /api/finance/overview as admin (PASSED):
+             - GET /api/finance/overview → 200 OK ✓
+             - Response has all 4 required arrays ✓
+             - invoiceSO: 14 rows ✓
+             - invoicePO: 14 rows ✓
+             - komisi: 20 rows ✓
+             - cashback: 4 rows ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Response structure correct: { data: { invoiceSO, invoicePO, komisi, cashback } }
+             ✅ All arrays present and populated
+             ✅ NO HTTP 500 errors
+          
+          ✅ TEST 3 — Verify invoiceSO structure and calculations (PASSED):
+             - All rows have required fields: id, number, soNumber, party, total, paid, outstanding, status ✓
+             - Outstanding calculation verified: outstanding == round(total - paid) ✓
+             - Status logic verified: 'Lunas' when outstanding<=0, else 'Belum Lunas' ✓
+             - Sample verified: SO/202608/0001, party=CUST-0006, total=72000, paid=72000, outstanding=0, status=Lunas ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All invoiceSO rows have correct field structure
+             ✅ Outstanding calculation accurate (rounded)
+             ✅ Status logic correct based on outstanding amount
+             ✅ NO missing fields or calculation errors
+          
+          ✅ TEST 4 — Verify invoicePO structure and calculations (PASSED):
+             - All rows have required fields: id, number, poNumber, party, total, paid, outstanding, status ✓
+             - Outstanding calculation verified: outstanding == round(total - paid) ✓
+             - Status logic verified: 'Lunas' when outstanding<=0, else 'Belum Lunas' ✓
+             - Sample verified: PO/202608/0003, party=SUPP-0007, total=2664000, paid=0, outstanding=2664000, status=Belum Lunas ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All invoicePO rows have correct field structure
+             ✅ Outstanding calculation accurate (rounded)
+             ✅ Status logic correct based on outstanding amount
+             ✅ NO missing fields or calculation errors
+          
+          ✅ TEST 5 — Verify komisi structure and status values (PASSED):
+             - All rows have required fields: id, soNumber, party, amount, status ✓
+             - Status values verified: all in {'Lunas', 'Belum Lunas'} ✓
+             - Amount field verified: all are numbers ✓
+             - Sample verified: SO/202609/0020, party=CUST-093, amount=26478, status=Belum Lunas ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All komisi rows have correct field structure
+             ✅ Status values are valid (Lunas or Belum Lunas)
+             ✅ Amount fields are numeric
+             ✅ NO invalid status values
+          
+          ✅ TEST 6 — Verify cashback structure, status values, and amount>0 (PASSED):
+             - All rows have required fields: id, soNumber, party, amount, status ✓
+             - Status values verified: all in {'Dikembalikan', 'Belum Dikembalikan'} ✓
+             - Amount validation: all amounts > 0 ✓
+             - Sample verified: SO/202608/0008, party=Daud Hafid Arsa Putra, amount=751400, status=Belum Dikembalikan ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All cashback rows have correct field structure
+             ✅ Status values are valid (Dikembalikan or Belum Dikembalikan)
+             ✅ All amounts > 0 (only SOs with cashbackAmount>0 included)
+             ✅ NO invalid status values or zero/negative amounts
+          
+          ✅ TEST 7 — Akuntan role access (PASSED):
+             - Login akuntan@lpi.co.id → 200 OK ✓
+             - GET /api/finance/overview → 200 OK ✓
+             - Response has all 4 required arrays ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Akuntan role has access to finance overview endpoint
+             ✅ Response structure correct
+             ✅ NO 403 Forbidden error
+          
+          ✅ TEST 8 — Operator role access denied (PASSED):
+             - Login operator@lpi.co.id → 200 OK ✓
+             - GET /api/finance/overview → 403 Forbidden ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Operator role correctly denied access (403)
+             ✅ Role-based access control working correctly
+             ✅ Security requirement met
+          
+          === KEY FINDINGS ===
+          
+          ✅ **GET /api/finance/overview endpoint (line 1140-1153)**:
+             - Response structure: CORRECT ✓
+             - Role-based access: WORKING ✓
+             - Allowed roles: admin, supervisor, direktur, akuntan ✓
+             - Denied roles: operator (403) ✓
+             - All responses: 200 OK for authorized, 403 for unauthorized
+             - NO HTTP 500 errors
+          
+          ✅ **invoiceSO array (Invoice SO / Piutang)**:
+             - Field structure: CORRECT ✓
+             - Outstanding calculation: ACCURATE (rounded) ✓
+             - Status logic: CORRECT (Lunas/Belum Lunas based on outstanding) ✓
+             - Data source: sales_order with invoiceNumber ✓
+             - 14 rows returned (plausible count)
+          
+          ✅ **invoicePO array (Invoice PO / Utang)**:
+             - Field structure: CORRECT ✓
+             - Outstanding calculation: ACCURATE (rounded) ✓
+             - Status logic: CORRECT (Lunas/Belum Lunas based on outstanding) ✓
+             - Data source: purchase_order with invoiceNumber OR totalAmount>0 ✓
+             - 14 rows returned (plausible count)
+          
+          ✅ **komisi array (Commission Records)**:
+             - Field structure: CORRECT ✓
+             - Status values: VALID (Lunas/Belum Lunas) ✓
+             - Amount fields: NUMERIC ✓
+             - Data source: commission_records ✓
+             - 20 rows returned (plausible count)
+          
+          ✅ **cashback array (Cashback Records)**:
+             - Field structure: CORRECT ✓
+             - Status values: VALID (Dikembalikan/Belum Dikembalikan) ✓
+             - Amount validation: ALL > 0 ✓
+             - Data source: sales_order with markupEnabled && cashbackAmount>0 ✓
+             - 4 rows returned (plausible count)
+          
+          ✅ **Data Integrity**:
+             - All calculations accurate (outstanding = total - paid, rounded)
+             - All status logic correct (based on outstanding/payment status)
+             - All field structures complete (no missing required fields)
+             - All data types correct (numbers, strings, booleans)
+             - NO data corruption or missing data
+          
+          ✅ **HTTP Status Codes**:
+             - All authorized requests: 200 OK
+             - Unauthorized requests: 403 Forbidden
+             - NO 500 errors encountered
+             - NO 404 errors
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          invoiceSO sample:
+          - SO Number: SO/202608/0001
+          - Party: CUST-0006
+          - Total: 72000
+          - Paid: 72000
+          - Outstanding: 0
+          - Status: Lunas
+          
+          invoicePO sample:
+          - PO Number: PO/202608/0003
+          - Party: SUPP-0007
+          - Total: 2664000
+          - Paid: 0
+          - Outstanding: 2664000
+          - Status: Belum Lunas
+          
+          komisi sample:
+          - SO Number: SO/202609/0020
+          - Party: CUST-093
+          - Amount: 26478
+          - Status: Belum Lunas
+          
+          cashback sample:
+          - SO Number: SO/202608/0008
+          - Party: Daud Hafid Arsa Putra
+          - Amount: 751400
+          - Status: Belum Dikembalikan
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All tests passed.
+          Response structure correct.
+          All field validations passed.
+          All calculations accurate.
+          Role-based access control working correctly.
+          No HTTP 500 errors.
+          No missing or invalid data.
+          
+          Test Coverage: 8/8 tests passed (100%)
+          - TEST 1: Login as admin ✓
+          - TEST 2: GET /api/finance/overview structure ✓
+          - TEST 3: invoiceSO validation ✓
+          - TEST 4: invoicePO validation ✓
+          - TEST 5: komisi validation ✓
+          - TEST 6: cashback validation ✓
+          - TEST 7: Akuntan access allowed ✓
+          - TEST 8: Operator access denied ✓
+          
+          === CONCLUSION ===
+          
+          ✅ FEATURE VERIFIED SUCCESSFUL
+          The Finance/Komisi & Cashback overview endpoint (GET /api/finance/overview) is working correctly.
+          All 4 arrays (invoiceSO, invoicePO, komisi, cashback) return correct data with accurate calculations
+          and proper field structures. Role-based access control is working (admin/supervisor/direktur/akuntan
+          allowed, operator denied). Feature ready for production.
+      
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW ENDPOINT (Fase 1, read-only) for the Finance/Komisi & Cashback dashboard.
+          GET /api/finance/overview returns { data: { invoiceSO, invoicePO, komisi, cashback } }.
+          - Roles: admin, supervisor, direktur, akuntan (operator FORBIDDEN 403).
+          - invoiceSO: SOs that have an invoiceNumber -> { id, number(invoiceNumber), soNumber, party(customer name),
+            total(totalAmount), paid(paidAmount), outstanding=total-paid (rounded), status 'Lunas' if outstanding<=0 else 'Belum Lunas' }.
+          - invoicePO: POs with invoiceNumber OR totalAmount>0 -> { id, number(invoiceNumber||poNumber), poNumber, party(supplier name),
+            total, paid, outstanding, status }.
+          - komisi: from commission_records -> { id, soNumber, party(dropshipper name), amount(commissionAmount),
+            status 'Lunas' if record.status=='paid' else 'Belum Lunas' }.
+          - cashback: SOs where markupEnabled && cashbackAmount>0 -> { id, soNumber, party(cashbackRecipient||customer name),
+            amount(cashbackAmount), status 'Dikembalikan' if cashbackRefunded else 'Belum Dikembalikan' }.
+          IMPORTANT FIX: added 'finance' to SALES_PATHS (hydrates salesOrder) and POTX_PATHS (hydrates purchaseOrder +
+          commission_records) so the SQLite mirror is populated from MongoDB Atlas for this route (contacts always hydrated).
+          PLEASE TEST (backend only):
+          1) Login admin@lpi.co.id/admin123. GET /api/finance/overview -> 200; response.data has 4 arrays
+             (invoiceSO, invoicePO, komisi, cashback). Spot-check: each invoiceSO row has number/soNumber/party/total/paid/
+             outstanding/status; outstanding == total-paid; status 'Lunas' when outstanding<=0 else 'Belum Lunas'.
+          2) Verify komisi rows have status in {Lunas, Belum Lunas} and amount>0 makes sense vs commission_records.
+          3) Verify cashback rows only include SOs with markupEnabled && cashbackAmount>0, status in {Dikembalikan, Belum Dikembalikan}.
+          4) Login akuntan@lpi.co.id/akuntanlpi123 -> GET /api/finance/overview -> 200 (allowed).
+          5) Login operator@lpi.co.id/operator123 -> GET /api/finance/overview -> 403 Forbidden.
+          Report any 500s, empty arrays when data should exist, or wrong outstanding/status computation.
+
+
   - task: "FEATURE: PO numbering by ORDER month (monthly reset) + manual Edit No PO endpoint + bulk auto-renumber (done) — parity with SO"
     implemented: true
     working: true
@@ -3302,6 +3547,25 @@ backend:
 
 
 frontend:
+  - task: "FEATURE (frontend): Finance/Komisi & Cashback dashboard page (/dashboard/finance) — 4 tabs (Invoice SO, Invoice PO, Komisi, Cashback) + summary cards + per-tab search (Fase 1, view-only)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/dashboard/finance/page.js (new); /app/app/dashboard/dashboard-shell.js (nav 'Keuangan (Komisi & Cashback)' under Akuntansi, roles admin/supervisor/direktur/akuntan, HandCoins icon)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New page consumes GET /api/finance/overview (SWR). 4 summary cards (Piutang SO belum lunas, Utang PO
+          belum lunas, Komisi belum dibayar, Cashback belum dikembalikan). 4 tabs each with search + table:
+          Invoice SO (no invoice/SO/customer/total/dibayar/sisa/status), Invoice PO (same for supplier),
+          Komisi (SO/dropshipper/nilai/status), Cashback (SO/penerima/nilai/status). Status badge green=Lunas/
+          Dikembalikan, amber=Belum. Sidebar menu added under Akuntansi for all roles except operator.
+          Verified via screenshot (admin): page renders, cards populated, Invoice SO table shows data with
+          correct badges. User will test frontend manually (per user instruction). Not sent to frontend agent.
+
   - task: "Item #2: PDF text-overflow bugfix + redesign (tiles + GRAND TOTAL bar) across all documents"
     implemented: true
     working: "NA"

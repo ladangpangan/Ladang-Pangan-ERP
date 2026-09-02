@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
   FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers,
-  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database
+  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -55,6 +55,7 @@ const NAV = [
   {
     section: 'Akuntansi',
     items: [
+      { href: '/dashboard/finance', label: 'Keuangan (Komisi & Cashback)', icon: HandCoins, roles: ['admin','supervisor','direktur','akuntan'] },
       { href: '/dashboard/accounting', label: 'Ringkasan Akuntansi', icon: Landmark, roles: ['akuntan','direktur'] },
       { href: '/dashboard/accounting/cashbook', label: 'Pencatatan Cepat', icon: Receipt, roles: ['admin','supervisor','akuntan','direktur'] },
       { href: '/dashboard/accounting/coa', label: 'Chart of Account', icon: BookOpen, roles: ['akuntan','direktur'] },

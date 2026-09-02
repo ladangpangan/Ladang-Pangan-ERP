@@ -248,7 +248,7 @@ function recommendStockCombo(lots, targetKg) {
 // numbers. Read-only full-replace hydrate => safe on any path (mutations still persist explicitly).
 const SALES_PATHS = new Set([
   'sales-orders', 'tally-outbound',
-  'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts',
+  'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts', 'finance',
 ]);
 
 const INVENTORY_PATHS = new Set([
@@ -265,7 +265,7 @@ const INVENTORY_PATHS = new Set([
 const POTX_PATHS = new Set([
   'purchase-orders', 'purchase-reports', 'grns', 'commissions',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'inventory', 'inventory-reports',
-  'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports',
+  'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports', 'finance',
 ]);
 
 // Phase 6: path[0] prefixes that READ or WRITE fixed_assets / stock_opname(+items).
@@ -1134,6 +1134,24 @@ async function handleRoute(request, { params }) {
       const unpaidAmount = records.filter(r => r.status === 'unpaid').reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
       return { records, payments, summary: { totalCommission, totalPaid, outstanding: Math.round(totalCommission - totalPaid), unpaidAmount: Math.round(unpaidAmount), recordCount: records.length } };
     };
+
+    // GET /finance/overview - consolidated Komisi & Cashback + Invoice SO (piutang) & Invoice PO (utang)
+    // with Lunas/Belum status. Read-only (Fase 1). Roles: all except operator.
+    if (route === '/finance/overview' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const contacts = db.select().from(s.contacts).all();
+      const cmap = {}; for (const c of contacts) cmap[c.id] = c.name || c.code || '-';
+      const sos = db.select().from(s.salesOrder).all();
+      const pos = db.select().from(s.purchaseOrder).all();
+      const invoiceSO = sos.filter(o => o.invoiceNumber).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const invoicePO = pos.filter(o => o.invoiceNumber || Number(o.totalAmount || 0) > 0).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
+      const komisi = cr.map(r => ({ id: r.id, soNumber: r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
+    }
+
 
     // ---------- SEED (idempotent) ----------
     if (route === '/seed' && method === 'POST') {
