@@ -88,6 +88,7 @@ export default function SODetailPage() {
         <div className="flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight">{so.soNumber}</h1>
+            {canEdit && <EditSoNumberButton so={so} onSaved={mutate} />}
             <Badge className={SO_STATUS_COLOR[so.pipelineStatus]}>{so.pipelineStatus}</Badge>
             {so.customer?.isSubscriber && <Badge variant="outline">Subscriber</Badge>}
             {so.fulfillmentType === 'dropship' && <Badge variant="secondary" className="bg-purple-100 text-purple-700">Dropship</Badge>}
@@ -838,6 +839,44 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
             {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Alokasi
           </Button>
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditSoNumberButton({ so, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [soNumber, setSoNumber] = useState(so.soNumber);
+  const [invoiceNumber, setInvoiceNumber] = useState(so.invoiceNumber || '');
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = { soNumber };
+      if (so.invoiceNumber) payload.invoiceNumber = invoiceNumber;
+      const res = await fetch(`/api/sales-orders/${so.id}/so-number`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('No SO diperbarui');
+      setOpen(false); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) { setSoNumber(so.soNumber); setInvoiceNumber(so.invoiceNumber || ''); } }}>
+      <DialogTrigger asChild><Button size="icon" variant="ghost" title="Edit No SO" className="h-7 w-7"><Pencil className="w-3.5 h-3.5 text-blue-600" /></Button></DialogTrigger>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit No Sales Order</DialogTitle>
+          <DialogDescription>Berlaku untuk semua status (termasuk terbayar). Referensi No SO di jurnal akuntansi ikut diperbarui otomatis. Format: SO/TahunBulan/NoUrut.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div><Label className="text-xs">No Sales Order</Label><Input value={soNumber} onChange={e => setSoNumber(e.target.value)} className="font-mono" /></div>
+          {so.invoiceNumber && <div><Label className="text-xs">No Invoice</Label><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} className="font-mono" /></div>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Batal</Button>
+          <Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

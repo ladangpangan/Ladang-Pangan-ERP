@@ -2923,19 +2923,22 @@ async function handleRoute(request, { params }) {
       'Invoiced': [],
       'Cancelled': [],
     };
-    const nextSoNumber = () => {
-      const ym = new Date();
+    const nextSoNumber = (dateArg) => {
+      const ym = dateArg ? new Date(dateArg) : new Date();
       const prefix = `SO/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
       const rows = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(like(s.salesOrder.soNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
       return `${prefix}${String(max + 1).padStart(4, '0')}`;
     };
-    const nextInvoiceNumber = () => {
-      const ym = new Date();
+    const nextInvoiceNumber = (dateArg) => {
+      const ym = dateArg ? new Date(dateArg) : new Date();
       const prefix = `INV/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.salesOrder).where(like(s.salesOrder.invoiceNumber, `${prefix}%`)).get();
-      return `${prefix}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      // Max-suffix (not count) so deletions/gaps never cause a duplicate invoice number.
+      const rows = db.select({ n: s.salesOrder.invoiceNumber }).from(s.salesOrder).where(like(s.salesOrder.invoiceNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      return `${prefix}${String(max + 1).padStart(4, '0')}`;
     };
     const nextSjNumber = () => {
       const ym = new Date();
@@ -3124,8 +3127,8 @@ async function handleRoute(request, { params }) {
 
       const now = new Date();
       const id = uuidv4();
-      const soNumber = body.soNumber || nextSoNumber();
       const orderDate = body.orderDate ? new Date(body.orderDate) : now;
+      const soNumber = body.soNumber || nextSoNumber(orderDate);
       const expectedDate = body.expectedDate ? new Date(body.expectedDate) : null;
       const row = {
         id, soNumber, customerId: body.customerId,
@@ -3765,6 +3768,43 @@ async function handleRoute(request, { params }) {
     }
 
 
+    // POST /sales-orders/:id/so-number - manually change the SO number (and optionally invoice number),
+    // allowed for ANY status (incl. Invoiced/paid) to fix out-of-sequence numbering. Unique-validated.
+    // Accounting journals for this SO are auto-generated (keyed by SO id) and will pick up the new number
+    // on the next ledger sync, so historical journal references update automatically.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'so-number' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      const body = await request.json();
+      const upd = {};
+      if (body.soNumber !== undefined) {
+        const nn = String(body.soNumber || '').trim();
+        if (!nn) return err('No SO tidak boleh kosong', 400);
+        if (nn !== so.soNumber) {
+          const dup = db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(and(eq(s.salesOrder.soNumber, nn), sql`${s.salesOrder.id} != ${id}`)).get();
+          if (dup) return err(`No SO "${nn}" sudah dipakai SO lain`, 400);
+          upd.soNumber = nn;
+        }
+      }
+      if (body.invoiceNumber !== undefined && so.invoiceNumber) {
+        const inn = String(body.invoiceNumber || '').trim();
+        if (inn && inn !== so.invoiceNumber) {
+          const dup = db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(and(eq(s.salesOrder.invoiceNumber, inn), sql`${s.salesOrder.id} != ${id}`)).get();
+          if (dup) return err(`No Invoice "${inn}" sudah dipakai SO lain`, 400);
+          upd.invoiceNumber = inn;
+        }
+      }
+      if (Object.keys(upd).length === 0) return err('Tidak ada perubahan', 400);
+      upd.updatedAt = new Date();
+      db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
+      try { globalThis.__ledgerDirty = true; } catch { /* best-effort */ }
+      const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      return json({ data: updated });
+    }
+
     // POST /sales-orders/:id/status - transition
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'status' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3872,8 +3912,8 @@ async function handleRoute(request, { params }) {
         }
         upd.totalAmount = subtotal - discountTotal + ((so.shippingBearer === 'buyer') ? Number(so.shippingCost || 0) : 0);
         upd.discountTotal = discountTotal;
-        if (!so.invoiceNumber) upd.invoiceNumber = nextInvoiceNumber();
-        if (!so.invoiceDate) upd.invoiceDate = new Date();
+        if (!so.invoiceNumber) { upd.invoiceDate = so.invoiceDate ? new Date(so.invoiceDate) : new Date(); upd.invoiceNumber = nextInvoiceNumber(upd.invoiceDate); }
+        if (!so.invoiceDate && !upd.invoiceDate) upd.invoiceDate = new Date();
         if (!so.dueDate && so.paymentTerm && /TOP (\d+)/.test(so.paymentTerm)) {
           const days = Number(so.paymentTerm.match(/TOP (\d+)/)[1]);
           upd.dueDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
