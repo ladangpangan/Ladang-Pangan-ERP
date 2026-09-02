@@ -16,8 +16,8 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2, TrendingDown } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2, TrendingDown, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
@@ -65,6 +65,7 @@ export default function PODetailPage() {
         <div className="flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight">{po.poNumber}</h1>
+            {canEdit && <EditPoNumberButton po={po} onSaved={mutate} />}
             <Badge className={STATUS_COLOR[po.pipelineStatus]}>{po.pipelineStatus}</Badge>
             <Badge variant="outline">{po.poType}</Badge>
             {po.method && <Badge variant="outline">{po.method}</Badge>}
@@ -172,6 +173,45 @@ function SummaryCard({ label, value, sub, color = 'slate' }) {
     </CardContent></Card>
   );
 }
+
+function EditPoNumberButton({ po, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [poNumber, setPoNumber] = useState(po.poNumber);
+  const [invoiceNumber, setInvoiceNumber] = useState(po.invoiceNumber || '');
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = { poNumber };
+      if (po.invoiceNumber) payload.invoiceNumber = invoiceNumber;
+      const res = await fetch(`/api/purchase-orders/${po.id}/po-number`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('No PO diperbarui');
+      setOpen(false); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) { setPoNumber(po.poNumber); setInvoiceNumber(po.invoiceNumber || ''); } }}>
+      <DialogTrigger asChild><Button size="icon" variant="ghost" title="Edit No PO" className="h-7 w-7"><Pencil className="w-3.5 h-3.5 text-blue-600" /></Button></DialogTrigger>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit No Purchase Order</DialogTitle>
+          <DialogDescription>Berlaku untuk semua status. Referensi No PO di jurnal akuntansi ikut diperbarui otomatis. Format: PO/TahunBulan/NoUrut.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div><Label className="text-xs">No Purchase Order</Label><Input value={poNumber} onChange={e => setPoNumber(e.target.value)} className="font-mono" /></div>
+          {po.invoiceNumber && <div><Label className="text-xs">No Invoice</Label><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} className="font-mono" /></div>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Batal</Button>
+          <Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 function InfoTab({ po, onSaved, canEdit }) {
   const rows = [

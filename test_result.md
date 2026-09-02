@@ -109,6 +109,212 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "FEATURE: PO numbering by ORDER month (monthly reset) + manual Edit No PO endpoint + bulk auto-renumber (done) — parity with SO"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (nextPoNumber(orderDate); dropship auto-PO uses SO orderDate; new POST /purchase-orders/:id/po-number); /app/app/dashboard/purchase-orders/[id]/page.js (EditPoNumberButton)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL TESTS PASSED (4/4, 100%)
+          
+          Comprehensive backend testing completed for the PO numbering feature.
+          All three requirements verified: manual edit endpoint, ORDER date-based generator, and no duplicates.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with 4 comprehensive test scenarios
+          - Test file: /app/backend_test_po_numbering.py
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as admin (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie captured: __Secure-better-auth.session_token ✓
+          
+          ✅ TEST 2 — Manual Edit No PO endpoint (POST /api/purchase-orders/:id/po-number) (PASSED):
+             - Selected test PO: PO/202608/0002 (ID: ebb06950-57e4-4780-b120-4716a0ce65e0) ✓
+             - Second PO for duplicate test: PO/202608/0001 ✓
+             
+             **Step 1: Change PO number to test value**
+             - POST /api/purchase-orders/:id/po-number {"poNumber":"PO/209912/9999"} → 200 OK ✓
+             - Response poNumber: "PO/209912/9999" ✓
+             
+             **Step 2: Verify persistence**
+             - GET /api/purchase-orders/:id → 200 OK ✓
+             - Persisted poNumber: "PO/209912/9999" ✓
+             
+             **Step 3: Duplicate rejection**
+             - POST /api/purchase-orders/:id/po-number {"poNumber":"PO/202608/0001"} → 400 Bad Request ✓
+             - Error message: "No PO \"PO/202608/0001\" sudah dipakai PO lain" ✓
+             - First PO unchanged after failed duplicate attempt ✓
+             
+             **Step 4: Revert to original**
+             - POST /api/purchase-orders/:id/po-number {"poNumber":"PO/202608/0002"} → 200 OK ✓
+             - Response poNumber: "PO/202608/0002" ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Manual edit endpoint working correctly
+             ✅ Changes persist to database
+             ✅ Duplicate validation working (400 error)
+             ✅ Revert successful
+             ✅ NO HTTP 500 errors
+          
+          ✅ TEST 3 — Generator uses ORDER date (not creation/today) (PASSED):
+             - Selected supplier: SUP-001 ✓
+             - Selected product: Parting 12 (80gr) ✓
+             
+             **Step 1: Create PO with past orderDate**
+             - POST /api/purchase-orders with orderDate="2026-05-10" → 200 OK ✓
+             - Generated PO: PO/202605/0001 (ID: 5386161b-35a3-42ca-9440-776a5034859b) ✓
+             
+             **Step 2: Verify ORDER month used (not current month)**
+             - Expected prefix: PO/202605/ (May 2026) ✓
+             - Actual poNumber: PO/202605/0001 ✓
+             - Generator correctly uses ORDER date, NOT creation date ✓
+             
+             **Step 3: Clean up test PO**
+             - DELETE /api/purchase-orders/:id → 200 OK ✓
+             - Verified deletion: GET returned 404 ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ Generator uses ORDER date for month prefix
+             ✅ Created PO with orderDate=2026-05-10 got PO/202605/0001
+             ✅ NOT using current month (August/September 2026)
+             ✅ Test PO deleted successfully (no residual data)
+          
+          ✅ TEST 4 — No duplicates / sequential PO numbers (PASSED):
+             - GET /api/purchase-orders → 200 OK ✓
+             - Found: 14 purchase orders ✓
+             
+             **Step 1: Check for duplicates**
+             - Collected 14 PO numbers ✓
+             - Unique PO numbers: 14 ✓
+             - NO duplicates found ✓
+             
+             **Step 2: Check August 2026 sequence**
+             - August POs: 6 (PO/202608/0001-0006) ✓
+             - Sequences: [1, 2, 3, 4, 5, 6] ✓
+             - Perfectly sequential (0 gaps) ✓
+             - NO duplicate sequences ✓
+             
+             **Step 3: Check September 2026 sequence**
+             - September POs: 8 (PO/202609/0001-0008) ✓
+             - Sequences: [1, 2, 3, 4, 5, 6, 7, 8] ✓
+             - Perfectly sequential (0 gaps) ✓
+             - NO duplicate sequences ✓
+             
+             **CRITICAL VERIFICATION:**
+             ✅ All PO numbers are unique (no duplicates)
+             ✅ August 2026 sequences are perfectly sequential (1-6, 0 gaps)
+             ✅ September 2026 sequences are perfectly sequential (1-8, 0 gaps)
+             ✅ Bulk auto-renumber worked correctly
+          
+          === KEY FINDINGS ===
+          
+          ✅ **POST /api/purchase-orders/:id/po-number endpoint (lines 2551-2584)**:
+             - Manual PO number edit: WORKING ✓
+             - Duplicate validation: WORKING ✓
+             - Persistence to MongoDB: WORKING ✓
+             - Returns 200 for valid requests, 400 for duplicates
+             - NO HTTP 500 errors
+          
+          ✅ **nextPoNumber(orderDate) generator (lines 2169-2176)**:
+             - Uses ORDER date for month prefix: WORKING ✓
+             - Format: PO/YYYYMM/NNNN (correct) ✓
+             - Max-suffix logic prevents duplicates: WORKING ✓
+             - Monthly reset: WORKING ✓
+          
+          ✅ **Bulk auto-renumber results**:
+             - 14 POs total (6 in August 2026, 8 in September 2026) ✓
+             - August: PO/202608/0001-0006 (perfectly sequential) ✓
+             - September: PO/202609/0001-0008 (perfectly sequential) ✓
+             - NO duplicates ✓
+             - All POs have unique numbers ✓
+          
+          ✅ **Data Integrity**:
+             - All changes persisted to MongoDB
+             - Duplicate validation prevents conflicts
+             - Test PO created and deleted (no residual data)
+             - NO data corruption
+          
+          ✅ **HTTP Status Codes**:
+             - All valid requests: 200 OK
+             - Duplicate requests: 400 Bad Request
+             - Deleted PO: 404 Not Found
+             - NO 500 errors encountered
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test PO (Manual Edit):
+          - Original: PO/202608/0002 (ID: ebb06950-57e4-4780-b120-4716a0ce65e0)
+          - Changed to: PO/209912/9999
+          - Reverted to: PO/202608/0002
+          
+          Test PO (ORDER date):
+          - orderDate: 2026-05-10
+          - Generated: PO/202605/0001 (ID: 5386161b-35a3-42ca-9440-776a5034859b)
+          - Deleted: 404 confirmed
+          
+          August 2026 POs:
+          - Count: 6 POs
+          - Range: PO/202608/0001 to PO/202608/0006
+          - Gaps: 0 (perfectly sequential)
+          - Duplicates: NONE
+          
+          September 2026 POs:
+          - Count: 8 POs
+          - Range: PO/202609/0001 to PO/202609/0008
+          - Gaps: 0 (perfectly sequential)
+          - Duplicates: NONE
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All tests passed.
+          Manual edit endpoint working correctly.
+          Generator uses ORDER date (not creation date).
+          No duplicate PO numbers.
+          August and September sequences are perfectly sequential.
+          All changes persist correctly.
+          No HTTP 500 errors.
+          
+          Test Coverage: 4/4 tests passed (100%)
+          - TEST 1: Login as admin ✓
+          - TEST 2: Manual Edit No PO endpoint ✓
+          - TEST 3: Generator uses ORDER date ✓
+          - TEST 4: No duplicates / sequential ✓
+          
+          === CONCLUSION ===
+          
+          ✅ FEATURE VERIFIED SUCCESSFUL
+          The PO numbering feature is working correctly. Manual edit endpoint allows changing
+          PO numbers with duplicate validation. Generator correctly uses ORDER date (not creation
+          date) for month prefix. All PO numbers are unique with perfectly sequential numbering.
+          Feature ready for production.
+      
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Same fix as SO, applied to Purchase Orders:
+          1) nextPoNumber(orderDate) -> prefix month from PO ORDER date (was new Date()). Create call site
+             passes orderDate; dropship auto-PO now uses the linked SO's orderDate for both number & orderDate.
+          2) NEW POST /purchase-orders/:id/po-number (admin/supervisor): change poNumber (+ optional
+             invoiceNumber) for ANY status; unique-validated; sets ledger dirty so PO journals (keyed by PO id,
+             referencing po.po_number) rebuild with new number on next sync. Persisted to Mongo via
+             potxMongo.persistSnapshotDiff. Frontend: pencil "Edit No PO" next to PO number in detail header.
+          3) BULK AUTO-RENUMBER executed on MongoDB: 14 POs grouped by order-month, 6 fixed. Result:
+             PO/202608/0001-0006 + PO/202609/0001-0008, NO duplicates. Backup at /app/backups/po_number_backup_*.json.
+          SMOKE-TESTED OK: change(200)->duplicate(400)->revert(200); list sequential & unique.
+          PLEASE TEST (backend): POST /api/purchase-orders/<id>/po-number change->duplicate(400)->revert; and
+          create a NEW PO with orderDate in a PAST month -> generated poNumber prefix follows that month; delete it.
+
+
   - task: "FEATURE: SO numbering by ORDER month + INV by invoice month (monthly reset) + manual Edit No SO endpoint + bulk auto-renumber (done)"
     implemented: true
     working: true
