@@ -317,7 +317,15 @@ export default function FinancePage() {
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
                         <TableCell className="text-right text-emerald-700">{rp(r.paid)}</TableCell>
-                        <TableCell className="text-right text-red-600 font-semibold">{rp(r.outstanding)}</TableCell>
+                        <TableCell className="text-right">
+                          {r.outstanding < 0 ? (
+                            <span className="text-amber-600 font-semibold">{rp(Math.abs(r.outstanding))}<span className="block text-[10px] font-normal text-muted-foreground">cashback blm dikembalikan</span></span>
+                          ) : r.outstanding > 0 ? (
+                            <span className="text-red-600 font-semibold">{rp(r.outstanding)}</span>
+                          ) : (
+                            <span className="text-muted-foreground">Rp 0</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
                       </TableRow>
                     ))}
