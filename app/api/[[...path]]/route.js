@@ -3905,6 +3905,15 @@ async function handleRoute(request, { params }) {
           upd.invoiceNumber = inn;
         }
       }
+      // Sinkronisasi otomatis: bila No SO diubah dan SO ini punya invoice, nomor invoice IKUT
+      // dicerminkan (SO/..->INV/..) selama user tidak memberi nomor invoice manual secara eksplisit.
+      if (upd.soNumber && so.invoiceNumber && body.invoiceNumber === undefined) {
+        const mirror = String(upd.soNumber).replace(/^SO\//, 'INV/');
+        if (mirror !== so.invoiceNumber) {
+          const dup = db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(and(eq(s.salesOrder.invoiceNumber, mirror), sql`${s.salesOrder.id} != ${id}`)).get();
+          if (!dup) upd.invoiceNumber = mirror;
+        }
+      }
       if (Object.keys(upd).length === 0) return err('Tidak ada perubahan', 400);
       upd.updatedAt = new Date();
       db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
@@ -4020,7 +4029,12 @@ async function handleRoute(request, { params }) {
         }
         upd.totalAmount = subtotal - discountTotal + ((so.shippingBearer === 'buyer') ? Number(so.shippingCost || 0) : 0);
         upd.discountTotal = discountTotal;
-        if (!so.invoiceNumber) { upd.invoiceDate = so.invoiceDate ? new Date(so.invoiceDate) : new Date(); upd.invoiceNumber = nextInvoiceNumber(upd.invoiceDate); }
+        // Nomor invoice MENGIKUTI (cermin) nomor SO agar sinkron & tidak membingungkan:
+        // SO/YYYYMM/NNNN -> INV/YYYYMM/NNNN. Fallback ke generator bila SO number kosong (jarang).
+        if (!so.invoiceNumber) {
+          upd.invoiceDate = so.invoiceDate ? new Date(so.invoiceDate) : new Date();
+          upd.invoiceNumber = so.soNumber ? String(so.soNumber).replace(/^SO\//, 'INV/') : nextInvoiceNumber(upd.invoiceDate);
+        }
         if (!so.invoiceDate && !upd.invoiceDate) upd.invoiceDate = new Date();
         if (!so.dueDate && so.paymentTerm && /TOP (\d+)/.test(so.paymentTerm)) {
           const days = Number(so.paymentTerm.match(/TOP (\d+)/)[1]);
