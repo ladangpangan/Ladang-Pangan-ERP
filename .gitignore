@@ -94,6 +94,4 @@ node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
 credentials.json
 *.key
 .credentials
-.env
-.env.*
-*.env
+# (Do NOT add .env / .env.* / *.env here — they must stay committed for Emergent deployment.)
