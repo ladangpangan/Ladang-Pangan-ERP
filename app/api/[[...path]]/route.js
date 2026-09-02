@@ -1161,7 +1161,19 @@ async function handleRoute(request, { params }) {
       const pos = db.select().from(s.purchaseOrder).all();
       // Peta id SO -> nomor SO TERKINI (nomor bisa berubah akibat renumber; commission_records.so_number bisa basi).
       const somap = {}; for (const o of sos) somap[o.id] = o.soNumber;
-      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.invoiceDate || o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.invoiceDate || o.orderDate)).map(o => {
+        const total = Number(o.totalAmount || 0);
+        const paid = Number(o.paidAmount || 0);
+        const cb = (o.markupEnabled && Number(o.cashbackAmount || 0) > 0) ? Number(o.cashbackAmount || 0) : 0;
+        const refunded = (cb > 0 && o.cashbackRefunded) ? cb : 0;
+        // Sisa piutang memperhitungkan cashback: kelebihan bayar akibat faktur di-up (customer transfer total+cashback)
+        // baru dianggap "settle" (Sisa 0) setelah cashback dikembalikan ke penerima. Sebelum dikembalikan, Sisa
+        // negatif = cashback yang belum dikembalikan. Add-back DIBATASI sebesar kelebihan bayar riil (overpayment)
+        // agar SO yang belum/kurang dibayar tidak ikut menggelembung.
+        const overpay = Math.max(0, paid - total);
+        const out = Math.round(total - paid + Math.min(refunded, overpay));
+        return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
+      });
       const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.invoiceDate || o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
       const komisi = cr.filter(r => inRange(r.createdAt)).map(r => ({ id: r.id, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
