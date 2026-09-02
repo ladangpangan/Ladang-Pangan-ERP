@@ -1161,7 +1161,10 @@ async function handleRoute(request, { params }) {
       const pos = db.select().from(s.purchaseOrder).all();
       // Peta id SO -> nomor SO TERKINI (nomor bisa berubah akibat renumber; commission_records.so_number bisa basi).
       const somap = {}; for (const o of sos) somap[o.id] = o.soNumber;
-      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.invoiceDate || o.orderDate)).map(o => {
+      // Peta id SO -> tanggal ORDER (tanggal operasi). Filter periode memakai tanggal order agar konsisten
+      // dengan bulan pada nomor dokumen (SO/202608 = operasi Agustus), bukan tanggal invoice/record dibuat.
+      const soDate = {}; for (const o of sos) soDate[o.id] = o.orderDate;
+      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.orderDate)).map(o => {
         const total = Number(o.totalAmount || 0);
         const paid = Number(o.paidAmount || 0);
         const cb = (o.markupEnabled && Number(o.cashbackAmount || 0) > 0) ? Number(o.cashbackAmount || 0) : 0;
@@ -1174,10 +1177,10 @@ async function handleRoute(request, { params }) {
         const out = Math.round(total - paid + Math.min(refunded, overpay));
         return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
       });
-      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.invoiceDate || o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
-      const komisi = cr.filter(r => inRange(r.createdAt)).map(r => ({ id: r.id, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
-      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.invoiceDate || o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      const komisi = cr.filter(r => inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
     }
 

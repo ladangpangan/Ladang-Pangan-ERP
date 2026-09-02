@@ -253,6 +253,7 @@ export default function FinancePage() {
         <CardContent className="p-4 flex flex-wrap items-end gap-3">
           <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <CalendarRange className="w-4 h-4" /> Filter Periode
+            <span className="text-[11px] font-normal">(berdasarkan tanggal order)</span>
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Dari</Label>
