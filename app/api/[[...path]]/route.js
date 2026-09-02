@@ -1140,17 +1140,69 @@ async function handleRoute(request, { params }) {
     if (route === '/finance/overview' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      // Filter periode opsional (?from=YYYY-MM-DD&to=YYYY-MM-DD) berdasarkan tanggal invoice/order/komisi.
+      const url = new URL(request.url);
+      const fromStr = url.searchParams.get('from');
+      const toStr = url.searchParams.get('to');
+      const fromMs = fromStr ? new Date(fromStr + 'T00:00:00').getTime() : null;
+      const toMs = toStr ? new Date(toStr + 'T23:59:59').getTime() : null;
+      const hasFilter = fromMs != null || toMs != null;
+      const ms = (d) => { if (!d) return null; const t = (d instanceof Date) ? d.getTime() : new Date(d).getTime(); return isNaN(t) ? null : t; };
+      const inRange = (d) => {
+        const t = ms(d);
+        if (t == null) return !hasFilter; // baris tanpa tanggal hanya ikut bila tidak ada filter
+        if (fromMs != null && t < fromMs) return false;
+        if (toMs != null && t > toMs) return false;
+        return true;
+      };
       const contacts = db.select().from(s.contacts).all();
-      const cmap = {}; for (const c of contacts) cmap[c.id] = c.name || c.code || '-';
+      const cmap = {}; for (const c of contacts) cmap[c.id] = c.displayName || c.companyName || c.code || '-';
       const sos = db.select().from(s.salesOrder).all();
       const pos = db.select().from(s.purchaseOrder).all();
-      const invoiceSO = sos.filter(o => o.invoiceNumber).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
-      const invoicePO = pos.filter(o => o.invoiceNumber || Number(o.totalAmount || 0) > 0).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.invoiceDate || o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.invoiceDate || o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
-      const komisi = cr.map(r => ({ id: r.id, soNumber: r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
-      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      const komisi = cr.filter(r => inRange(r.createdAt)).map(r => ({ id: r.id, soNumber: r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.invoiceDate || o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
     }
+
+    // POST /finance/commissions/pay — catat pembayaran komisi dropshipper dari dashboard Keuangan.
+    // Body: { commissionRecordId, accountCode, paymentDate?, method?, reference?, notes? }.
+    // Menandai record 'paid', membuat commission_payment (dgn account_code), lalu jurnal
+    // Dr Beban Komisi / Cr Kas-Bank digenerate otomatis oleh engine akuntansi (COMMISSION_PAY).
+    if (route === '/finance/commissions/pay' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.commissionRecordId) return err('commissionRecordId wajib diisi', 400);
+      const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, body.commissionRecordId)).get();
+      if (!rec) return err('Record komisi tidak ditemukan', 404);
+      if (rec.status === 'paid') return err('Komisi ini sudah dibayar', 400);
+      // Validasi akun kas/bank yang dipilih (harus akun 1-11xx yang dapat diposting)
+      let accountCode = body.accountCode ? String(body.accountCode) : null;
+      if (accountCode) {
+        try {
+          const all = await coaMongo.coaList({ includeArchived: false });
+          const ok = (all || []).some(a => a.code === accountCode && String(a.code || '').startsWith('1-11'));
+          if (!ok) return err('Akun kas/bank tidak valid', 400);
+        } catch { /* best-effort: terima apa adanya bila COA gagal dibaca */ }
+      }
+      const now = new Date();
+      const payId = uuidv4();
+      const amount = Number(rec.commissionAmount || 0);
+      db.insert(s.commissionPayments).values({
+        id: payId, dropshipperId: rec.dropshipperId,
+        paymentDate: body.paymentDate ? new Date(body.paymentDate) : now,
+        amount, method: body.method || 'Transfer', accountCode,
+        reference: body.reference || null, notes: body.notes || null,
+        createdBy: session.user.email, createdAt: now,
+      }).run();
+      db.update(s.commissionRecords).set({ status: 'paid', paymentId: payId, paidAt: now }).where(eq(s.commissionRecords.id, rec.id)).run();
+      try { globalThis.__ledgerDirty = true; } catch { /* best-effort */ }
+      return json({ data: { paymentId: payId, commissionRecordId: rec.id, amount, accountCode, status: 'paid' } }, { status: 201 });
+    }
+
 
 
     // ---------- SEED (idempotent) ----------
@@ -4302,6 +4354,15 @@ async function handleRoute(request, { params }) {
       const file = form.get('file');
       const note = form.get('note') ? String(form.get('note')).slice(0, 500) : null;
       const refundedAt = form.get('refundedAt') ? String(form.get('refundedAt')).slice(0, 30) : new Date().toISOString().slice(0, 10);
+      // Akun kas/bank sumber pengembalian (untuk jurnal Dr Beban Komisi / Cr Kas-Bank).
+      let accountCode = form.get('accountCode') ? String(form.get('accountCode')) : null;
+      if (accountCode) {
+        try {
+          const all = await coaMongo.coaList({ includeArchived: false });
+          const ok = (all || []).some(a => a.code === accountCode && String(a.code || '').startsWith('1-11'));
+          if (!ok) return err('Akun kas/bank tidak valid', 400);
+        } catch { /* best-effort */ }
+      }
       const set = {
         cashbackRefunded: true,
         cashbackRefundedAt: refundedAt,
@@ -4309,6 +4370,7 @@ async function handleRoute(request, { params }) {
         cashbackRefundedBy: session.user?.email || session.user?.id || null,
         updatedAt: new Date(),
       };
+      if (accountCode) set.cashbackAccount = accountCode;
       // File bukti opsional
       if (file && typeof file.arrayBuffer === 'function') {
         const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];

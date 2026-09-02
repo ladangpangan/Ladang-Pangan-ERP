@@ -552,10 +552,9 @@ function PaymentsTab({ po, onSaved, canEdit }) {
   const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (open && accounts.length === 0) {
-      fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
-    }
-  }, [open]);
+    fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
+  }, []);
+  const accName = (code) => { if (!code) return '-'; const a = accounts.find(x => x.code === code); return a ? `${a.code} · ${a.name}` : code; };
   const create = async () => {
     if (!form.amount) return toast.error('Nominal wajib diisi');
     setSaving(true);
@@ -618,12 +617,13 @@ function PaymentsTab({ po, onSaved, canEdit }) {
       <CardContent>
         {(po.payments || []).length === 0 ? <div className="text-center py-8 text-muted-foreground text-sm">Belum ada pembayaran</div> :
           <Table>
-            <TableHeader><TableRow><TableHead>Tanggal</TableHead><TableHead>Metode</TableHead><TableHead>Referensi</TableHead><TableHead>Tipe</TableHead><TableHead className="text-right">Nominal</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Tanggal</TableHead><TableHead>Metode</TableHead><TableHead>Rekening</TableHead><TableHead>Referensi</TableHead><TableHead>Tipe</TableHead><TableHead className="text-right">Nominal</TableHead></TableRow></TableHeader>
             <TableBody>
               {po.payments.map(p => (
                 <TableRow key={p.id}>
                   <TableCell className="text-sm">{format(new Date(p.paymentDate), 'dd MMM yyyy')}</TableCell>
                   <TableCell>{p.method}</TableCell>
+                  <TableCell className="text-xs">{accName(p.accountCode)}</TableCell>
                   <TableCell className="font-mono text-xs">{p.reference || '-'}</TableCell>
                   <TableCell>{p.isDp ? <Badge variant="outline">DP</Badge> : <Badge variant="secondary">Pelunasan</Badge>}</TableCell>
                   <TableCell className="text-right font-semibold">Rp {Number(p.amount).toLocaleString('id-ID')}</TableCell>
