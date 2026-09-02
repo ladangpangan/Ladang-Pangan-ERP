@@ -2166,8 +2166,8 @@ async function handleRoute(request, { params }) {
       'Selesai': [],
       'Dibatalkan': [],
     };
-    const nextPoNumber = () => {
-      const ym = new Date();
+    const nextPoNumber = (dateArg) => {
+      const ym = dateArg ? new Date(dateArg) : new Date();
       const prefix = `PO/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
       const rows = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(like(s.purchaseOrder.poNumber, `${prefix}%`)).all();
       let max = 0;
@@ -2361,8 +2361,8 @@ async function handleRoute(request, { params }) {
       if (!body.supplierId || !Array.isArray(body.items) || body.items.length === 0) return err('supplierId and items required');
       const now = new Date();
       const id = uuidv4();
-      const poNumber = body.poNumber || nextPoNumber();
       const orderDate = body.orderDate ? new Date(body.orderDate) : now;
+      const poNumber = body.poNumber || nextPoNumber(orderDate);
       const expectedDate = body.expectedDate ? new Date(body.expectedDate) : null;
       const row = {
         id, poNumber,
@@ -2547,6 +2547,42 @@ async function handleRoute(request, { params }) {
       db.delete(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).run();
       return json({ ok: true });
     }
+
+    // POST /purchase-orders/:id/po-number - manually change the PO number (and optional invoice number)
+    // for ANY status. Unique-validated. PO journals (keyed by PO id) auto-follow on next ledger sync.
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'po-number' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
+      const id = path[1];
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
+      if (!po) return err('Not found', 404);
+      const body = await request.json();
+      const upd = {};
+      if (body.poNumber !== undefined) {
+        const nn = String(body.poNumber || '').trim();
+        if (!nn) return err('No PO tidak boleh kosong', 400);
+        if (nn !== po.poNumber) {
+          const dup = db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(and(eq(s.purchaseOrder.poNumber, nn), sql`${s.purchaseOrder.id} != ${id}`)).get();
+          if (dup) return err(`No PO "${nn}" sudah dipakai PO lain`, 400);
+          upd.poNumber = nn;
+        }
+      }
+      if (body.invoiceNumber !== undefined && po.invoiceNumber) {
+        const inn = String(body.invoiceNumber || '').trim();
+        if (inn && inn !== po.invoiceNumber) {
+          const dup = db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(and(eq(s.purchaseOrder.invoiceNumber, inn), sql`${s.purchaseOrder.id} != ${id}`)).get();
+          if (dup) return err(`No Invoice "${inn}" sudah dipakai PO lain`, 400);
+          upd.invoiceNumber = inn;
+        }
+      }
+      if (Object.keys(upd).length === 0) return err('Tidak ada perubahan', 400);
+      upd.updatedAt = new Date();
+      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, id)).run();
+      try { globalThis.__ledgerDirty = true; } catch { /* best-effort */ }
+      const updated = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
+      return json({ data: updated });
+    }
+
 
     // POST /purchase-orders/:id/status - transition
     if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'status' && method === 'POST') {
@@ -3164,11 +3200,11 @@ async function handleRoute(request, { params }) {
       if (created.fulfillmentType === 'dropship' && body.supplierId) {
         try {
           const poId = uuidv4();
-          const poNum = nextPoNumber();
+          const poNum = nextPoNumber(orderDate);
           const nowP = new Date();
           db.insert(s.purchaseOrder).values({
             id: poId, poNumber: poNum, supplierId: body.supplierId,
-            poType: 'Produk Jadi', method: null, orderDate: nowP, expectedDate: expectedDate,
+            poType: 'Produk Jadi', method: null, orderDate: orderDate, expectedDate: expectedDate,
             pipelineStatus: 'Draft', isDropship: true, dropshipCustomerId: body.customerId,
             salesOrderId: id,
             additionalCost: 0, dpAmount: 0, notes: `Auto dari SO Dropship ${soNumber}`,
