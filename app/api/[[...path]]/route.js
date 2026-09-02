@@ -3148,11 +3148,15 @@ async function handleRoute(request, { params }) {
       const poItems = db.select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.id)).all();
       const grnId = uuidv4();
       const totalRecv = poItems.reduce((a, it) => a + (shippedByProduct[it.productId] || 0), 0);
-      const sjRef = db.select({ n: s.suratJalan.sjNumber }).from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, soId)).orderBy(desc(s.suratJalan.createdAt)).get();
+      const sjRow = db.select({ n: s.suratJalan.sjNumber, d: s.suratJalan.deliveryDate }).from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, soId)).orderBy(desc(s.suratJalan.deliveryDate)).get();
+      // Tanggal diterima GRN PO dropship = tanggal diterima SO: prioritas Penerimaan Customer (SO receipt),
+      // lalu tanggal kirim Surat Jalan, terakhir tanggal sekarang.
+      const soReceipt = db.select({ d: s.salesOrderReceipts.receivedDate }).from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, soId)).orderBy(desc(s.salesOrderReceipts.receivedDate)).get();
+      const recvDate = (soReceipt?.d instanceof Date ? soReceipt.d : (sjRow?.d instanceof Date ? sjRow.d : new Date()));
       db.insert(s.grn).values({
         id: grnId, grnNumber: nextGrnNumber(), purchaseOrderId: po.id,
-        receivedDate: new Date(), receivedBy: userName || 'Sistem (Auto SJ)',
-        sjNumber: sjRef?.n || null, driverName: null, vehicleNumber: null,
+        receivedDate: recvDate, receivedBy: userName || 'Sistem (Auto SJ)',
+        sjNumber: sjRow?.n || null, driverName: null, vehicleNumber: null,
         totalReceivedWeight: totalRecv, notes: tag, status: 'confirmed', createdAt: new Date(),
       }).run();
       for (const it of poItems) {
@@ -3272,7 +3276,11 @@ async function handleRoute(request, { params }) {
       if (created.fulfillmentType === 'dropship' && body.supplierId) {
         try {
           const poId = uuidv4();
-          const poNum = nextPoNumber(orderDate);
+          // Nomor PO dropship MENGIKUTI (cermin) nomor SO agar sinkron: SO/YYYYMM/NNNN -> PO/YYYYMM/NNNN.
+          // Fallback ke generator bila nomor cermin sudah dipakai PO lain.
+          let poNum = soNumber.replace(/^SO\//, 'PO/');
+          const dupPo = db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(eq(s.purchaseOrder.poNumber, poNum)).get();
+          if (dupPo) poNum = nextPoNumber(orderDate);
           const nowP = new Date();
           db.insert(s.purchaseOrder).values({
             id: poId, poNumber: poNum, supplierId: body.supplierId,
@@ -3917,6 +3925,16 @@ async function handleRoute(request, { params }) {
       if (Object.keys(upd).length === 0) return err('Tidak ada perubahan', 400);
       upd.updatedAt = new Date();
       db.update(s.salesOrder).set(upd).where(eq(s.salesOrder.id, id)).run();
+      // Sinkron nomor PO dropship tertaut: bila No SO berubah & SO ini dropship punya autoPoId,
+      // nomor PO ikut dicerminkan (SO/..->PO/..) selama tidak bentrok dgn PO lain.
+      if (upd.soNumber && so.fulfillmentType === 'dropship' && so.autoPoId) {
+        const mirrorPo = String(upd.soNumber).replace(/^SO\//, 'PO/');
+        const linkedPo = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, so.autoPoId)).get();
+        if (linkedPo && linkedPo.poNumber !== mirrorPo) {
+          const dupPo = db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(and(eq(s.purchaseOrder.poNumber, mirrorPo), sql`${s.purchaseOrder.id} != ${so.autoPoId}`)).get();
+          if (!dupPo) db.update(s.purchaseOrder).set({ poNumber: mirrorPo, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, so.autoPoId)).run();
+        }
+      }
       try { globalThis.__ledgerDirty = true; } catch { /* best-effort */ }
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       return json({ data: updated });
