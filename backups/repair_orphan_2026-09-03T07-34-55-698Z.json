@@ -1,0 +1,150 @@
+{
+  "so35_so_item_stocks": [
+    {
+      "_id": "6a9921d8465b6a688e4eb721",
+      "id": "b82bd4fd-cda4-4181-996b-9a75fa0bf518",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "60c531c0-ac79-46ba-b6b5-3602545af1e1",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260522",
+      "weight": 1.85,
+      "quantity": 1,
+      "hpp_per_kg": 39100,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb722",
+      "id": "767c864f-0f0d-44ff-9373-f7b8800628ad",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "6a5161aa-470b-424d-9ca2-4bab8e7e3dc1",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260525",
+      "weight": 1.55,
+      "quantity": 1,
+      "hpp_per_kg": 39100,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb723",
+      "id": "8adbb80c-f777-491c-806c-914c097f0c68",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "bf2fd26d-38a6-48ba-bf3d-aa0ab813baa1",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260808-Returr",
+      "weight": 25.4,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb724",
+      "id": "4eeb23a6-053b-42a1-9081-cff936ea3482",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "5d53b2f7-2ae6-410e-82f8-215d6fbdfb64",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260809-Retur",
+      "weight": 25.1,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb725",
+      "id": "d91d9dc8-141d-4aac-9bae-b4cf836201c6",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "88e31244-7bfe-4eab-99d5-99db4e0815be",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260810-Retur",
+      "weight": 27.05,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb726",
+      "id": "3787d866-d58f-4418-91a8-5081529b8851",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "ed8c1e4a-6cc1-4286-9ba4-511946729137",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260811",
+      "weight": 25.9,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb727",
+      "id": "a16197e4-8ada-4085-8235-63e1c41d765a",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "269eec61-7cd5-4b5e-8c3b-5796e9258775",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260812",
+      "weight": 24.95,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    },
+    {
+      "_id": "6a9921d8465b6a688e4eb728",
+      "id": "3cb24802-b481-4670-bd16-b366401e4021",
+      "sales_order_id": "f2f9b4a2-d5b4-4143-82ab-02102221eb8c",
+      "so_item_id": "b889c80f-c573-493f-8bdd-5fa252268fac",
+      "stock_id": "6131e413-798a-45c6-b39c-3630c2cfa731",
+      "product_id": "239f4966-2308-45f1-beba-49d69c99d851",
+      "kode_simpan": "620260836",
+      "weight": 23.2,
+      "quantity": 1,
+      "hpp_per_kg": 45547,
+      "created_at": 1788420360
+    }
+  ],
+  "orphanLots": [
+    {
+      "id": "6a5161aa-470b-424d-9ca2-4bab8e7e3dc1",
+      "kode": "620260525",
+      "status": "allocated"
+    },
+    {
+      "id": "60c531c0-ac79-46ba-b6b5-3602545af1e1",
+      "kode": "620260522",
+      "status": "allocated"
+    },
+    {
+      "id": "bf2fd26d-38a6-48ba-bf3d-aa0ab813baa1",
+      "kode": "620260808-Returr",
+      "status": "allocated"
+    },
+    {
+      "id": "5d53b2f7-2ae6-410e-82f8-215d6fbdfb64",
+      "kode": "620260809-Retur",
+      "status": "allocated"
+    },
+    {
+      "id": "88e31244-7bfe-4eab-99d5-99db4e0815be",
+      "kode": "620260810-Retur",
+      "status": "allocated"
+    },
+    {
+      "id": "ed8c1e4a-6cc1-4286-9ba4-511946729137",
+      "kode": "620260811",
+      "status": "allocated"
+    },
+    {
+      "id": "269eec61-7cd5-4b5e-8c3b-5796e9258775",
+      "kode": "620260812",
+      "status": "allocated"
+    },
+    {
+      "id": "6131e413-798a-45c6-b39c-3630c2cfa731",
+      "kode": "620260836",
+      "status": "allocated"
+    }
+  ]
+}

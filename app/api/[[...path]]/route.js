@@ -3793,6 +3793,12 @@ async function handleRoute(request, { params }) {
       if (Array.isArray(body.items)) {
         // Prevent items edit after Draft (stock already deducted on Confirm)
         if (existing.pipelineStatus !== 'Draft') return err('Items hanya dapat diubah saat status Draft');
+        // Bebaskan SEMUA alokasi lama SO ini dulu (lot -> active, hapus so_item_stocks) agar stok kembali
+        // tersedia & tidak nyangkut 'allocated' saat item di-edit (FIX bug: kode simpan hilang tapi tak
+        // kembali ke inventory). Alokasi baru akan dibuat ulang saat re-insert item di bawah.
+        const prevAlloc = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.salesOrderId, id)).all();
+        for (const pv of prevAlloc) db.update(s.inventoryStock).set({ status: 'active', updatedAt: new Date() }).where(eq(s.inventoryStock.id, pv.stockId)).run();
+        db.delete(s.soItemStocks).where(eq(s.soItemStocks.salesOrderId, id)).run();
         // Validate stock linkage (excluding this SO's current reservations)
         const stockUsage = {};
         for (const it of body.items) {
@@ -3824,8 +3830,9 @@ async function handleRoute(request, { params }) {
         for (const it of body.items) {
           const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
           const disc = Number(it.discount || 0);
+          const newItemId = uuidv4();
           db.insert(s.salesOrderItems).values({
-            id: uuidv4(), salesOrderId: id,
+            id: newItemId, salesOrderId: id,
             productId: it.productId,
             quantity: Number(it.quantity || 0),
             weight: Number(it.weight || 0),
@@ -3834,6 +3841,18 @@ async function handleRoute(request, { params }) {
             subtotal: line - disc,
             stockCodeId: it.stockId || null,
           }).run();
+          // Re-alokasi kode simpan dengan benar: catat snapshot so_item_stocks + set lot 'allocated'.
+          if (it.stockId) {
+            const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+            if (stk) {
+              db.insert(s.soItemStocks).values({
+                id: uuidv4(), salesOrderId: id, soItemId: newItemId, stockId: it.stockId, productId: stk.productId,
+                kodeSimpan: stk.kodeSimpan, weight: Number(stk.weight || 0), quantity: Number(stk.quantity || 0),
+                hppPerKg: Math.round(Number(stk.hppPerKg || 0)), createdAt: new Date(),
+              }).run();
+              db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, it.stockId)).run();
+            }
+          }
         }
       }
       recalcSoTotals(id);
