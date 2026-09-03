@@ -5635,25 +5635,31 @@ async function handleRoute(request, { params }) {
       const id = path[2];
       const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get();
       if (!stk) return err('Not found', 404);
-      if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} tidak dapat diedit (status: ${stk.status}). Hanya lot aktif yang bisa diedit.`);
-      // Block if allocated/reserved to ANY sales order (draft reservation or confirmed allocation).
-      const alloc = db.select({ c: sql`count(*)` }).from(s.salesOrderItems).where(eq(s.salesOrderItems.stockCodeId, id)).get();
-      if (Number(alloc?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan ke SO — tidak dapat diedit. Lepas alokasi terlebih dahulu.`);
-      // Block if this lot is a split parent (has children).
-      const kids = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(eq(s.inventoryStock.parentStockId, id)).get();
-      if (Number(kids?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dibuka (split) — tidak dapat diedit.`);
-
       const body = await request.json();
+      const wantsProduct = body.productId !== undefined && body.productId && body.productId !== stk.productId;
+      const wantsExpiry = body.expiredDate !== undefined;
+      const kodeOnly = !wantsProduct && !wantsExpiry; // koreksi kode simpan (label) saja
+      // Perubahan PRODUK/EXPIRY mempengaruhi valuasi & traceability -> hanya untuk lot AKTIF, belum dialokasi,
+      // dan bukan induk split. Sedangkan koreksi KODE SIMPAN (label) DIIZINKAN walau lot sudah dialokasikan
+      // (mis. salah input kode simpan pada SO yang sudah Invoiced) — hanya mengganti label + snapshot.
+      if (!kodeOnly) {
+        if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} tidak dapat diedit (status: ${stk.status}). Hanya lot aktif yang bisa diedit produk/expiry-nya.`);
+        const alloc = db.select({ c: sql`count(*)` }).from(s.salesOrderItems).where(eq(s.salesOrderItems.stockCodeId, id)).get();
+        if (Number(alloc?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan ke SO — produk/expiry tidak dapat diedit. Lepas alokasi terlebih dahulu.`);
+        const kids = db.select({ c: sql`count(*)` }).from(s.inventoryStock).where(eq(s.inventoryStock.parentStockId, id)).get();
+        if (Number(kids?.c || 0) > 0) return err(`Kode simpan ${stk.kodeSimpan} sudah dibuka (split) — tidak dapat diedit.`);
+      }
+
       const update = {};
       // Product change -> reset HPP/kg to new product's basePrice (a-ii).
-      if (body.productId !== undefined && body.productId && body.productId !== stk.productId) {
+      if (wantsProduct) {
         const np = db.select().from(s.products).where(eq(s.products.id, body.productId)).get();
         if (!np) return err('Produk tidak ditemukan', 400);
         update.productId = body.productId;
         update.hppPerKg = Number(np.basePrice || 0);
       }
       // Expiry date (allow clearing with null/empty).
-      if (body.expiredDate !== undefined) {
+      if (wantsExpiry) {
         update.expiredDate = body.expiredDate ? new Date(body.expiredDate) : null;
       }
       // Kode simpan (must be unique across lots).
@@ -5669,6 +5675,22 @@ async function handleRoute(request, { params }) {
       if (Object.keys(update).length === 0) return err('Tidak ada perubahan', 400);
       update.updatedAt = new Date();
       db.update(s.inventoryStock).set(update).where(eq(s.inventoryStock.id, id)).run();
+      // Cascade snapshot kode simpan ke alokasi SO (so_item_stocks) + persist SO terkait ke Mongo agar tak hilang saat hydrate.
+      if (update.kodeSimpan) {
+        try {
+          const affected = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.stockId, id)).all();
+          if (affected.length) {
+            db.update(s.soItemStocks).set({ kodeSimpan: update.kodeSimpan }).where(eq(s.soItemStocks.stockId, id)).run();
+            const soIds = new Set();
+            for (const a of affected) {
+              const it = db.select({ soId: s.salesOrderItems.salesOrderId }).from(s.salesOrderItems).where(eq(s.salesOrderItems.id, a.soItemId)).get();
+              if (it?.soId) soIds.add(it.soId);
+            }
+            const raw = getRawSqlite();
+            for (const soId of soIds) { try { await salesMongo.persistSalesOrderToMongo(raw, soId); } catch (e) { console.error('persist SO after kode edit', e?.message); } }
+          }
+        } catch (e) { console.error('cascade kode simpan', e?.message); }
+      }
       const updated = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, id)).get();
       const p = db.select().from(s.products).where(eq(s.products.id, updated.productId)).get();
       return json({ data: { ...updated, product: p } });

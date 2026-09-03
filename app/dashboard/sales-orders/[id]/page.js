@@ -594,6 +594,47 @@ function InfoTab({ so }) {
   );
 }
 
+function KodeSimpanEditBadge({ al, canEdit, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(al.kodeSimpan || '');
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    const nk = (val || '').trim();
+    if (!nk) return toast.error('Kode simpan tidak boleh kosong');
+    if (nk === al.kodeSimpan) { setOpen(false); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/inventory/stocks/${al.stockId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ kodeSimpan: nk }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success('Kode simpan diperbarui');
+      setOpen(false); onDone && onDone();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <Badge variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">
+        {al.kodeSimpan} · {Number(al.weight).toFixed(1)}kg
+      </Badge>
+      {canEdit && al.stockId && (
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setVal(al.kodeSimpan || ''); }}>
+          <DialogTrigger asChild>
+            <button className="text-blue-600 hover:text-blue-800" title="Edit kode simpan"><Pencil className="w-3 h-3" /></button>
+          </DialogTrigger>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Edit Kode Simpan</DialogTitle>
+              <DialogDescription>Ganti label kode simpan lot ini. Perubahan berlaku ke semua dokumen terkait (SO tetap Invoiced).</DialogDescription>
+            </DialogHeader>
+            <Input value={val} onChange={e => setVal(e.target.value)} className="font-mono" placeholder="Kode simpan yang benar" />
+            <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </span>
+  );
+}
+
 function ItemsTab({ so, onSaved, canEdit }) {
   const canAllocate = canEdit && so.pipelineStatus === 'Draft' && so.fulfillmentType !== 'dropship';
   const canEditItems = canEdit && so.pipelineStatus === 'Draft';
@@ -631,9 +672,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
                   {(it.allocations || []).length > 0 && (
                     <div className="text-xs mt-1 flex items-center gap-1.5 flex-wrap">
                       {it.allocations.map(al => (
-                        <Badge key={al.id} variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">
-                          {al.kodeSimpan} · {Number(al.weight).toFixed(1)}kg
-                        </Badge>
+                        <KodeSimpanEditBadge key={al.id} al={al} canEdit={canEdit} onDone={onSaved} />
                       ))}
                     </div>
                   )}
