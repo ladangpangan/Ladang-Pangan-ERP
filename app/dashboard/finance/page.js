@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
+import Link from 'next/link';
 import useSWR from 'swr';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -19,6 +20,16 @@ import {
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+
+// Nomor dokumen yang bisa diklik menuju halaman detail (SO/PO).
+function DocLink({ href, children }) {
+  if (!href) return <span>{children}</span>;
+  return (
+    <Link href={href} className="text-emerald-700 hover:text-emerald-900 hover:underline font-medium">
+      {children}
+    </Link>
+  );
+}
 
 function StatusBadge({ status }) {
   const paid = status === 'Lunas' || status === 'Dikembalikan';
@@ -313,8 +324,8 @@ export default function FinancePage() {
                     {soF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {soF.filtered.map(r => (
                       <TableRow key={r.id}>
-                        <TableCell className="font-medium">{r.number}</TableCell>
-                        <TableCell>{r.soNumber}</TableCell>
+                        <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.number}</DocLink></TableCell>
+                        <TableCell><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
                         <TableCell className="text-right text-emerald-700">{rp(r.paid)}</TableCell>
@@ -359,8 +370,8 @@ export default function FinancePage() {
                     {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {poF.filtered.map(r => (
                       <TableRow key={r.id}>
-                        <TableCell className="font-medium">{r.number}</TableCell>
-                        <TableCell>{r.poNumber}</TableCell>
+                        <TableCell className="font-medium"><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink></TableCell>
+                        <TableCell><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.poNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
                         <TableCell className="text-right text-emerald-700">{rp(r.paid)}</TableCell>
@@ -397,7 +408,7 @@ export default function FinancePage() {
                     {komF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {komF.filtered.map(r => (
                       <TableRow key={r.id}>
-                        <TableCell className="font-medium">{r.soNumber}</TableCell>
+                        <TableCell className="font-medium"><DocLink href={r.salesOrderId ? `/dashboard/sales-orders/${r.salesOrderId}` : null}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
                         <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
@@ -435,7 +446,7 @@ export default function FinancePage() {
                     {cbF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {cbF.filtered.map(r => (
                       <TableRow key={r.id}>
-                        <TableCell className="font-medium">{r.soNumber}</TableCell>
+                        <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
                         <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
