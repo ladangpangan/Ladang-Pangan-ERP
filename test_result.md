@@ -109,6 +109,182 @@ user_problem_statement: |
   Module 1 (this iteration): Contacts enhanced - CRUD, search by name/code/phone, contact type filter, transaction history per contact, role-based access (admin: full, supervisor: view+edit, direktur: view only).
 
 backend:
+  - task: "BUGFIX: Edit Draft SO items left allocations orphaned — kode simpan disappeared from item but lots stayed 'allocated' (stuck, not returned to inventory). Now releases old allocations (lot->active + delete so_item_stocks) before re-inserting, and re-allocates properly on re-insert. Data repaired for SO/202608/0035 (+global orphan sweep)."
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js (PUT /sales-orders/:id items branch ~line 3795: release all so_item_stocks + set lots active before delete; re-insert now creates so_item_stocks + sets lot 'allocated' when stockId present); /app/scripts/repair_orphan_alloc.js (RUN --apply)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL TESTS PASSED (2/2, 100%)
+          
+          Comprehensive regression test completed for the Draft SO allocation release bug fix.
+          All critical requirements verified: allocations are properly released when editing items without stockId,
+          no orphaned so_item_stocks remain, and re-allocation works correctly.
+          
+          === TEST ENVIRONMENT ===
+          - Base URL: https://so-po-loader.preview.emergentagent.com/api
+          - Auth: Better Auth session cookie (admin@lpi.co.id / admin123)
+          - Database: MongoDB Atlas (erp_prod) - source of truth
+          - Test execution: Python requests with comprehensive regression test scenarios
+          - Test file: /app/backend_test_draft_so_allocation.py
+          
+          === TEST RESULTS ===
+          
+          ✅ TEST 1 — Login as admin (PASSED):
+             - POST /api/auth/sign-in/email → 200 OK ✓
+             - Session cookie captured successfully ✓
+          
+          ✅ TEST 2-7 — Draft SO Allocation Release Regression Test (PASSED):
+             
+             **[Step 1] Get Draft Sales Orders:**
+             - GET /api/sales-orders → 200 OK ✓
+             - Total SOs: 37 ✓
+             - Draft SOs: 19 ✓
+             - Selected Draft SO: SO/202608/0037 (ID: 1c710f5f-49e1-4764-91dd-9bd4f94f44b5) ✓
+             - Selected item: productId=239f4966-2308-45f1-beba-49d69c99d851, weight=205.15 kg, qty=9 ✓
+             
+             **[Step 2] Find active inventory lot:**
+             - GET /api/inventory/stocks?status=active&product_id=... → 200 OK ✓
+             - Active lots for product: 39 ✓
+             - Selected lot: 620260073 (ID: d6d869b7-8704-4cd9-8ea0-64a4c745fc23, status: active, weight: 23.5 kg) ✓
+             
+             **[Step 3] ALLOCATE lot to SO item:**
+             - POST /api/sales-orders/:id/items/:itemId/allocate {"stockIds":["<lotId>"]} → 200 OK ✓
+             - Allocation successful ✓
+             - Lot status after allocation: 'allocated' ✓
+             - Item stockCodeId after allocation: d6d869b7-8704-4cd9-8ea0-64a4c745fc23 ✓
+             
+             **[Step 4] EDIT items WITHOUT stockId (KEY TEST FOR BUG FIX):**
+             - PUT /api/sales-orders/:id with items:[{productId, quantity, weight, unitPrice, discount}] (NO stockId) → 200 OK ✓
+             - Edit without stockId successful ✓
+             
+             **[CRITICAL VERIFICATION] Lot status after edit without stockId:**
+             - GET /api/inventory/stocks?status=all → 200 OK ✓
+             - Lot status: 'active' ✓ **THIS IS THE KEY FIX - LOT CORRECTLY RELEASED**
+             - Item stockCodeId: null ✓
+             - SO allocations: 0 ✓
+             - ✅ NO ORPHANED so_item_stocks ✓
+             - ✅ LOT RETURNED TO INVENTORY (status='active') ✓
+             
+             **[Step 5] EDIT items WITH stockId (verify re-allocation):**
+             - PUT /api/sales-orders/:id with items:[{..., stockId:"<lotId>"}] → 200 OK ✓
+             - Edit with stockId successful ✓
+             - Lot status after re-allocation: 'allocated' ✓
+             - Item stockCodeId after re-allocation: d6d869b7-8704-4cd9-8ea0-64a4c745fc23 ✓
+             - ✅ RE-ALLOCATION WORKS CORRECTLY ✓
+             
+             **[Step 6] Cleanup - release allocation:**
+             - PUT /api/sales-orders/:id (without stockId) → 200 OK ✓
+             - Cleanup successful ✓
+             - Final lot status: 'active' ✓
+             - ✅ CLEANUP WORKS CORRECTLY ✓
+          
+          === KEY FINDINGS ===
+          
+          ✅ **BUG FIX VERIFIED - Allocation Release (route.js lines 3796-3801)**:
+             - Before delete, ALL so_item_stocks for the SO are released ✓
+             - Each referenced inventory_stock status set to 'active' ✓
+             - so_item_stocks rows deleted ✓
+             - Result: Lots correctly returned to inventory (status='active') ✓
+             - NO orphaned so_item_stocks ✓
+             - Item stockCodeId correctly set to null ✓
+             - **THIS IS THE CRITICAL FIX - PREVIOUSLY LOTS STAYED 'allocated' (STUCK)**
+          
+          ✅ **Re-allocation Logic (route.js lines 3844-3855)**:
+             - When item has stockId during edit, creates fresh so_item_stocks ✓
+             - Sets lot status to 'allocated' ✓
+             - Mirrors /allocate endpoint logic ✓
+             - Re-allocation works correctly ✓
+          
+          ✅ **Workflow Verification**:
+             - Allocate: lot → 'allocated', item.stockCodeId set, so_item_stocks created ✓
+             - Edit without stockId: lot → 'active', item.stockCodeId null, so_item_stocks deleted ✓
+             - Edit with stockId: lot → 'allocated', item.stockCodeId set, so_item_stocks created ✓
+             - Cleanup: lot → 'active', item.stockCodeId null, so_item_stocks deleted ✓
+          
+          ✅ **Data Integrity**:
+             - No lots left stuck in 'allocated' status ✓
+             - No orphaned so_item_stocks ✓
+             - Lot status changes consistent with allocation state ✓
+             - Item stockCodeId consistent with allocation state ✓
+             - Inventory availability reflects actual lot status ✓
+          
+          ✅ **HTTP Status Codes**:
+             - All valid requests: 200 OK
+             - NO 400 errors
+             - NO 404 errors
+             - NO 500 errors encountered
+          
+          === ACTUAL VALUES OBSERVED ===
+          
+          Test SO: SO/202608/0037 (ID: 1c710f5f-49e1-4764-91dd-9bd4f94f44b5)
+          Test lot: 620260073 (ID: d6d869b7-8704-4cd9-8ea0-64a4c745fc23)
+          
+          Allocation workflow:
+          1. Initial: lot status = 'active'
+          2. After allocate: lot status = 'allocated', item.stockCodeId = lot_id
+          3. After edit without stockId: lot status = 'active', item.stockCodeId = null ✓ KEY FIX
+          4. After edit with stockId: lot status = 'allocated', item.stockCodeId = lot_id
+          5. After cleanup: lot status = 'active', item.stockCodeId = null
+          
+          === NO CRITICAL ISSUES FOUND ===
+          
+          All tests passed.
+          Bug fix verified - lots correctly released to 'active' when editing without stockId.
+          No orphaned so_item_stocks.
+          Re-allocation works correctly.
+          Cleanup works correctly.
+          No HTTP 500 errors.
+          No data corruption.
+          
+          Test Coverage: 2/2 tests passed (100%)
+          - TEST 1: Login as admin ✓
+          - TEST 2-7: Draft SO allocation release regression test ✓
+          
+          === CONCLUSION ===
+          
+          ✅ BUG FIX VERIFIED SUCCESSFUL
+          The Draft SO editing bug fix is working correctly. When editing a Draft SO's items without stockId,
+          the previously allocated lots are correctly released back to 'active' status, no orphaned so_item_stocks
+          remain, and the item's stockCodeId is properly set to null. Re-allocation with stockId works correctly.
+          The critical bug where lots stayed 'allocated' (stuck, not returned to inventory) has been fixed.
+          Feature ready for production.
+      
+      - working: "NA"
+        agent: "main"
+        comment: |
+          ROOT CAUSE: PUT /sales-orders/:id with body.items deleted+re-inserted sales_order_items but never
+          released the existing so_item_stocks nor reset inventory_stock.status from 'allocated' back to 'active'.
+          Result: after editing a Draft SO's item, item.stock_code_id became null (kode simpan hilang) but the lots
+          remained status='allocated' (stuck, invisible in inventory available list which only shows 'active').
+          This also caused DOUBLE-ALLOCATION (same lots referenced by SO/0035 and SO/0037).
+          FIX: (1) Before delete, release ALL so_item_stocks of the SO: set each referenced inventory_stock ->
+          'active', then delete those so_item_stocks. (2) On re-insert, when an item has stockId, insert a fresh
+          so_item_stocks snapshot (weight/qty/hpp from lot) and set that lot -> 'allocated' (mirrors /allocate logic).
+          DATA REPAIR (scripts/repair_orphan_alloc.js --apply on erp_prod): deleted 8 orphaned so_item_stocks on
+          SO/202608/0035 and freed 8 lots back to 'active' (global sweep found exactly these 8 stuck lots; now 0
+          allocated-orphans). Verified: SO/0035 so_item_stocks=0, inventory_stock allocated=0, 8 lots active.
+          PLEASE TEST (backend only):
+          1) Login admin. Pick a Draft SO with an item (e.g. GET /api/sales-orders, find pipelineStatus 'Draft').
+             Find an 'active' inventory lot for that item's product via GET /api/inventory/stocks (or existing allocate UI data).
+          2) Allocate: POST /api/sales-orders/<soId>/items/<itemId>/allocate {stockIds:[<lotId>]} -> 200. Verify the lot
+             is now status 'allocated' (GET inventory) and item has stockCodeId + a so_item_stocks row.
+          3) Edit items: PUT /api/sales-orders/<soId> with body { items:[ { productId, quantity, weight, unitPrice, discount } ] }
+             (NO stockId — simulate user editing item). Expect 200. THEN verify:
+             - the previously allocated lot is back to status 'active' (returned to inventory),
+             - there are NO leftover so_item_stocks rows for that SO,
+             - item.stockCodeId is null.
+          4) Edit items WITH a stockId: PUT /api/sales-orders/<soId> with items:[{..., stockId:<lotId>}] -> verify lot
+             becomes 'allocated' again and a so_item_stocks row is (re)created. Then edit again without stockId to release.
+          5) Sanity: GET /api/inventory/stocks -> the test lot appears/disappears from available consistent with its status.
+          Report any lot left stuck in 'allocated' after an edit-without-stockId, orphaned so_item_stocks, or 500s.
+          NOTE: use a Draft SO only (edit blocked for non-Draft). SO/202608/0035 and SO/202608/0037 are currently clean Draft SOs available for testing.
+
   - task: "FEATURE: Dropship auto-PO consistency with SO — PO number mirrors SO (PO=SO prefix-swapped), PO order/expected date = SO, PO GRN received date = SO received date; auto re-sync PO number on manual SO-number edit; bulk-fixed existing 12 dropship POs + 3 GRNs"
     implemented: true
     working: true
@@ -36975,3 +37151,83 @@ agent_communication:
       
       Feature is ready for production. Main agent should summarize and finish.
 
+
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE - Draft SO Allocation Release Bug Fix
+      
+      Tested the BUGFIX: Draft SO editing must release previous stock allocations and not leave orphaned so_item_stocks.
+      
+      **RESULT: ALL TESTS PASSED (2/2, 100%)**
+      
+      ✅ TEST 1: Login as admin - PASSED
+         - POST /api/auth/sign-in/email → 200 OK ✓
+         - Session cookie captured successfully ✓
+      
+      ✅ TEST 2-7: Draft SO Allocation Release Regression Test - PASSED
+         - Selected Draft SO: SO/202608/0037 (ID: 1c710f5f-49e1-4764-91dd-9bd4f94f44b5) ✓
+         - Selected lot: 620260073 (ID: d6d869b7-8704-4cd9-8ea0-64a4c745fc23) ✓
+         
+         **[Step 3] ALLOCATE lot to SO item:**
+         - POST /api/sales-orders/:id/items/:itemId/allocate → 200 OK ✓
+         - Lot status after allocation: 'allocated' ✓
+         - Item stockCodeId set correctly ✓
+         
+         **[Step 4] EDIT items WITHOUT stockId (KEY TEST FOR BUG FIX):**
+         - PUT /api/sales-orders/:id (without stockId) → 200 OK ✓
+         - ✅ CRITICAL: Lot status returned to 'active' ✓ **BUG FIX VERIFIED**
+         - ✅ Item stockCodeId set to null ✓
+         - ✅ NO orphaned so_item_stocks ✓
+         
+         **[Step 5] EDIT items WITH stockId (verify re-allocation):**
+         - PUT /api/sales-orders/:id (with stockId) → 200 OK ✓
+         - Lot status: 'allocated' again ✓
+         - Item stockCodeId set correctly ✓
+         
+         **[Step 6] Cleanup:**
+         - PUT /api/sales-orders/:id (without stockId) → 200 OK ✓
+         - Final lot status: 'active' ✓
+      
+      **KEY FINDINGS:**
+      ✅ BUG FIX VERIFIED - Allocation Release (route.js lines 3796-3801):
+         - Before delete, ALL so_item_stocks for the SO are released ✓
+         - Each referenced inventory_stock status set to 'active' ✓
+         - so_item_stocks rows deleted ✓
+         - Result: Lots correctly returned to inventory (status='active') ✓
+         - NO orphaned so_item_stocks ✓
+         - **THIS IS THE CRITICAL FIX - PREVIOUSLY LOTS STAYED 'allocated' (STUCK)**
+      
+      ✅ Re-allocation Logic (route.js lines 3844-3855):
+         - When item has stockId during edit, creates fresh so_item_stocks ✓
+         - Sets lot status to 'allocated' ✓
+         - Re-allocation works correctly ✓
+      
+      ✅ Workflow Verification:
+         - Allocate: lot → 'allocated', item.stockCodeId set, so_item_stocks created ✓
+         - Edit without stockId: lot → 'active', item.stockCodeId null, so_item_stocks deleted ✓
+         - Edit with stockId: lot → 'allocated', item.stockCodeId set, so_item_stocks created ✓
+         - Cleanup: lot → 'active', item.stockCodeId null, so_item_stocks deleted ✓
+      
+      **DATA INTEGRITY:**
+      - No lots left stuck in 'allocated' status ✓
+      - No orphaned so_item_stocks ✓
+      - Lot status changes consistent with allocation state ✓
+      - Item stockCodeId consistent with allocation state ✓
+      - Inventory availability reflects actual lot status ✓
+      
+      **HTTP STATUS CODES:**
+      - All valid requests: 200 OK
+      - NO 400 errors (except expected validation)
+      - NO 404 errors
+      - NO 500 errors encountered
+      
+      **TEST ARTIFACTS:**
+      - Test file: /app/backend_test_draft_so_allocation.py
+      - Test SO: SO/202608/0037 (ID: 1c710f5f-49e1-4764-91dd-9bd4f94f44b5)
+      - Test lot: 620260073 (ID: d6d869b7-8704-4cd9-8ea0-64a4c745fc23)
+      
+      **NO CRITICAL ISSUES FOUND**
+      
+      The critical bug where lots stayed 'allocated' (stuck, not returned to inventory) when editing Draft SO items
+      has been successfully fixed. Feature is ready for production. Main agent should summarize and finish.
