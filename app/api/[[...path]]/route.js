@@ -2431,7 +2431,8 @@ async function handleRoute(request, { params }) {
       if (q) conds.push(like(s.purchaseOrder.poNumber, `%${q}%`));
       let query = db.select().from(s.purchaseOrder);
       if (conds.length) query = query.where(and(...conds));
-      const rows = query.orderBy(desc(s.purchaseOrder.createdAt)).all();
+      // Default: urut berdasarkan Nomor PO (PO/YYYYMM/NNNN) terbaru di atas — konsisten dgn penomoran.
+      const rows = query.orderBy(desc(s.purchaseOrder.poNumber)).all();
       // Enrich with supplier name (batch-load contacts once to avoid N+1)
       const supIds = [...new Set(rows.map(r => r.supplierId).filter(Boolean))];
       const cMap = {};
@@ -3207,7 +3208,9 @@ async function handleRoute(request, { params }) {
       if (q) conds.push(or(like(s.salesOrder.soNumber, `%${q}%`), like(s.salesOrder.invoiceNumber, `%${q}%`)));
       let query = db.select().from(s.salesOrder);
       if (conds.length) query = query.where(and(...conds));
-      const rows = query.orderBy(desc(s.salesOrder.createdAt)).all();
+      // Default: urut berdasarkan Nomor SO (SO/YYYYMM/NNNN) terbaru di atas — konsisten dgn penomoran,
+      // bukan createdAt (yang bisa tidak sesuai setelah renumber per tanggal order).
+      const rows = query.orderBy(desc(s.salesOrder.soNumber)).all();
       // Batch-load customers once (avoid N+1 contacts lookup per SO row)
       const custIds = [...new Set(rows.map(r => r.customerId).filter(Boolean))];
       const cMap = {};
