@@ -263,7 +263,7 @@ const INVENTORY_PATHS = new Set([
 // these tables live under these prefixes (verified: purchase-orders, grns, commissions, approvals,
 // sales-orders dropship, tally-sessions, /inventory inbound-with-PO).
 const POTX_PATHS = new Set([
-  'purchase-orders', 'purchase-reports', 'grns', 'commissions',
+  'purchase-orders', 'purchase-reports', 'grns', 'commissions', 'contacts',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'inventory', 'inventory-reports',
   'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports', 'finance',
 ]);
@@ -1989,6 +1989,36 @@ async function handleRoute(request, { params }) {
       if (rec.status === 'paid') return err('Komisi yang sudah dibayar tidak dapat dihapus');
       db.delete(s.commissionRecords).where(eq(s.commissionRecords.id, rid)).run();
       return json({ ok: true });
+    }
+    // PUT /contacts/:id/commissions/:rid - edit an UNPAID commission record.
+    // Body: { commissionAmount? } untuk override jumlah manual, ATAU
+    //       { commissionType?, commissionValue?, costAmount? } untuk hitung ulang otomatis.
+    // Jika commissionAmount dikirim (manual), tipe disimpan 'manual' & jumlah dipakai apa adanya.
+    if (route.startsWith('/contacts/') && path.length === 4 && path[2] === 'commissions' && (method === 'PUT' || method === 'PATCH')) {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden - hanya admin & supervisor', 403);
+      const rid = path[3];
+      const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, rid)).get();
+      if (!rec) return err('Record komisi tidak ditemukan', 404);
+      if (rec.status === 'paid') return err('Komisi yang sudah dibayar tidak dapat diedit');
+      const body = await request.json();
+      const manual = body.commissionAmount !== undefined && body.commissionAmount !== null && body.commissionAmount !== '';
+      const type = manual ? 'manual' : (body.commissionType || rec.commissionType || 'per_kg');
+      const value = body.commissionValue !== undefined && body.commissionValue !== null && body.commissionValue !== ''
+        ? Number(body.commissionValue) : Number(rec.commissionValue || 0);
+      // recompute basis/revenue/cost utk referensi (pakai type asli bila manual agar basis tetap relevan)
+      const calc = computeSoCommission(rec.salesOrderId, manual ? (rec.commissionType || 'per_kg') : type, value, body.costAmount);
+      const amount = manual ? Math.max(0, Math.round(Number(body.commissionAmount))) : (calc ? calc.amount : Number(rec.commissionAmount || 0));
+      const patch = {
+        commissionType: type,
+        commissionValue: manual ? Number(rec.commissionValue || 0) : value,
+        commissionAmount: amount,
+      };
+      if (calc) { patch.basisAmount = calc.basis; patch.revenueAmount = calc.revenue; patch.costAmount = calc.cost; }
+      if (body.notes !== undefined) patch.notes = body.notes || null;
+      db.update(s.commissionRecords).set(patch).where(eq(s.commissionRecords.id, rid)).run();
+      const updated = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, rid)).get();
+      return json({ data: updated });
     }
     // POST /contacts/:id/commission-payments - pay commission (per SO record or lunasi semua)
     if (route.startsWith('/contacts/') && path.length === 3 && path[2] === 'commission-payments' && method === 'POST') {
