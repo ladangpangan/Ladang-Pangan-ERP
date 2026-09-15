@@ -38,8 +38,10 @@ lalu `docker compose up -d` lagi (tidak perlu build ulang).
 
 ## 4b. (Opsional) Preview cepat tanpa Nginx dulu
 Untuk cek aplikasi jalan lewat `http://<VPS-IP>:3000` sebelum setup Nginx/domain: tambahkan
-`APP_BIND_IP=0.0.0.0` ke `.env`, lalu `docker compose up -d` seperti biasa (tidak perlu file
-compose kedua). Ini HTTP biasa (tanpa TLS) — jangan dibiarkan lama, dan buka port dulu:
+`APP_BIND_IP=0.0.0.0` **dan** `COOKIE_SECURE=0` ke `.env`, lalu `docker compose up -d` seperti
+biasa (tidak perlu file compose kedua). Tanpa `COOKIE_SECURE=0`, login akan terlihat berhasil
+tapi langsung terpental balik ke halaman login — browser diam-diam membuang cookie sesi karena
+flag `Secure`-nya butuh HTTPS. Ini HTTP biasa (tanpa TLS) — jangan dibiarkan lama, dan buka port dulu:
 ```bash
 sudo ufw allow 3000/tcp
 ```
