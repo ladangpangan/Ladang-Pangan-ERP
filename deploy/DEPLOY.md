@@ -31,6 +31,16 @@ docker compose logs -f app   # cek boot sukses (restore/seed, tidak ada error Mo
 ```
 Data (`data/erp.db`, `data/uploads`) tersimpan di `./data` di host lewat volume — aman lintas rebuild.
 
+## 4b. (Opsional) Preview cepat tanpa Nginx dulu
+Untuk cek aplikasi jalan lewat `http://<VPS-IP>:3000` sebelum setup Nginx/domain: tambahkan
+`APP_BIND_IP=0.0.0.0` ke `.env`, lalu `docker compose up -d` seperti biasa (tidak perlu file
+compose kedua). Ini HTTP biasa (tanpa TLS) — jangan dibiarkan lama, dan buka port dulu:
+```bash
+sudo ufw allow 3000/tcp
+```
+Setelah selesai preview, hapus baris `APP_BIND_IP` dari `.env` (atau set balik ke `127.0.0.1`),
+`docker compose up -d` lagi, dan tutup port: `sudo ufw delete allow 3000/tcp`.
+
 ## 5. Nginx + HTTPS
 ```bash
 sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/erp.yourdomain.id
