@@ -2117,6 +2117,10 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt; delete body.avgHppPerKg;
+      if (body.sku) {
+        const dup = await md.mdFindOne(md.MD.products, { sku: body.sku, _id: { $ne: id } });
+        if (dup) return err(`SKU "${body.sku}" sudah digunakan`, 409);
+      }
       const patch = { ...body, updatedAt: new Date() };
       const row = await md.mdUpdate(md.MD.products, id, patch);
       if (!row) return err('Not found', 404);
@@ -2289,7 +2293,13 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(like(s.purchaseOrder.poNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      // Guard against a collision (e.g. two near-simultaneous creates computing the same next
+      // number before either INSERT lands) — keep bumping until the candidate is free.
+      let next = max + 1;
+      while (db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(eq(s.purchaseOrder.poNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextGrnNumber = () => {
       const ym = new Date();
@@ -3083,7 +3093,13 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(like(s.salesOrder.soNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      // Guard against a collision (e.g. two near-simultaneous creates computing the same next
+      // number before either INSERT lands) — keep bumping until the candidate is free.
+      let next = max + 1;
+      while (db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.soNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextInvoiceNumber = (dateArg) => {
       const ym = dateArg ? new Date(dateArg) : new Date();
@@ -3092,7 +3108,11 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.salesOrder.invoiceNumber }).from(s.salesOrder).where(like(s.salesOrder.invoiceNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      let next = max + 1;
+      while (db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.invoiceNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextSjNumber = () => {
       const ym = new Date();
@@ -3616,11 +3636,16 @@ async function handleRoute(request, { params }) {
         if (stk.productId !== item.productId) return err(`Kode simpan ${stk.kodeSimpan} bukan produk item ini`);
         if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan / tidak aktif`);
         const w = Number(stk.weight || 0), q = Number(stk.quantity || 0);
+        // Claim atomically (UPDATE ... WHERE status='active') and check affected rows BEFORE
+        // inserting the allocation row, so two overlapping requests can never both claim the
+        // same kode simpan even if the read above raced with another request's write.
+        const claim = db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() })
+          .where(and(eq(s.inventoryStock.id, sid), eq(s.inventoryStock.status, 'active'))).run();
+        if (claim.changes === 0) return err(`Kode simpan ${stk.kodeSimpan} baru saja dialokasikan oleh proses lain, silakan pilih ulang`, 409);
         db.insert(s.soItemStocks).values({
           id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
           kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
         }).run();
-        db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
         totW += w; totQ += q;
       }
       // Revisi item SO mengikuti total kode simpan terpilih
@@ -4041,6 +4066,10 @@ async function handleRoute(request, { params }) {
           for (const al of allocs) {
             // Kode simpan dikonsumsi penuh (whole storage unit)
             const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
+            // Idempotency guard: if this lot is already 'used' (e.g. a retried/duplicate
+            // Confirm request after a mid-loop failure), skip it instead of re-ledgering and
+            // double-counting its weight/HPP.
+            if (!stk || stk.status === 'used') continue;
             recordLedger(db, {
               ledgerDate: new Date(),
               productId: al.productId || it.productId,
