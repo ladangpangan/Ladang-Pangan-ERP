@@ -1,0 +1,10 @@
+# Staging-only override: exposes the app on ALL interfaces (http://<VPS-IP>:3000) so you can
+# test before Nginx/TLS is set up. Traffic is plain HTTP — do not leave this running long-term
+# or use real production data/credentials through it. Usage:
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.staging.yml up -d --build
+# Go back to the safe (127.0.0.1-only) default for real production by simply dropping the
+# `-f deploy/docker-compose.staging.yml` flag.
+services:
+  app:
+    ports:
+      - "3000:3000"
