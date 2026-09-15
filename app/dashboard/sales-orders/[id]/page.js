@@ -478,16 +478,36 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
   const [note, setNote] = useState(so.cashbackRefundNote || '');
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [checkingShortfall, setCheckingShortfall] = useState(false);
+  const [shortfallInfo, setShortfallInfo] = useState(null); // hasil terakhir dari tombol "Hitung Kekurangan"
+  const [deduction, setDeduction] = useState(Number(so.cashbackDeduction || 0));
   const refunded = !!so.cashbackRefunded;
+  const cashbackAmount = Number(so.cashbackAmount || 0);
+  const actualRefund = Math.max(0, Math.round((cashbackAmount - Number(deduction || 0)) * 100) / 100);
+
+  // Hitung kekurangan bayar SO ini HANYA saat tombol ditekan (tidak otomatis) — lihat GET
+  // /cashback-shortfall di backend. Hasilnya jadi SARAN; admin masih bisa ubah angka potongannya.
+  const checkShortfall = async () => {
+    setCheckingShortfall(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/cashback-shortfall`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menghitung');
+      setShortfallInfo(j.data);
+      setDeduction(j.data.suggestedDeduction);
+    } catch (e) { toast.error(e.message); } finally { setCheckingShortfall(false); }
+  };
 
   const submit = async () => {
     if (file && file.size > 10 * 1024 * 1024) return toast.error('Ukuran bukti maksimal 10MB');
+    if (deduction < 0 || deduction > cashbackAmount) return toast.error('Potongan cashback tidak valid');
     setSaving(true);
     try {
       const fd = new FormData();
       if (file) fd.append('file', file);
       fd.append('refundedAt', refundedAt);
       fd.append('note', note || '');
+      fd.append('deduction', String(deduction || 0));
       const res = await fetch(`/api/sales-orders/${so.id}/cashback-refund`, { method: 'POST', body: fd });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
@@ -524,6 +544,11 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
         {refunded && (
           <div className="text-sm bg-emerald-50/70 border border-emerald-100 rounded-md px-3 py-2 space-y-1">
             <div>Tanggal transfer: <b>{so.cashbackRefundedAt || '-'}</b></div>
+            {Number(so.cashbackDeduction || 0) > 0 && (
+              <div className="text-amber-700">
+                Dipotong <b>{rp(so.cashbackDeduction)}</b> (kekurangan bayar invoice) — ditransfer <b>{rp(cashbackAmount - Number(so.cashbackDeduction || 0))}</b> dari total cashback {rp(cashbackAmount)}.
+              </div>
+            )}
             {so.cashbackRefundNote && <div>Catatan: <b>{so.cashbackRefundNote}</b></div>}
             {so.cashbackRefundedBy && <div className="text-xs text-muted-foreground">Ditandai oleh: {so.cashbackRefundedBy}</div>}
             {so.cashbackProofKey && (
@@ -549,6 +574,29 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
               <Label className="text-xs">Catatan (opsional)</Label>
               <Input value={note} onChange={e => setNote(e.target.value)} placeholder="mis. Transfer BCA a.n. Budi" className="mt-1" />
             </div>
+
+            <div className="rounded-md border border-dashed p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Potongan Cashback (kekurangan bayar invoice)</Label>
+                <Button size="sm" variant="outline" onClick={checkShortfall} disabled={checkingShortfall}>
+                  {checkingShortfall ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Calculator className="w-3.5 h-3.5 mr-1" />}
+                  Hitung Kekurangan
+                </Button>
+              </div>
+              {shortfallInfo && (
+                <div className="text-xs text-muted-foreground">
+                  Total invoice saat ini {rp(shortfallInfo.totalAmount)}, sudah dibayar {rp(shortfallInfo.totalPaid)} →
+                  kekurangan <b className="text-amber-700">{rp(shortfallInfo.shortfall)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
+                </div>
+              )}
+              <Input
+                type="number" min={0} max={cashbackAmount} step="1" value={deduction}
+                onChange={e => setDeduction(Math.max(0, Math.min(cashbackAmount, Number(e.target.value) || 0)))}
+                className="mt-1"
+              />
+              <div className="text-sm">Cashback yang akan ditransfer: <b className="text-rose-700">{rp(actualRefund)}</b> dari total {rp(cashbackAmount)}</div>
+            </div>
+
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={submit} disabled={saving}>
                 {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : (refunded ? <Upload className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />)}

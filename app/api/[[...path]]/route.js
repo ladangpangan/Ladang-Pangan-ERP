@@ -3183,7 +3183,13 @@ async function handleRoute(request, { params }) {
       // Customer membayar penuh nilai faktur di-up = total (harga asli) + cashback; cashback direfund terpisah.
       const billable = (soRow.markupEnabled && Number(soRow.cashbackAmount) > 0)
         ? Number(soRow.totalAmount) + Number(soRow.cashbackAmount) : Number(soRow.totalAmount);
-      const netTotal = billable - totalReturns;
+      // cashbackDeduction (> 0) menandakan kekurangan bayar SO ini SUDAH ditutup dengan memotong
+      // refund cashback (lih. POST /sales-orders/:id/cashback-refund), bukan ditagih customer secara
+      // terpisah. Begitu jalur ini dipakai, "Lunas" dinilai dari total asli (bukan total+cashback —
+      // porsi cashback memang tidak dikembalikan penuh, itulah intinya) dikurangi bagian yang dipotong.
+      const netTotal = Number(soRow.cashbackDeduction || 0) > 0
+        ? Number(soRow.totalAmount) - totalReturns - Number(soRow.cashbackDeduction || 0)
+        : billable - totalReturns;
       let ps = 'unpaid';
       if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
       else if (totalPaid > 0) ps = 'partial';
@@ -4471,6 +4477,30 @@ async function handleRoute(request, { params }) {
       return json({ data: updated, info });
     }
 
+    // GET /sales-orders/:id/cashback-shortfall — hitung ATAS PERMINTAAN (tombol "Hitung Kekurangan" di
+    // form refund, TIDAK otomatis) berapa kekurangan bayar invoice SO ini saat ini, supaya admin/akuntan
+    // bisa memutuskan berapa cashback yang dipotong sebelum submit refund.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-shortfall' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).get();
+      const totalPaid = Number(paid?.sum || 0);
+      const totalAmount = Number(so.totalAmount || 0);
+      const shortfall = Math.max(0, totalAmount - totalPaid);
+      const cashbackAmount = Number(so.cashbackAmount || 0);
+      // Tidak mungkin memotong lebih dari nilai cashback itu sendiri.
+      const suggestedDeduction = Math.min(shortfall, cashbackAmount);
+      return json({ data: {
+        totalAmount, totalPaid, shortfall, cashbackAmount,
+        suggestedDeduction,
+        cashbackAfterDeduction: Math.round((cashbackAmount - suggestedDeduction) * 100) / 100,
+      } });
+    }
+
     // POST /sales-orders/:id/cashback-refund — tandai cashback SUDAH dikembalikan + unggah bukti transfer (multipart).
     // Ini pencatatan OPERASIONAL (bukti transfer nyata ke PIC). Jurnal akuntansi cashback sudah otomatis saat invoice.
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-refund' && method === 'POST') {
@@ -4493,11 +4523,19 @@ async function handleRoute(request, { params }) {
           if (!ok) return err('Akun kas/bank tidak valid', 400);
         } catch { /* best-effort */ }
       }
+      // Potongan cashback (opsional) — dihitung manual oleh admin/akuntan lewat tombol "Hitung
+      // Kekurangan" (GET /cashback-shortfall), BUKAN otomatis di sini. Jumlah yang benar-benar
+      // ditransfer ke penerima = cashbackAmount - deduction.
+      let deduction = form.get('deduction') !== null ? Number(form.get('deduction')) : 0;
+      if (isNaN(deduction) || deduction < 0) return err('Potongan cashback tidak valid', 400);
+      if (deduction > Number(so.cashbackAmount)) return err('Potongan tidak boleh melebihi jumlah cashback', 400);
+      deduction = Math.round(deduction * 100) / 100;
       const set = {
         cashbackRefunded: true,
         cashbackRefundedAt: refundedAt,
         cashbackRefundNote: note,
         cashbackRefundedBy: session.user?.email || session.user?.id || null,
+        cashbackDeduction: deduction,
         updatedAt: new Date(),
       };
       if (accountCode) set.cashbackAccount = accountCode;
@@ -4520,8 +4558,18 @@ async function handleRoute(request, { params }) {
         set.cashbackProofType = file.type;
       }
       db.update(s.salesOrder).set(set).where(eq(s.salesOrder.id, id)).run();
+      // Potongan cashback menutup kekurangan bayar SO ini -> recompute paymentStatus (lih. catatan di
+      // recomputeSoPaymentStatus perihal cashbackDeduction).
+      const statusInfo = recomputeSoPaymentStatus(id);
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
-      return json({ data: { id, cashbackRefunded: true, cashbackRefundedAt: refundedAt, cashbackRefundNote: note, cashbackRefundedBy: set.cashbackRefundedBy, hasProof: !!updated.cashbackProofKey, proofName: updated.cashbackProofName, proofUrl: updated.cashbackProofKey ? `/api/sales-orders/${id}/cashback-proof` : null } }, { status: 201 });
+      const actualRefundAmount = Math.round((Number(so.cashbackAmount) - deduction) * 100) / 100;
+      return json({ data: {
+        id, cashbackRefunded: true, cashbackRefundedAt: refundedAt, cashbackRefundNote: note,
+        cashbackRefundedBy: set.cashbackRefundedBy, cashbackDeduction: deduction, actualRefundAmount,
+        paymentStatus: statusInfo.paymentStatus,
+        hasProof: !!updated.cashbackProofKey, proofName: updated.cashbackProofName,
+        proofUrl: updated.cashbackProofKey ? `/api/sales-orders/${id}/cashback-proof` : null,
+      } }, { status: 201 });
     }
 
     // GET /sales-orders/:id/cashback-proof — sajikan file bukti pengembalian cashback (authenticated).
@@ -4557,8 +4605,10 @@ async function handleRoute(request, { params }) {
       if (so.cashbackProofKey) { try { fs.unlinkSync(nodePath.join(process.cwd(), 'data', 'uploads', so.cashbackProofKey)); } catch {} }
       db.update(s.salesOrder).set({
         cashbackRefunded: false, cashbackRefundedAt: null, cashbackRefundNote: null, cashbackRefundedBy: null,
-        cashbackProofKey: null, cashbackProofName: null, cashbackProofType: null, updatedAt: new Date(),
+        cashbackProofKey: null, cashbackProofName: null, cashbackProofType: null, cashbackDeduction: 0, updatedAt: new Date(),
       }).where(eq(s.salesOrder.id, id)).run();
+      // Batal refund -> potongan (jika ada) ikut batal, recompute paymentStatus ke basis normal.
+      recomputeSoPaymentStatus(id);
       return json({ ok: true });
     }
 
