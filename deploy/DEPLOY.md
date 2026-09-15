@@ -25,11 +25,16 @@ kredensial dari `memory/PRD.md` (sudah ter-commit ke git, jangan biarkan publik)
 
 ## 4. Build & jalankan
 ```bash
+mkdir -p data && chown -R 1001:1001 data   # container jalan sebagai uid 1001 (non-root)
 docker compose build
 docker compose up -d
 docker compose logs -f app   # cek boot sukses (restore/seed, tidak ada error Mongo auth)
 ```
 Data (`data/erp.db`, `data/uploads`) tersimpan di `./data` di host lewat volume — aman lintas rebuild.
+
+Kalau lupa `chown` di atas dan Docker sudah keburu membuat `./data` sebagai `root`, log akan menunjukkan
+`attempt to write a readonly database` — perbaiki dengan `docker compose down`, jalankan `chown` di atas,
+lalu `docker compose up -d` lagi (tidak perlu build ulang).
 
 ## 4b. (Opsional) Preview cepat tanpa Nginx dulu
 Untuk cek aplikasi jalan lewat `http://<VPS-IP>:3000` sebelum setup Nginx/domain: tambahkan
