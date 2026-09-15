@@ -7,9 +7,13 @@ services:
     environment:
       - NODE_ENV=production
       - DB_PATH=/app/data/erp.db
-    # Bind to localhost only — Nginx on the host terminates TLS and reverse-proxies to this port.
+    # Bind to localhost only by default — Nginx on the host terminates TLS and reverse-proxies to
+    # this port. For a quick pre-Nginx staging test, set APP_BIND_IP=0.0.0.0 in .env instead of
+    # using a second compose file: Compose CONCATENATES (not replaces) list fields like `ports`
+    # across -f files, so a second file adding another ports entry here would try to bind two
+    # overlapping sockets on the same port and fail with "address already in use".
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${APP_BIND_IP:-127.0.0.1}:3000:3000"
     volumes:
       # Persists the SQLite DB and uploaded files (contracts, cashback proofs, etc.) across
       # container rebuilds/redeploys. `data/uploads` is used regardless of DB_PATH (see route.js).
