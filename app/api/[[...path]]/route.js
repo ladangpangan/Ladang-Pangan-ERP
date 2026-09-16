@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import nodePath from 'path';
+import { timingSafeEqual } from 'crypto';
 import { eq, and, like, or, ne, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getDb, getRawSqlite } from '@/lib/db';
 import * as s from '@/lib/db/schema';
@@ -40,10 +41,43 @@ function cors(res) {
 function json(data, init = {}) { return cors(NextResponse.json(data, init)); }
 function err(msg, status = 400) { return json({ error: msg }, { status }); }
 
+// -----------------------
+// Server-to-server API key auth (for external AI agent integrations, e.g. Hermes).
+// Opt-in: only active when AGENT_API_KEY is actually set in the environment — zero behavior
+// change for deployments that haven't configured it. A matching `Authorization: Bearer <key>`
+// (or `X-API-Key: <key>`) header stands in for a browser session, with a synthetic user identity
+// so every existing requireRole() check in this file applies to it exactly like a real user.
+// The role is configurable (AGENT_ROLE, default 'admin') so access can be dialed down (e.g. to
+// 'akuntan' or 'supervisor') without touching code.
+// -----------------------
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a || ''));
+  const bufB = Buffer.from(String(b || ''));
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function checkAgentApiKey(hdrs) {
+  const configured = process.env.AGENT_API_KEY;
+  if (!configured) return null;
+  const authHeader = hdrs.get('authorization') || '';
+  const key = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : (hdrs.get('x-api-key') || '').trim();
+  if (!key || !safeEqual(key, configured)) return null;
+  return {
+    id: 'agent-hermes',
+    email: 'hermes-agent@integration.local',
+    name: 'Hermes Agent',
+    role: process.env.AGENT_ROLE || 'admin',
+  };
+}
+
 async function requireAuth() {
   try {
+    const hdrs = await headers();
+    const agentUser = checkAgentApiKey(hdrs);
+    if (agentUser) return { session: { user: agentUser } };
     const auth = getAuth();
-    const session = await auth.api.getSession({ headers: await headers() });
+    const session = await auth.api.getSession({ headers: hdrs });
     if (!session?.user) return { error: err('Unauthorized', 401) };
     return { session };
   } catch (e) {
