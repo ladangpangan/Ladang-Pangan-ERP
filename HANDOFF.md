@@ -31,8 +31,21 @@ Awalnya dibangun di platform Emergent, sedang dipindah ke hosting sendiri.
 - Jurnal akuntansi (`journal_entries`) untuk SO/PO **selalu** `is_auto=1`, diregenerasi otomatis oleh `acct.syncLedger()` — tidak pernah perlu dihapus manual, cukup hapus baris sumbernya (payment, retur, dst.) dan jurnalnya otomatis hilang di render berikutnya.
 - `commission_payments` **TIDAK PUNYA** kolom `sales_order_id` — satu pembayaran komisi bisa mencakup beberapa `commission_records` lintas SO ("Lunasi Semua"). Makanya saat SO dihapus/rollback, commission_records yang **unpaid** aman dihapus, tapi yang **paid** harus dipertahankan (skema sudah sedia `onDelete:'set null'` untuk pola ini) — script lama (`rollback_so_po.js`/`delete_so_po.js`) tidak menangani ini dengan benar.
 
-## Temuan lain (belum ditindaklanjuti, perlu keputusan user)
-- **`data/erp.db`, `data/erp.db-wal/-shm`, dan beberapa file di `data/uploads/` (termasuk dokumen upload asli, mis. GRN/kontak) TER-COMMIT di git**, padahal `.gitignore` sudah melarang pola ini sejak lama — kemungkinan file-file ini masuk SEBELUM aturan `.gitignore` itu ditambahkan, dan `.gitignore` tidak retroaktif meng-untrack. Ini berarti data transaksi (mungkin termasuk data nyata) ada di riwayat git. **Belum saya hapus** karena ini perubahan sensitif (riwayat git, mungkin perlu BFG/filter-repo untuk benar-benar bersih) — perlu keputusan & konfirmasi eksplisit dari user sebelum bertindak.
+## Temuan lain
+- **`data/erp.db`, `data/erp.db-wal/-shm`, dan file di `data/uploads/` — SEBAGIAN sudah dibersihkan dari riwayat git.**
+  User menyetujui pembersihan (memakai `git-filter-repo`, pengganti modern BFG — BFG sendiri butuh Java+jar dari host yang tidak coba diakses, filter-repo dipasang lewat `pip install git-filter-repo` dan hasilnya identik). Riwayat SELURUH branch (main + kedua branch claude/*) sudah di-rewrite di mirror clone lokal (275 commit, terverifikasi `data/` benar-benar hilang dari semua history) — **tapi sesi ini hanya punya izin push ke `claude/serene-brahmagupta-wxd66w`** (percobaan `git push --mirror` ke `main`/branch lain ditolak 403 oleh kebijakan akses sesi, bukan sesuatu yang saya coba lewati). Hasilnya:
+  - ✅ `claude/serene-brahmagupta-wxd66w` di GitHub sudah bersih (force-pushed, riwayat di-rewrite, `data/` hilang total).
+  - ❌ `main` dan `claude/audit-hostinger-vps-deploy-vpmqyi` di GitHub **masih punya blob lama** di riwayatnya.
+  - Konsekuensi: karena riwayat branch ini di-rewrite (hash commit berubah semua), kalau nanti bikin PR dari branch ini ke `main` yang BELUM di-rewrite, git akan menganggap semua 275 commit itu "baru" (tidak ada leluhur bersama lagi) — diff PR akan sangat besar/membingungkan. **Harus bereskan `main` dulu** sebelum bikin PR, dengan cara yang SAMA (supaya hash hasil rewrite-nya identik dan histori nyambung lagi):
+    ```bash
+    pip install git-filter-repo
+    git clone --mirror https://github.com/ladangpangan/Ladang-Pangan-ERP erp-mirror.git
+    cd erp-mirror.git
+    git filter-repo --path data/ --invert-paths --force
+    git remote add origin https://github.com/ladangpangan/Ladang-Pangan-ERP
+    git push --mirror --force origin   # perlu kredensial dengan akses push ke main
+    ```
+    Jalankan ini dari mesin/sesi yang punya akses push ke `main` (bukan dari sesi Claude Code seperti ini).
 
 ## Yang BELUM dikerjakan
 
@@ -44,14 +57,14 @@ Awalnya dibangun di platform Emergent, sedang dipindah ke hosting sendiri.
   2. Cluster `ladangpanganid`, user `ladangpanganid`
   3. Cluster staging `stagginglpi`, user `ladangpanganindonesia4_db_user`
 - Setup Nginx + domain asli + HTTPS di VPS, lalu balikin `APP_BIND_IP`/`COOKIE_SECURE` ke default aman, tutup port 3000 di firewall.
-- Bersihkan `data/erp.db`/`data/uploads/*` dari riwayat git (lihat "Temuan lain" di atas) — perlu keputusan user dulu.
+- Selesaikan pembersihan `data/erp.db`/`data/uploads/*` dari riwayat `main` (lihat "Temuan lain" di atas — perlu dijalankan dari akses yang bisa push ke `main`, bukan dari sesi Claude Code ini).
 - Buat Pull Request untuk branch ini (ditawarkan, belum dibuat — user belum putuskan).
 
 ### Fitur baru yang diminta user
 1. Rollback & Hapus SO/PO — **SELESAI**, lihat di atas. User perlu coba di Railway/VPS.
 2. Potongan cashback — **SELESAI**, sudah diverifikasi user.
 3. Edit/tambah komisi kapan saja sebelum dibayar — **SELESAI** (ternyata sudah ada + ditambah shortcut UI di SO).
-4. **Integrasi Hermes Agent** (webhook atau MCP) — user sudah konfirmasi Hermes = **AI/LLM agent**. Masih perlu dikonfirmasi: (a) cuma baca data ERP, atau juga bisa eksekusi aksi (buat SO, catat pembayaran, dst.)? (b) mekanisme: webhook masuk ke ERP, MCP server yang ERP expose untuk dikonsumsi Hermes, atau ERP yang jadi client memanggil Hermes? Belum dikerjakan — perlu jawaban ini dulu.
+4. **Integrasi Hermes Agent** — **SELESAI**. User konfirmasi: Hermes = AI/LLM agent, butuh baca DAN eksekusi aksi, mekanisme bebas dipilih. Dibangun: (a) auth API-key opsional (`AGENT_API_KEY`/`AGENT_ROLE` di `.env`) yang membuka SELURUH REST API yang sudah ada (`app/api/[[...path]]/route.js`) ke pemanggil eksternal lewat header `Authorization: Bearer <key>` — tidak ada endpoint baru yang perlu dijaga sinkron, tinggal pakai yang sudah ada; (b) `scripts/hermes-mcp-server.mjs` — MCP server standalone (stdio transport) dengan 2 tool generik (`erp_read`, `erp_write`) yang jadi jembatan ke REST API di atas, untuk Hermes yang bicara protokol MCP. Keduanya sudah diuji end-to-end (lihat riwayat commit). Dokumentasi lengkap: `deploy/HERMES_INTEGRATION.md`. **User belum mencoba dari sisi Hermes sungguhan** (belum tahu apakah Hermes MCP-native atau perlu REST biasa) — tinggal generate `AGENT_API_KEY` di server & pilih salah satu jalur sesuai kemampuan Hermes. Webhook KELUAR (ERP → Hermes, notifikasi event) belum dibangun — butuh tahu dulu endpoint penerima di sisi Hermes.
 
 ## Fakta arsitektur penting (biar tidak salah asumsi lagi)
 - **SQLite** = TIDAK ADA yang murni SQLite-only lagi di antara tabel transaksional utama (lihat koreksi PO di atas). SQLite sekarang murni cache per-pod yang di-hydrate dari Mongo untuk hampir semua tabel transaksi.
@@ -62,7 +75,7 @@ Awalnya dibangun di platform Emergent, sedang dipindah ke hosting sendiri.
 
 ## Saran urutan lanjut
 1. User coba Fitur #1 (Rollback & Hapus) di Railway/VPS — mulai dari SO/PO test/tidak penting dulu, cek hasilnya di UI & (kalau perlu) langsung ke Mongo.
-2. User jalankan `check_stale_deletes.js` di VPS kapan sempat, laporkan hasilnya (tidak lagi blocking, tapi masih relevan untuk bersih-bersih data lama).
-3. Jawab pertanyaan Fitur #4 (Hermes Agent) di atas supaya bisa mulai desain integrasinya.
-4. Putuskan soal `data/erp.db` yang ter-commit di git (lihat "Temuan lain").
+2. User set `AGENT_API_KEY` di `.env` server & coba integrasi Hermes (Fitur #4) — pilih jalur REST langsung atau MCP server sesuai kemampuan Hermes, lihat `deploy/HERMES_INTEGRATION.md`.
+3. User jalankan `check_stale_deletes.js` di VPS kapan sempat, laporkan hasilnya (tidak lagi blocking, tapi masih relevan untuk bersih-bersih data lama).
+4. Selesaikan pembersihan riwayat `main` (`data/erp.db`) dari akses yang bisa push ke `main` (lihat "Temuan lain") — sebelum bikin PR dari branch ini.
 5. Masuk ke daftar keamanan pra-produksi (ganti password, rotate Mongo, Nginx+HTTPS, PR).
