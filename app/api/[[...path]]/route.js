@@ -23,6 +23,7 @@ import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import * as miscMongo from '@/lib/db/misc-mongo';
+import * as crmMongo from '@/lib/db/crm-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 import { recordLedger } from '@/lib/inventory/ledger';
@@ -287,6 +288,9 @@ const MISC_PATHS = new Set([
   'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
 ]);
 
+// Phase 11: path[0] prefixes that READ or WRITE leads / lead_tasks (CRM pipeline & follow-up).
+const CRM_PATHS = new Set(['leads', 'lead-tasks']);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -397,6 +401,10 @@ async function handleRoute(request, { params }) {
       if (stale('misc')) tasks.push((async () => { try { await miscMongo.ensureReady(raw); g.misc = Date.now(); } catch { /* best-effort */ } })());
       if (isMut) snappers.push(() => miscMongo.captureSnapshot(request, raw));
     }
+    if (want('crm', CRM_PATHS.has(p0))) {
+      if (stale('crm')) tasks.push((async () => { try { await crmMongo.ensureReady(raw); g.crm = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => crmMongo.captureSnapshot(request, raw));
+    }
     if (tasks.length) { try { await Promise.all(tasks); } catch { /* best-effort */ } }
     for (const fn of snappers) { try { fn(); } catch { /* best-effort */ } }
   }
@@ -434,6 +442,7 @@ async function handleRoute(request, { params }) {
       'work-orders':      { table: s.workOrder,      roles: ['admin', 'supervisor'] },
       'inventory-stocks': { table: s.inventoryStock, roles: ['admin', 'supervisor'] },
       'users':            { table: s.user,           roles: ['admin', 'supervisor', 'direktur'] },
+      'leads':            { table: s.leads,           roles: ['admin', 'supervisor', 'direktur'] },
     };
     // Build the archived filter for a list GET based on ?archived= param.
     // default => only ACTIVE (archived_at IS NULL); '1'|'true' => only ARCHIVED; 'all' => both.
@@ -900,6 +909,225 @@ async function handleRoute(request, { params }) {
     }
 
 
+
+    // ---------- CRM: Pipeline Prospek/Leads + Follow-up ----------
+    // Semua role login bisa akses modul ini, tapi role non-manajemen (bukan admin/supervisor/
+    // direktur) hanya bisa lihat & kelola leads/tugas yang jadi PIC/assignee mereka sendiri.
+    const CRM_FULL_ACCESS_ROLES = ['admin', 'supervisor', 'direktur'];
+    const isCrmFullAccess = (session) => CRM_FULL_ACCESS_ROLES.includes(session?.user?.role);
+    const LEAD_STAGES = ['Kontak Awal', 'Penawaran', 'Negosiasi', 'Deal', 'Gagal'];
+    const LEAD_TERMINAL_STAGES = ['Deal', 'Gagal'];
+    const nextLeadNumber = (dateArg) => {
+      const ym = dateArg ? new Date(dateArg) : new Date();
+      const prefix = `LEAD/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const rows = db.select({ n: s.leads.leadNumber }).from(s.leads).where(like(s.leads.leadNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      let next = max + 1;
+      while (db.select({ id: s.leads.id }).from(s.leads).where(eq(s.leads.leadNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) next += 1;
+      return `${prefix}${String(next).padStart(4, '0')}`;
+    };
+
+    // GET /leads - list (pipeline board data). ?stage=&source=&q=&mine=1&archived=
+    if (route === '/leads' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const url = new URL(request.url);
+      const fullAccess = isCrmFullAccess(session);
+      const conds = [];
+      { const ac = archivedCond(s.leads, url); if (ac) conds.push(ac); }
+      const stage = url.searchParams.get('stage');
+      if (stage && LEAD_STAGES.includes(stage)) conds.push(eq(s.leads.stage, stage));
+      const source = url.searchParams.get('source');
+      if (source) conds.push(eq(s.leads.source, source));
+      const q = url.searchParams.get('q');
+      if (q) conds.push(or(like(s.leads.contactName, `%${q}%`), like(s.leads.companyName, `%${q}%`), like(s.leads.phone, `%${q}%`), like(s.leads.leadNumber, `%${q}%`)));
+      // Non-management role: selalu dipaksa ke leads miliknya sendiri, apa pun query mine=.
+      // Role manajemen: default semua leads, bisa filter ?mine=1 atau ?pic=<email> kalau mau.
+      if (!fullAccess) {
+        conds.push(eq(s.leads.picEmail, session.user.email));
+      } else {
+        if (url.searchParams.get('mine') === '1') conds.push(eq(s.leads.picEmail, session.user.email));
+        const pic = url.searchParams.get('pic');
+        if (pic) conds.push(eq(s.leads.picEmail, pic));
+      }
+      let query = db.select().from(s.leads);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(desc(s.leads.createdAt)).all();
+      return json({ data: rows });
+    }
+
+    // POST /leads - create new lead
+    if (route === '/leads' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json().catch(() => ({}));
+      if (!body.contactName) return err('Nama kontak wajib diisi');
+      const now = new Date();
+      const id = uuidv4();
+      const row = {
+        id,
+        leadNumber: nextLeadNumber(now),
+        companyName: body.companyName || null,
+        contactName: body.contactName,
+        phone: body.phone || null,
+        email: body.email || null,
+        address: body.address || null,
+        city: body.city || null,
+        source: body.source || 'lainnya',
+        stage: 'Kontak Awal',
+        estimatedValue: Number(body.estimatedValue || 0),
+        // Non-management role selalu jadi PIC atas leads yang dia buat sendiri; role manajemen
+        // boleh menugaskan ke sales lain lewat picEmail.
+        picEmail: (isCrmFullAccess(session) && body.picEmail) ? body.picEmail : session.user.email,
+        notes: body.notes || null,
+        createdBy: session.user.email,
+        createdAt: now,
+        updatedAt: now,
+      };
+      db.insert(s.leads).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+
+    // GET /leads/:id - detail + daftar follow-up task
+    if (route.startsWith('/leads/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const tasks = db.select().from(s.leadTasks).where(eq(s.leadTasks.leadId, id)).orderBy(s.leadTasks.dueDate).all();
+      let convertedContact = null;
+      if (lead.convertedContactId) {
+        convertedContact = db.select({ id: s.contacts.id, code: s.contacts.code, displayName: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, lead.convertedContactId)).get() || null;
+      }
+      return json({ data: { ...lead, tasks, convertedContact } });
+    }
+
+    // PATCH /leads/:id - edit field dasar (bukan stage/archive, ada endpoint sendiri)
+    if (route.startsWith('/leads/') && path.length === 2 && method === 'PATCH') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const body = await request.json().catch(() => ({}));
+      const patch = { updatedAt: new Date() };
+      for (const k of ['companyName', 'contactName', 'phone', 'email', 'address', 'city', 'source', 'notes']) {
+        if (body[k] !== undefined) patch[k] = body[k] || null;
+      }
+      if (body.estimatedValue !== undefined) patch.estimatedValue = Number(body.estimatedValue || 0);
+      if (body.picEmail !== undefined && isCrmFullAccess(session)) patch.picEmail = body.picEmail;
+      db.update(s.leads).set(patch).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/stage - transisi tahap pipeline. Body: { stage, lostReason? }
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'stage' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      if (LEAD_TERMINAL_STAGES.includes(lead.stage)) return err(`Lead sudah di tahap final (${lead.stage}), tidak bisa dipindah lagi`, 400);
+      const body = await request.json().catch(() => ({}));
+      const target = body.stage;
+      if (!LEAD_STAGES.includes(target)) return err('Tahap tidak valid', 400);
+      if (target === 'Gagal' && !body.lostReason) return err('Alasan gagal wajib diisi', 400);
+      if (target === 'Deal') return err('Gunakan endpoint /leads/:id/convert untuk menandai Deal', 400);
+      db.update(s.leads).set({ stage: target, lostReason: target === 'Gagal' ? body.lostReason : null, updatedAt: new Date() }).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/convert - tandai Deal & tautkan ke Contact (dibuat lewat POST /contacts
+    // yang sudah ada — supaya tidak duplikasi logika generate kode kontak, dsb). Body: { contactId }
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'convert' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      if (LEAD_TERMINAL_STAGES.includes(lead.stage)) return err(`Lead sudah di tahap final (${lead.stage})`, 400);
+      const body = await request.json().catch(() => ({}));
+      if (!body.contactId) return err('contactId wajib diisi (buat Contact dulu lewat POST /contacts)', 400);
+      const now = new Date();
+      db.update(s.leads).set({ stage: 'Deal', lostReason: null, convertedContactId: body.contactId, convertedAt: now, updatedAt: now }).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/tasks - tambah follow-up/reminder
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'tasks' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const body = await request.json().catch(() => ({}));
+      if (!body.title) return err('Judul tugas wajib diisi');
+      if (!body.dueDate) return err('Tanggal jatuh tempo wajib diisi');
+      const now = new Date();
+      const row = {
+        id: uuidv4(), leadId: id, title: body.title, dueDate: new Date(body.dueDate), status: 'pending',
+        assignedTo: (isCrmFullAccess(session) && body.assignedTo) ? body.assignedTo : lead.picEmail,
+        notes: body.notes || null, createdBy: session.user.email, createdAt: now,
+      };
+      db.insert(s.leadTasks).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+
+    // PATCH /leads/:id/tasks/:taskId - update status/isi tugas
+    if (route.startsWith('/leads/') && path.length === 4 && path[2] === 'tasks' && method === 'PATCH') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1]; const taskId = path[3];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const task = db.select().from(s.leadTasks).where(and(eq(s.leadTasks.id, taskId), eq(s.leadTasks.leadId, id))).get();
+      if (!task) return err('Tugas tidak ditemukan', 404);
+      const body = await request.json().catch(() => ({}));
+      const patch = {};
+      if (body.title !== undefined) patch.title = body.title;
+      if (body.dueDate !== undefined) patch.dueDate = new Date(body.dueDate);
+      if (body.notes !== undefined) patch.notes = body.notes || null;
+      if (body.assignedTo !== undefined && isCrmFullAccess(session)) patch.assignedTo = body.assignedTo;
+      if (body.status !== undefined) {
+        if (!['pending', 'done', 'cancelled'].includes(body.status)) return err('Status tidak valid', 400);
+        patch.status = body.status;
+        if (body.status === 'done') { patch.completedAt = new Date(); patch.completedBy = session.user.email; }
+        else { patch.completedAt = null; patch.completedBy = null; }
+      }
+      db.update(s.leadTasks).set(patch).where(eq(s.leadTasks.id, taskId)).run();
+      return json({ data: db.select().from(s.leadTasks).where(eq(s.leadTasks.id, taskId)).get() });
+    }
+
+    // DELETE /leads/:id/tasks/:taskId - hapus tugas (salah input dsb)
+    if (route.startsWith('/leads/') && path.length === 4 && path[2] === 'tasks' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1]; const taskId = path[3];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      db.delete(s.leadTasks).where(and(eq(s.leadTasks.id, taskId), eq(s.leadTasks.leadId, id))).run();
+      return json({ ok: true });
+    }
+
+    // GET /lead-tasks - daftar tugas lintas-lead (buat panel "Tugas Saya"). ?status=&overdue=1&mine=1
+    if (route === '/lead-tasks' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const url = new URL(request.url);
+      const fullAccess = isCrmFullAccess(session);
+      const conds = [];
+      if (!fullAccess || url.searchParams.get('mine') === '1') conds.push(eq(s.leadTasks.assignedTo, session.user.email));
+      const status = url.searchParams.get('status');
+      if (status) conds.push(eq(s.leadTasks.status, status));
+      if (url.searchParams.get('overdue') === '1') { conds.push(eq(s.leadTasks.status, 'pending')); conds.push(sql`${s.leadTasks.dueDate} < ${Math.floor(Date.now() / 1000)}`); }
+      let query = db.select().from(s.leadTasks);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(s.leadTasks.dueDate).all();
+      // Enrich dengan info lead (nomor + nama kontak) buat tampilan panel
+      const leadIds = [...new Set(rows.map((r) => r.leadId))];
+      const leadMap = {};
+      if (leadIds.length) for (const l of db.select({ id: s.leads.id, leadNumber: s.leads.leadNumber, contactName: s.leads.contactName, companyName: s.leads.companyName }).from(s.leads).where(inArray(s.leads.id, leadIds)).all()) leadMap[l.id] = l;
+      return json({ data: rows.map((r) => ({ ...r, lead: leadMap[r.leadId] || null })) });
+    }
 
     // ---------- AGENTIC AI ASSISTANT ----------
     // POST /ai/chat  { message, sessionId, history:[{role,content}] }
@@ -7032,6 +7260,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await tallyTxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 10: diff-persist any notifications / contact_customers / contact_documents / app_settings rows.
       try { await miscMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 11: diff-persist any leads / lead_tasks rows this request changed (concurrency-safe).
+      try { await crmMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
