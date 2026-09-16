@@ -23,6 +23,7 @@ import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
 import { generatePOPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
+import DangerZoneRollback from '@/components/danger-zone-rollback';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const PO_FLOW = {
@@ -159,6 +160,8 @@ export default function PODetailPage() {
         <TabsContent value="returns"><ReturnsTab po={po} onSaved={mutate} canOperate={canOperate} /></TabsContent>
         <TabsContent value="hpp"><HppTab po={po} /></TabsContent>
       </Tabs>
+
+      <DangerZoneRollback kind="po" id={po.id} number={po.poNumber} router={router} listPath="/dashboard/purchase-orders" onRolledBack={mutate} />
     </div>
   );
 }

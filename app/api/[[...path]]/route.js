@@ -24,6 +24,8 @@ import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import * as miscMongo from '@/lib/db/misc-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
+import { recordLedger } from '@/lib/inventory/ledger';
+import * as soPoRollback from '@/lib/ops/so-po-rollback';
 // -----------------------
 // Helpers
 // -----------------------
@@ -56,71 +58,6 @@ function requireRole(session, allowed) {
   // trik ini tidak mengganggu pembatasan cashbook untuk admin/supervisor.
   if (session.user.role === 'akuntan' && allowed.includes('admin')) return true;
   return allowed.includes(session.user.role);
-}
-
-// -----------------------
-// Stock Ledger (Kartu Stok) helper
-// Records a per-product stock movement. Wrapped in try/catch so a ledger
-// failure never breaks the primary operation.
-// -----------------------
-function recordLedger(db, entry) {
-  const id = uuidv4();
-  const ledgerDate = entry.ledgerDate || new Date();
-  const createdAt = new Date();
-  const vals = {
-    id,
-    ledgerDate,
-    productId: entry.productId,
-    coldStorageId: entry.coldStorageId || null,
-    zoneId: entry.zoneId || null,
-    movementType: entry.movementType,
-    referenceType: entry.referenceType || null,
-    referenceId: entry.referenceId || null,
-    referenceNumber: entry.referenceNumber || null,
-    qtyIn: Number(entry.qtyIn || 0),
-    weightIn: Number(entry.weightIn || 0),
-    qtyOut: Number(entry.qtyOut || 0),
-    weightOut: Number(entry.weightOut || 0),
-    hppPerKg: Number(entry.hppPerKg || 0),
-    kodeSimpan: entry.kodeSimpan || null,
-    transactionId: entry.transactionId || null,
-    stockId: entry.stockId || null,
-    notes: entry.notes || null,
-    createdBy: entry.createdBy || null,
-    createdAt,
-  };
-  try {
-    db.insert(s.stockLedger).values(vals).run();
-  } catch (e) {
-    console.error('[stock_ledger] record failed:', e?.message || e);
-  }
-  // Mirror to MongoDB (shared Kartu Stok across replicas). Fire-and-forget;
-  // stored in seconds to match the raw SQLite integer(timestamp) column.
-  try {
-    const toSec = (d) => Math.floor((d instanceof Date ? d.getTime() : new Date(d).getTime()) / 1000);
-    jmongo.recordStockLedgerMongo({
-      id,
-      ledger_date: toSec(ledgerDate),
-      product_id: vals.productId,
-      cold_storage_id: vals.coldStorageId,
-      zone_id: vals.zoneId,
-      movement_type: vals.movementType,
-      reference_type: vals.referenceType,
-      reference_id: vals.referenceId,
-      reference_number: vals.referenceNumber,
-      qty_in: vals.qtyIn,
-      weight_in: vals.weightIn,
-      qty_out: vals.qtyOut,
-      weight_out: vals.weightOut,
-      hpp_per_kg: vals.hppPerKg,
-      kode_simpan: vals.kodeSimpan,
-      transaction_id: vals.transactionId,
-      stock_id: vals.stockId,
-      notes: vals.notes,
-      created_by: vals.createdBy,
-      created_at: toSec(createdAt),
-    });
-  } catch (e) { /* best-effort */ }
 }
 
 // -----------------------
@@ -255,6 +192,9 @@ const INVENTORY_PATHS = new Set([
   'inventory', 'inventory-stocks', 'inventory-reports',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'opnames',
   'accounting', 'dashboard', 'reports',
+  // purchase-orders: added for POST /purchase-orders/:id/rollback, which can delete
+  // inventory_stock lots created by a PO's GRN inbound (reversePoInboundStock).
+  'purchase-orders',
 ]);
 
 // Phase 5: path[0] prefixes whose handlers READ or WRITE the PO aggregate / commission /
@@ -2760,6 +2700,21 @@ async function handleRoute(request, { params }) {
       return json({ data: updated });
     }
 
+    // POST /purchase-orders/:id/rollback - Rollback ke Draft atau Hapus Total (admin-only).
+    // Body: { apply?: boolean, full?: boolean }. Sama seperti /sales-orders/:id/rollback. Kalau PO ini
+    // ternyata PO dropship otomatis milik sebuah SO, diarahkan otomatis lewat SO supaya keduanya
+    // diproses dalam satu aksi (bukan PO sendirian jadi yatim). Diblokir kalau PO dipakai Work Order.
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
+      const id = path[1];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await soPoRollback.runPoRollback(db, id, { apply: !!body.apply, full: !!body.full, userEmail: session.user.email });
+        return json({ data: result });
+      } catch (e) { return err(e.message || 'Gagal memproses rollback/hapus PO', e.status || 400); }
+    }
+
     // POST /purchase-orders/:id/weighings - update per-item weighing (bulk)
     if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'weighings' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3576,6 +3531,22 @@ async function handleRoute(request, { params }) {
         return { ...r, dropshipper: dsc || null };
       });
       return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
+    }
+
+    // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (admin-only).
+    // Body: { apply?: boolean, full?: boolean }. apply falsy (default) = PREVIEW saja, tidak
+    // menulis apa pun. apply=true = eksekusi (backup JSON otomatis dulu). full=true = hapus total
+    // (header SO/PO ikut hilang), full=false = rollback ke Draft (item dipertahankan). Kalau SO ini
+    // punya PO dropship otomatis terkait, PO-nya ikut diproses dalam aksi yang sama.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
+      const id = path[1];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await soPoRollback.runSoRollback(db, id, { apply: !!body.apply, full: !!body.full, userEmail: session.user.email });
+        return json({ data: result });
+      } catch (e) { return err(e.message || 'Gagal memproses rollback/hapus SO', e.status || 400); }
     }
 
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk

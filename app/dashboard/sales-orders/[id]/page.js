@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth/auth-client';
 import { cn } from '@/lib/utils';
@@ -25,6 +25,7 @@ import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
+import DangerZoneRollback from '@/components/danger-zone-rollback';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -38,6 +39,7 @@ const STEPS = ['Draft', 'Confirmed', 'Packed', 'Shipped', 'Invoiced'];
 
 export default function SODetailPage() {
   const { id } = useParams();
+  const router = useRouter();
   const { data: session } = useSession();
   const role = session?.user?.role || 'operator';
   const canEdit = ['admin', 'supervisor'].includes(role);
@@ -230,6 +232,8 @@ export default function SODetailPage() {
         <TabsContent value="payments"><PaymentsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
+
+      <DangerZoneRollback kind="so" id={so.id} number={so.soNumber} router={router} listPath="/dashboard/sales-orders" onRolledBack={mutate} />
 
       {/* Konfirmasi perubahan status (menggantikan native confirm) */}
       <Dialog open={!!confirmTarget} onOpenChange={(o) => { if (!o && !transitioning) setConfirmTarget(null); }}>
