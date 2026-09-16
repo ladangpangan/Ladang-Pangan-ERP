@@ -75,7 +75,7 @@ export default function DangerZoneRollback({ kind, id, number, router, listPath,
   const [confirmText, setConfirmText] = useState('');
   const [applying, setApplying] = useState(false);
 
-  if (role !== 'admin') return null;
+  if (role !== 'direktur') return null;
 
   const apiBase = kind === 'so' ? `/api/sales-orders/${id}/rollback` : `/api/purchase-orders/${id}/rollback`;
   const label = kind === 'so' ? 'Sales Order' : 'Purchase Order';
@@ -108,7 +108,7 @@ export default function DangerZoneRollback({ kind, id, number, router, listPath,
     <Card className="border-red-300 bg-red-50/40">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2 text-red-800"><AlertTriangle className="w-4 h-4" />Zona Berbahaya</CardTitle>
-        <CardDescription className="text-xs">Khusus admin. Selalu ada pratinjau + backup JSON otomatis sebelum eksekusi.</CardDescription>
+        <CardDescription className="text-xs">Khusus direktur. Selalu ada pratinjau + backup JSON otomatis sebelum eksekusi.</CardDescription>
       </CardHeader>
       <CardContent className="flex gap-2 flex-wrap">
         <Button size="sm" variant="outline" className="border-amber-400 text-amber-700 hover:bg-amber-50" onClick={() => openDialog('rollback')}>

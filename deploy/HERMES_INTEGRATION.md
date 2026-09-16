@@ -32,9 +32,11 @@ AGENT_ROLE=admin
 - `AGENT_ROLE` menentukan level akses Hermes, memakai role yang PERSIS sama dengan yang
   dipakai user manusia (`admin`, `supervisor`, `akuntan`, `direktur`, `operator`) — setiap
   endpoint yang sudah ada otomatis menerapkan pembatasan role yang sama ke Hermes. Default
-  `admin` (akses penuh, termasuk endpoint destruktif seperti Rollback & Hapus SO/PO). Turunkan
-  ke `supervisor` atau `akuntan` kalau mau Hermes lebih terbatas ke baca-baca + aksi
-  operasional biasa.
+  `admin` (akses ke hampir semua endpoint operasional). Endpoint **Rollback & Hapus SO/PO**
+  khusus untuk role `direktur` (bukan `admin`) — set `AGENT_ROLE=direktur` kalau memang mau
+  Hermes bisa memicu rollback/hapus juga; kalau tidak, biarkan `admin`/`supervisor`/`akuntan`
+  supaya endpoint destruktif itu otomatis tertutup untuk Hermes. Turunkan ke `supervisor` atau
+  `akuntan` kalau mau Hermes lebih terbatas ke baca-baca + aksi operasional biasa.
 - **JANGAN** pernah tempel nilai `AGENT_API_KEY` yang asli ke chat/tiket/commit — perlakukan
   seperti password (pelajaran dari insiden password MongoDB Atlas yang sempat ke-expose di
   sesi sebelumnya).

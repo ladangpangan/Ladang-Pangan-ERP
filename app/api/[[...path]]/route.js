@@ -2734,13 +2734,13 @@ async function handleRoute(request, { params }) {
       return json({ data: updated });
     }
 
-    // POST /purchase-orders/:id/rollback - Rollback ke Draft atau Hapus Total (admin-only).
+    // POST /purchase-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
     // Body: { apply?: boolean, full?: boolean }. Sama seperti /sales-orders/:id/rollback. Kalau PO ini
     // ternyata PO dropship otomatis milik sebuah SO, diarahkan otomatis lewat SO supaya keduanya
     // diproses dalam satu aksi (bukan PO sendirian jadi yatim). Diblokir kalau PO dipakai Work Order.
     if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
+      if (!requireRole(session, ['direktur'])) return err('Forbidden - hanya direktur', 403);
       const id = path[1];
       const body = await request.json().catch(() => ({}));
       try {
@@ -3567,14 +3567,14 @@ async function handleRoute(request, { params }) {
       return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
-    // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (admin-only).
+    // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
     // Body: { apply?: boolean, full?: boolean }. apply falsy (default) = PREVIEW saja, tidak
     // menulis apa pun. apply=true = eksekusi (backup JSON otomatis dulu). full=true = hapus total
     // (header SO/PO ikut hilang), full=false = rollback ke Draft (item dipertahankan). Kalau SO ini
     // punya PO dropship otomatis terkait, PO-nya ikut diproses dalam aksi yang sama.
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
-      if (!requireRole(session, ['admin'])) return err('Forbidden - hanya admin', 403);
+      if (!requireRole(session, ['direktur'])) return err('Forbidden - hanya direktur', 403);
       const id = path[1];
       const body = await request.json().catch(() => ({}));
       try {
