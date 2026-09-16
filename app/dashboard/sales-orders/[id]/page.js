@@ -206,34 +206,7 @@ export default function SODetailPage() {
         </Card>
       )}
 
-      {Array.isArray(so.commissions) && so.commissions.length > 0 && (
-        <Card className="border-pink-200 bg-pink-50/40">
-          <CardContent className="py-3">
-            {so.commissions.map((cm) => {
-              const typeLabel = cm.commissionType === 'per_kg' ? 'Per Kg'
-                : cm.commissionType === 'fixed' ? 'Nominal Tetap'
-                : cm.commissionType === 'percent_profit' ? '% Profit Bersih' : (cm.commissionType || '-');
-              const valLabel = cm.commissionType === 'percent_profit'
-                ? `${Number(cm.commissionValue || 0)}%`
-                : `Rp ${Number(cm.commissionValue || 0).toLocaleString('id-ID')}`;
-              return (
-                <div key={cm.id} className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
-                  <div className="flex items-center gap-2 font-semibold text-pink-800"><Wallet className="w-4 h-4" />Komisi Dropshipper</div>
-                  <div><span className="text-muted-foreground">Dropshipper: </span><b>{cm.dropshipper ? `${cm.dropshipper.code} · ${cm.dropshipper.displayName}` : '-'}</b></div>
-                  <div><span className="text-muted-foreground">Tipe: </span><b>{typeLabel}</b> <span className="text-muted-foreground">({valLabel})</span></div>
-                  <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">Rp {Number(cm.commissionAmount || 0).toLocaleString('id-ID')}</b></div>
-                  <div>
-                    <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
-                      cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
-                      {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
+      <CommissionCard so={so} canEdit={canEdit} onSaved={mutate} />
 
       <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
 
@@ -611,6 +584,171 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
   );
 }
 
+
+const COMMISSION_TYPE_LABEL = { per_kg: 'Per Kg', fixed: 'Nominal Tetap', percent_profit: '% Profit Bersih', manual: 'Manual' };
+
+function CommissionCard({ so, canEdit, onSaved }) {
+  const commissions = Array.isArray(so.commissions) ? so.commissions : [];
+  const [addOpen, setAddOpen] = useState(false);
+  const [dropshippers, setDropshippers] = useState([]);
+  const [dsId, setDsId] = useState('');
+  const [commissionType, setCommissionType] = useState('per_kg');
+  const [commissionValue, setCommissionValue] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [editRec, setEditRec] = useState(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  if (!canEdit && commissions.length === 0) return null;
+
+  const openAdd = async () => {
+    setDsId(''); setCommissionType('per_kg'); setCommissionValue(0);
+    setAddOpen(true);
+    try {
+      const res = await fetch('/api/contacts?type=Dropshipper');
+      const j = await res.json();
+      if (res.ok) setDropshippers(j.data || []);
+    } catch { /* ignore */ }
+  };
+
+  const onDsChange = (val) => {
+    setDsId(val);
+    const ds = dropshippers.find(d => d.id === val);
+    if (ds) { setCommissionType(ds.commissionType || 'per_kg'); setCommissionValue(Number(ds.commissionValue || 0)); }
+  };
+
+  const saveAdd = async () => {
+    if (!dsId) return toast.error('Pilih dropshipper');
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/contacts/${dsId}/commissions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ salesOrderId: so.id, commissionType, commissionValue: Number(commissionValue || 0) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Komisi ditambahkan'); setAddOpen(false); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  const openEdit = (cm) => { setEditRec(cm); setEditAmount(String(Number(cm.commissionAmount || 0))); };
+  const saveEdit = async () => {
+    if (!editRec) return;
+    const amt = Number(editAmount);
+    if (!Number.isFinite(amt) || amt < 0) return toast.error('Jumlah komisi tidak valid');
+    setSavingEdit(true);
+    try {
+      const res = await fetch(`/api/contacts/${editRec.dropshipperId}/commissions/${editRec.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commissionAmount: amt }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Jumlah komisi diperbarui'); setEditRec(null); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSavingEdit(false); }
+  };
+
+  const removeRec = async (cm) => {
+    if (!confirm(`Hapus komisi ${cm.dropshipper?.displayName || ''} untuk SO ini?`)) return;
+    const res = await fetch(`/api/contacts/${cm.dropshipperId}/commissions/${cm.id}`, { method: 'DELETE' });
+    if (res.ok) { toast.success('Terhapus'); onSaved(); } else { const j = await res.json(); toast.error(j.error); }
+  };
+
+  return (
+    <Card className="border-pink-200 bg-pink-50/40">
+      <CardContent className="py-3 space-y-2">
+        {commissions.length === 0 ? (
+          <div className="text-sm text-muted-foreground">Belum ada komisi dropshipper untuk SO ini.</div>
+        ) : commissions.map((cm) => {
+          const valLabel = cm.commissionType === 'percent_profit'
+            ? `${Number(cm.commissionValue || 0)}%`
+            : rp(cm.commissionValue);
+          return (
+            <div key={cm.id} className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
+              <div className="flex items-center gap-2 font-semibold text-pink-800"><Wallet className="w-4 h-4" />Komisi Dropshipper</div>
+              <div><span className="text-muted-foreground">Dropshipper: </span><b>{cm.dropshipper ? `${cm.dropshipper.code} · ${cm.dropshipper.displayName}` : '-'}</b></div>
+              <div><span className="text-muted-foreground">Tipe: </span><b>{COMMISSION_TYPE_LABEL[cm.commissionType] || cm.commissionType || '-'}</b> <span className="text-muted-foreground">({valLabel})</span></div>
+              <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">{rp(cm.commissionAmount)}</b></div>
+              <div>
+                <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
+                  cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+                  {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
+                </span>
+              </div>
+              {canEdit && cm.status !== 'paid' && (
+                <div className="flex items-center gap-0.5 ml-auto">
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit jumlah" onClick={() => openEdit(cm)}><Pencil className="w-3.5 h-3.5 text-blue-600" /></Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Hapus" onClick={() => removeRec(cm)}><Trash2 className="w-3.5 h-3.5 text-red-500" /></Button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {canEdit && (
+          <Button size="sm" variant="outline" onClick={openAdd}><Plus className="w-4 h-4 mr-1" />Tambah Komisi</Button>
+        )}
+      </CardContent>
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Tambah Komisi Dropshipper</DialogTitle>
+            <DialogDescription>Untuk SO {so.soNumber} — bisa ditambahkan kapan pun terlepas dari status SO.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Dropshipper *</Label>
+              <Select value={dsId} onValueChange={onDsChange}>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih dropshipper" /></SelectTrigger>
+                <SelectContent>
+                  {dropshippers.map(d => <SelectItem key={d.id} value={d.id}>{d.code} · {d.displayName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Tipe Komisi</Label>
+                <Select value={commissionType} onValueChange={setCommissionType}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_kg">Per Kg</SelectItem>
+                    <SelectItem value="fixed">Nominal Tetap</SelectItem>
+                    <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">{commissionType === 'percent_profit' ? 'Nilai (%)' : 'Nilai (Rp)'}</Label>
+                <Input type="number" className="mt-1" value={commissionValue} onChange={e => setCommissionValue(e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={saveAdd} disabled={saving || !dsId}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editRec} onOpenChange={(o) => { if (!o) setEditRec(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Jumlah Komisi</DialogTitle>
+            <DialogDescription>{editRec?.dropshipper?.displayName || ''} — bisa diedit kapan pun sebelum dibayar.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Jumlah Komisi (Rp)</Label>
+              <Input type="number" min={0} className="mt-1" value={editAmount} onChange={e => setEditAmount(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={saveEdit} disabled={savingEdit}>{savingEdit && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
 
 function InfoTab({ so }) {
   const rows = [
