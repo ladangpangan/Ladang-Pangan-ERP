@@ -189,6 +189,15 @@ function CreateSODialog({ onSaved }) {
   const products = prods?.data || [];
   // Filter out already-picked stocks
   const usedStockIds = new Set(form.items.map(it => it.stockId).filter(Boolean));
+  // Total stok aktif per produk (agar terlihat langsung di dropdown "Pilih produk", tanpa perlu buka Inventory)
+  const stockWeightByProduct = useMemo(() => {
+    const m = {};
+    for (const st of stocks) {
+      const w = Number(st.availableWeight !== undefined ? st.availableWeight : st.weight || 0);
+      m[st.productId] = (m[st.productId] || 0) + w;
+    }
+    return m;
+  }, [stocks]);
 
   const pickStock = (idx, stk) => {
     const product = products.find(p => p.id === stk.productId) || stk.product || {};
@@ -399,7 +408,14 @@ function CreateSODialog({ onSaved }) {
                       <>
                         <Select value={it.productId || ''} onValueChange={v => { const p = products.find(x => x.id === v) || {}; updItem(i, { productId: v, productName: p.name || '', packagingType: p.packagingType || '', unitPrice: 0, avgHppPerKg: Number(p.avgHppPerKg || 0), availableWeight: 999999 }); }}>
                           <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih produk" /></SelectTrigger>
-                          <SelectContent>{products.map(p => <SelectItem key={p.id} value={p.id}>{p.sku} - {p.name}</SelectItem>)}</SelectContent>
+                          <SelectContent>{products.map(p => {
+                            const stockW = stockWeightByProduct[p.id] || 0;
+                            return (
+                              <SelectItem key={p.id} value={p.id}>
+                                {p.sku} - {p.name} <span className={cn('text-xs', stockW > 0 ? 'text-emerald-600' : 'text-red-500')}>(Stok: {stockW.toLocaleString('id-ID', { maximumFractionDigits: 1 })} kg)</span>
+                              </SelectItem>
+                            );
+                          })}</SelectContent>
                         </Select>
                         {it.productId && (
                           <div className="text-[11px] text-muted-foreground mt-1">
