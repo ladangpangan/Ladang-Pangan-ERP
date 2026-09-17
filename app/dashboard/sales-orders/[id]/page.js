@@ -995,6 +995,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
   const [stocks, setStocks] = useState(null);
   const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
   const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
   useEffect(() => {
     (async () => {
       try {
@@ -1009,7 +1010,13 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
     })();
   }, [so.id, item.productId]);
   const toggle = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const list = stocks || [];
+  // Urut berdasar nomor kode simpan (kecil -> besar; numeric compare biar "1000010" < "1000009" tidak
+  // salah urut kalau suatu saat ada kode manual dengan panjang berbeda), lalu filter cari kode/berat.
+  const sorted = (stocks || []).slice().sort((a, b) => String(a.kodeSimpan || '').localeCompare(String(b.kodeSimpan || ''), undefined, { numeric: true }));
+  const qNorm = q.trim().toLowerCase();
+  const list = qNorm
+    ? sorted.filter((st) => String(st.kodeSimpan || '').toLowerCase().includes(qNorm) || String(st.weight ?? '').includes(qNorm))
+    : sorted;
   const chosen = list.filter(s => selected.has(s.id));
   const totalW = chosen.reduce((a, b) => a + Number(b.weight || 0), 0);
   const totalQ = chosen.reduce((a, b) => a + Number(b.quantity || 0), 0);
@@ -1034,10 +1041,15 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
           <DialogTitle className="flex items-center gap-2"><Package className="w-5 h-5" /> Pilih Kode Simpan — {item.product?.name}</DialogTitle>
           <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Berat &amp; subtotal SO otomatis direvisi.</DialogDescription>
         </DialogHeader>
+        {stocks !== null && sorted.length > 0 && (
+          <Input placeholder="Cari kode simpan atau berat (kg)..." value={q} onChange={(e) => setQ(e.target.value)} className="mb-1" />
+        )}
         {stocks === null ? (
           <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Memuat stok…</div>
-        ) : list.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <div className="py-10 text-center text-muted-foreground text-sm">Tidak ada kode simpan aktif untuk produk ini.</div>
+        ) : list.length === 0 ? (
+          <div className="py-10 text-center text-muted-foreground text-sm">Tidak ada kode simpan yang cocok dengan pencarian &quot;{q}&quot;.</div>
         ) : (
           <div className="space-y-2">
             {list.map(st => {
