@@ -4188,7 +4188,7 @@ async function handleRoute(request, { params }) {
       if (!so) return err('Not found', 404);
       if (so.pipelineStatus !== 'Invoiced') return err('Basis invoice hanya dapat diubah pada SO berstatus Invoiced');
       const body = await request.json();
-      const basis = body.basis === 'received' ? 'received' : 'shipped';
+      const basis = ['ordered', 'received'].includes(body.basis) ? body.basis : 'shipped';
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
       // received per produk dari Receipts (Penerimaan Customer) untuk basis 'received'
       let recvByProduct = {};
@@ -4202,7 +4202,10 @@ async function handleRoute(request, { params }) {
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
         let w;
-        if (basis === 'received') {
+        if (basis === 'ordered') {
+          // Berat Pesan asli — TIDAK pernah tersubstitusi oleh shipped/received/allocated.
+          w = Number(it.weight || 0);
+        } else if (basis === 'received') {
           // Prefer the receipt weight (source of truth for "diterima") over any stale item value.
           if (recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId];
           else w = Number(it.receivedWeight || 0) || Number(it.shippedWeight || it.weight || 0);
@@ -4358,9 +4361,9 @@ async function handleRoute(request, { params }) {
           db.update(s.contacts).set({ prepaidBalance: newBal, updatedAt: new Date() }).where(eq(s.contacts.id, cust.id)).run();
         }
       }
-      // On Invoiced: pilih basis berat (shipped/received) & recompute total, lalu auto-generate invoice
+      // On Invoiced: pilih basis berat (ordered/shipped/received) & recompute total, lalu auto-generate invoice
       if (target === 'Invoiced') {
-        const basis = body.invoiceWeightBasis === 'received' ? 'received' : 'shipped';
+        const basis = ['ordered', 'received'].includes(body.invoiceWeightBasis) ? body.invoiceWeightBasis : 'shipped';
         upd.invoiceWeightBasis = basis;
         const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
         // received per produk dari Receipts (auto), untuk basis 'received'
@@ -4375,7 +4378,10 @@ async function handleRoute(request, { params }) {
         let subtotal = 0, discountTotal = 0;
         for (const it of items) {
           let w;
-          if (basis === 'received') {
+          if (basis === 'ordered') {
+            // Berat Pesan asli — TIDAK pernah tersubstitusi oleh shipped/received/allocated.
+            w = Number(it.weight || 0);
+          } else if (basis === 'received') {
             w = Number(it.receivedWeight || 0);
             if (!w && recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId]; // auto dari receipts
             if (!w) w = Number(it.shippedWeight || it.weight || 0);

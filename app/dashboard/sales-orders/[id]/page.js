@@ -47,7 +47,7 @@ export default function SODetailPage() {
   const { data, mutate, isLoading } = useSWR(`/api/sales-orders/${id}`, fetcher);
   const so = data?.data;
   const [confirmTarget, setConfirmTarget] = useState(null); // status transition dialog target
-  const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'shipped' | 'received'
+  const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'ordered' | 'shipped' | 'received'
   const [transitioning, setTransitioning] = useState(false);
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -70,7 +70,7 @@ export default function SODetailPage() {
       const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await res.json();
       if (res.ok) {
-        toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : 'berat kirim'})` : ''));
+        toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : body.invoiceWeightBasis === 'ordered' ? 'berat pesan' : 'berat kirim'})` : ''));
         setConfirmTarget(null);
         mutate();
       } else {
@@ -253,6 +253,7 @@ export default function SODetailPage() {
           {confirmTarget === 'Invoiced' && (
             <div className="space-y-2 py-1">
               {[
+                { v: 'ordered', title: 'Berat Pesan', desc: 'Nilai invoice mengikuti berat yang dipesan customer, terlepas dari berat kirim/terima riil.' },
                 { v: 'shipped', title: 'Berat Kirim (Surat Jalan)', desc: 'Nilai invoice mengikuti berat riil yang dikirim.' },
                 { v: 'received', title: 'Berat Diterima (Penerimaan)', desc: 'Nilai invoice mengikuti berat yang diterima customer (setelah susut).' },
               ].map(opt => (
