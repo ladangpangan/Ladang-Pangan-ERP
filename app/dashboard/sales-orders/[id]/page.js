@@ -756,6 +756,12 @@ function CommissionCard({ so, canEdit, onSaved }) {
 }
 
 function InfoTab({ so }) {
+  const items = so.items || [];
+  const sumW = (k) => items.reduce((a, it) => a + Number(it[k] || 0), 0);
+  const beratPesan = sumW('weight');
+  const beratDipilih = sumW('allocatedWeight');
+  const beratKirim = sumW('shippedWeight');
+  const beratTerima = sumW('receivedWeight');
   const rows = [
     ['Customer', so.customer?.displayName],
     ['Kode Customer', so.customer?.code],
@@ -769,6 +775,10 @@ function InfoTab({ so }) {
     ['Invoice Number', so.invoiceNumber || '-'],
     ['Invoice Date', so.invoiceDate && format(new Date(so.invoiceDate), 'dd MMM yyyy')],
     ['Due Date', so.dueDate && format(new Date(so.dueDate), 'dd MMM yyyy')],
+    ['Berat Pesan', `${beratPesan.toFixed(1)} kg`],
+    ['Berat Dipilih', beratDipilih > 0 ? `${beratDipilih.toFixed(1)} kg` : '-'],
+    ['Berat Kirim', beratKirim > 0 ? `${beratKirim.toFixed(1)} kg` : '-'],
+    ['Berat Terima', beratTerima > 0 ? `${beratTerima.toFixed(1)} kg` : '-'],
   ];
   return (
     <Card><CardContent className="pt-6 space-y-4">
@@ -853,7 +863,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
       </CardHeader>
       <CardContent className="p-0">
         <Table>
-          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">HPP/kg</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat Pesan</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">HPP/kg</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
           <TableBody>
             {so.items?.map(it => (
               <TableRow key={it.id}>
@@ -977,7 +987,7 @@ function EditItemsDialog({ so, onClose, onSaved }) {
                 </Select>
               </div>
               <div className="col-span-1"><Label className="text-xs">Qty</Label><Input type="number" value={r.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} className="h-9" /></div>
-              <div className="col-span-2"><Label className="text-xs">Berat (kg)</Label><WeightInput value={r.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
+              <div className="col-span-2"><Label className="text-xs">Berat Pesan (kg)</Label><WeightInput value={r.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
               <div className="col-span-2"><Label className="text-xs">Harga/kg</Label><CurrencyInput value={r.unitPrice} onChange={v => upd(i, 'unitPrice', v)} placeholder="0" /></div>
               <div className="col-span-2"><Label className="text-xs">Diskon</Label><CurrencyInput value={r.discount} onChange={v => upd(i, 'discount', v)} placeholder="0" /></div>
               <div className="col-span-1"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>

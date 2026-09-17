@@ -420,7 +420,7 @@ function CreateSODialog({ onSaved }) {
                 {it.productId && (
                   <div className={cn('grid grid-cols-2 gap-2 pl-6', isDropship ? 'md:grid-cols-5' : 'md:grid-cols-4')}>
                     <div>
-                      <Label className="text-xs">Berat Dijual (kg) *</Label>
+                      <Label className="text-xs">Berat Pesan (kg) *</Label>
                       <Input
                         type="number"
                         step="0.1"
