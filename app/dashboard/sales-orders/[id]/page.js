@@ -874,7 +874,14 @@ function ItemsTab({ so, onSaved, canEdit }) {
                   )}
                 </TableCell>
                 <TableCell className="text-right">{it.quantity} {pkgShort(it.product?.packagingType)}</TableCell>
-                <TableCell className="text-right">{Number(it.weight).toFixed(1)} kg</TableCell>
+                <TableCell className="text-right">
+                  <div>{Number(it.weight).toFixed(1)} kg</div>
+                  <div className="text-[10px] text-muted-foreground space-y-0.5 mt-0.5">
+                    {Number(it.allocatedWeight) > 0 && <div>Dipilih: {Number(it.allocatedWeight).toFixed(1)} kg</div>}
+                    {Number(it.shippedWeight) > 0 && <div className="text-blue-600">Kirim: {Number(it.shippedWeight).toFixed(1)} kg</div>}
+                    {Number(it.receivedWeight) > 0 && <div className="text-emerald-600">Terima: {Number(it.receivedWeight).toFixed(1)} kg</div>}
+                  </div>
+                </TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                 <TableCell className="text-right text-xs text-muted-foreground">{it.hppAvgPerKg > 0 ? `Rp ${Number(it.hppAvgPerKg).toLocaleString('id-ID')}` : '-'}</TableCell>
                 <TableCell className="text-right font-semibold">Rp {Number(it.subtotal).toLocaleString('id-ID')}</TableCell>
@@ -1144,7 +1151,8 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
       if (sj.shipToCustomerId) { setShipMode(sj.shipToCustomerId); }
       else if (sj.shipToName) { setShipMode('manual'); setShipManual({ shipToName: sj.shipToName || '', shipToPhone: sj.shipToPhone || '', shipToAddress: sj.shipToAddress || '' }); }
       else { setShipMode('default'); setShipManual({ shipToName: '', shipToPhone: '', shipToAddress: '' }); }
-      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      // Default berat kirim: pakai yang sudah tercatat riil > estimasi dari kode simpan terpilih > berat pesanan.
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.allocatedWeight || it.weight || 0; });
       setItemWeights(init);
     }
     setOpen(o);
@@ -1194,7 +1202,7 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
             <div className="space-y-1">
               {(so.items || []).map(it => (
                 <div key={it.id} className="flex items-center gap-2 text-sm">
-                  <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                  <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(Pesan: {it.weight}kg{Number(it.allocatedWeight) > 0 && Number(it.allocatedWeight) !== Number(it.weight) ? ` · Dipilih: ${it.allocatedWeight}kg` : ''})</span></span>
                   <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
                 </div>
               ))}
@@ -1225,7 +1233,8 @@ function SjTab({ so, onSaved, canOperate }) {
   const endCustomers = ccData?.data || [];
   const openDialog = (o) => {
     if (o) {
-      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      // Default berat kirim: pakai yang sudah tercatat riil > estimasi dari kode simpan terpilih > berat pesanan.
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.allocatedWeight || it.weight || 0; });
       setItemWeights(init);
     }
     setOpen(o);
@@ -1281,7 +1290,7 @@ function SjTab({ so, onSaved, canOperate }) {
                   <div className="space-y-1">
                     {(so.items || []).map(it => (
                       <div key={it.id} className="flex items-center gap-2 text-sm">
-                        <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                        <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(Pesan: {it.weight}kg{Number(it.allocatedWeight) > 0 && Number(it.allocatedWeight) !== Number(it.weight) ? ` · Dipilih: ${it.allocatedWeight}kg` : ''})</span></span>
                         <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
                       </div>
                     ))}
