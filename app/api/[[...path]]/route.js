@@ -4689,11 +4689,25 @@ async function handleRoute(request, { params }) {
       const mkMap = {};
       if (Array.isArray(body.items)) for (const it of body.items) { if (it && it.itemId != null) mkMap[it.itemId] = it.markupUnitPrice; }
 
+      // Berat yang dipakai untuk basis cashback TIDAK selalu berat kirim — customer bisa dibayar
+      // dari Berat Pesan atau Berat Terima juga (lihat 4 tier weight SO). Kalau frontend mengirim
+      // weightBasis, hitung subtotal per item langsung dari berat itu (konsisten dgn yang dipilih
+      // di UI). Kalau tidak dikirim (klien lama / API lain), fallback ke it.subtotal (perilaku lama).
+      const weightBasis = ['ordered', 'shipped', 'received'].includes(body.weightBasis) ? body.weightBasis : null;
+      const itemAllocatedWeight = (it) => db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all()
+        .reduce((a, b) => a + Number(b.weight || 0), 0);
+      const basisWeight = (it) => {
+        if (weightBasis === 'ordered') return Number(it.weight || 0);
+        if (weightBasis === 'received') return Number(it.receivedWeight || 0) || Number(it.shippedWeight || 0) || itemAllocatedWeight(it) || Number(it.weight || 0);
+        if (weightBasis === 'shipped') return Number(it.shippedWeight || 0) || itemAllocatedWeight(it) || Number(it.weight || 0);
+        return null;
+      };
       let realAmount = total, cashback = 0, recipient = null, cashbackAccount = null;
       if (enabled) {
         cashback = 0;
         for (const it of soItems) {
-          const sub = Number(it.subtotal || 0);           // subtotal baris pada harga asli (sum = total_amount = nilai riil)
+          const bw = basisWeight(it);
+          const sub = bw !== null ? Math.max(0, bw * Number(it.unitPrice || 0) - Number(it.discount || 0)) : Number(it.subtotal || 0); // subtotal baris pada harga asli
           const realUnit = Number(it.unitPrice || 0);     // harga jual asli
           let mkUnit = (mkMap[it.id] !== undefined && mkMap[it.id] !== null && mkMap[it.id] !== '') ? Number(mkMap[it.id]) : realUnit;
           if (isNaN(mkUnit) || mkUnit < 0) mkUnit = 0;

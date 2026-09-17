@@ -299,7 +299,14 @@ function SumCard({ label, value, sub, color = 'slate' }) {
 }
 
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
-const effW = (it) => (Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || it.quantity || 0));
+// Berat yang DIBAYAR customer — tidak selalu berat kirim. Basis-nya bisa dipilih (lihat MarkupCard):
+// 'ordered' = Berat Pesan, 'shipped' = Berat Kirim (fallback ke Pesan bila belum dikirim),
+// 'received' = Berat Terima (fallback berjenjang ke Kirim lalu Pesan bila belum ada penerimaan).
+const weightByBasis = (it, basis) => {
+  if (basis === 'ordered') return Number(it.weight || 0);
+  if (basis === 'received') return Number(it.receivedWeight || 0) || Number(it.shippedWeight || 0) || Number(it.allocatedWeight || 0) || Number(it.weight || 0);
+  return Number(it.shippedWeight || 0) || Number(it.allocatedWeight || 0) || Number(it.weight || 0); // 'shipped' (default)
+};
 
 function MarkupCard({ so, canEdit, onSaved }) {
   const items = so.items || [];
@@ -311,6 +318,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
   });
   const [recipient, setRecipient] = useState(so.cashbackRecipient || '');
   const [cashAccount, setCashAccount] = useState(so.cashbackAccount || '');
+  const [weightBasis, setWeightBasis] = useState(so.invoiceWeightBasis || 'shipped');
   const [saving, setSaving] = useState(false);
 
   const { data: accData } = useSWR(canEdit ? '/api/cash-bank-accounts' : null, fetcher);
@@ -333,12 +341,15 @@ function MarkupCard({ so, canEdit, onSaved }) {
     );
   }
 
-  const totalReal = items.reduce((a, it) => a + Number(it.subtotal || 0), 0); // = so.totalAmount (harga asli)
+  // Cashback dihitung dari berat yang DIBAYAR (basis pilihan di bawah), bukan selalu subtotal
+  // ter-invoice — supaya preview di sini konsisten dengan berat yang sebenarnya jadi acuan tagihan.
+  const basisSubtotal = (it) => Math.max(0, weightByBasis(it, weightBasis) * Number(it.unitPrice || 0) - Number(it.discount || 0));
+  const totalReal = items.reduce((a, it) => a + basisSubtotal(it), 0);
   const totalCashback = Math.round(items.reduce((a, it) => {
     const real = Number(it.unitPrice || 0);
     const mk = Math.max(Number(markup[it.id] || 0), real);
     const ratio = real > 0 ? mk / real : 1;
-    return a + Number(it.subtotal || 0) * (ratio - 1);
+    return a + basisSubtotal(it) * (ratio - 1);
   }, 0));
   const totalDiup = totalReal + totalCashback;
 
@@ -357,6 +368,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
         items: items.map(it => ({ itemId: it.id, markupUnitPrice: Number(markup[it.id] || 0) })),
         cashbackRecipient: recipient,
         cashbackAccount: cashAccount || null,
+        weightBasis,
       };
       const res = await fetch(`/api/sales-orders/${so.id}/markup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload),
@@ -384,6 +396,18 @@ function MarkupCard({ so, canEdit, onSaved }) {
       </CardHeader>
       {enabled && (
         <CardContent className="space-y-4">
+          <div className="max-w-xs">
+            <Label className="text-xs">Basis Berat (berat yang dibayar customer)</Label>
+            <Select value={weightBasis} onValueChange={setWeightBasis}>
+              <SelectTrigger className="mt-1 h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ordered">Berat Pesan</SelectItem>
+                <SelectItem value="shipped">Berat Kirim</SelectItem>
+                <SelectItem value="received">Berat Terima</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="text-[11px] text-muted-foreground mt-1">Cashback dihitung dari berat yang benar-benar ditagih ke customer — tidak selalu berat kirim.</div>
+          </div>
           <div className="rounded-md border overflow-x-auto">
             <Table>
               <TableHeader><TableRow>
@@ -396,12 +420,12 @@ function MarkupCard({ so, canEdit, onSaved }) {
               </TableRow></TableHeader>
               <TableBody>
                 {items.map(it => {
-                  const w = effW(it);
+                  const w = weightByBasis(it, weightBasis);
                   const real = Number(it.unitPrice || 0);
                   const mk = Number(markup[it.id] || 0);
                   const cbKg = Math.max(0, Math.max(mk, real) - real);
                   const ratio = real > 0 ? Math.max(mk, real) / real : 1;
-                  const cbLine = Math.max(0, Math.round(Number(it.subtotal || 0) * (ratio - 1)));
+                  const cbLine = Math.max(0, Math.round(basisSubtotal(it) * (ratio - 1)));
                   return (
                     <TableRow key={it.id}>
                       <TableCell className="text-sm">{it.product?.name || '-'}<div className="text-[11px] text-muted-foreground">{it.product?.sku}</div></TableCell>
