@@ -49,6 +49,8 @@ export default function SODetailPage() {
   const [confirmTarget, setConfirmTarget] = useState(null); // status transition dialog target
   const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'ordered' | 'shipped' | 'received'
   const [transitioning, setTransitioning] = useState(false);
+  const [pdfBasisOpen, setPdfBasisOpen] = useState(false);
+  const [pdfBasis, setPdfBasis] = useState('shipped'); // 'allocated' | 'ordered' | 'shipped' | 'received'
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!so) return <div className="text-center py-20 text-muted-foreground">SO tidak ditemukan</div>;
@@ -59,6 +61,19 @@ export default function SODetailPage() {
   const openTransition = (target) => {
     if (target === 'Invoiced') setInvoiceBasis('shipped');
     setConfirmTarget(target);
+  };
+
+  const downloadInvoicePdf = () => {
+    try {
+      const opts = { weightBasis: pdfBasis, ...(so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {}) };
+      const doc = generateInvoicePDF(so, opts);
+      doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
+      toast.success('PDF Faktur (Customer) berhasil diunduh');
+      setPdfBasisOpen(false);
+    } catch (e) {
+      console.error('PDF Invoice error:', e);
+      toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
+    }
   };
 
   const doTransition = async () => {
@@ -135,16 +150,7 @@ export default function SODetailPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => {
-                try {
-                  const doc = generateInvoicePDF(so, so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {});
-                  doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
-                  toast.success('PDF Faktur (Customer) berhasil diunduh');
-                } catch (e) {
-                  console.error('PDF Invoice error:', e);
-                  toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
-                }
-              }}
+              onClick={() => { setPdfBasis(so.invoiceWeightBasis || 'shipped'); setPdfBasisOpen(true); }}
             >
               <FileDown className="w-4 h-4 mr-1" /> PDF Faktur (Customer)
             </Button>
@@ -280,6 +286,36 @@ export default function SODetailPage() {
               {transitioning && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               {confirmTarget === 'Cancelled' ? 'Ya, Batalkan' : confirmTarget === 'Invoiced' ? 'Terbitkan Invoice' : 'Ya, Lanjutkan'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pilih basis berat yang dicetak pada PDF Faktur (Customer) */}
+      <Dialog open={pdfBasisOpen} onOpenChange={setPdfBasisOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cetak PDF Faktur (Customer)</DialogTitle>
+            <DialogDescription>Pilih basis berat yang dicetak pada faktur.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            {[
+              { v: 'allocated', title: 'Berat Dipilih', desc: 'Total berat kode simpan yang dipilih untuk item ini.' },
+              { v: 'ordered', title: 'Berat Pesan', desc: 'Berat yang dipesan customer.' },
+              { v: 'shipped', title: 'Berat Kirim (SJ)', desc: 'Berat riil yang dikirim via Surat Jalan.' },
+              { v: 'received', title: 'Berat Terima', desc: 'Berat yang diterima customer (setelah susut).' },
+            ].map(opt => (
+              <label key={opt.v} className={cn('flex items-start gap-3 border rounded-lg p-3 cursor-pointer', pdfBasis === opt.v ? 'border-emerald-500 bg-emerald-50/60' : 'hover:bg-slate-50')}>
+                <input type="radio" name="pdfBasis" className="mt-1 accent-emerald-600" checked={pdfBasis === opt.v} onChange={() => setPdfBasis(opt.v)} />
+                <div>
+                  <div className="font-medium text-sm">{opt.title}</div>
+                  <div className="text-xs text-muted-foreground">{opt.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPdfBasisOpen(false)}>Batal</Button>
+            <Button onClick={downloadInvoicePdf} className="bg-emerald-600 hover:bg-emerald-700"><FileDown className="w-4 h-4 mr-1" />Unduh PDF</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
