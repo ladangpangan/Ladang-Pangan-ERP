@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth/auth-client';
 import { cn } from '@/lib/utils';
@@ -25,6 +25,7 @@ import { format } from 'date-fns';
 import { SO_STATUS_COLOR } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
+import DangerZoneRollback from '@/components/danger-zone-rollback';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -38,6 +39,7 @@ const STEPS = ['Draft', 'Confirmed', 'Packed', 'Shipped', 'Invoiced'];
 
 export default function SODetailPage() {
   const { id } = useParams();
+  const router = useRouter();
   const { data: session } = useSession();
   const role = session?.user?.role || 'operator';
   const canEdit = ['admin', 'supervisor'].includes(role);
@@ -45,8 +47,10 @@ export default function SODetailPage() {
   const { data, mutate, isLoading } = useSWR(`/api/sales-orders/${id}`, fetcher);
   const so = data?.data;
   const [confirmTarget, setConfirmTarget] = useState(null); // status transition dialog target
-  const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'shipped' | 'received'
+  const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'ordered' | 'shipped' | 'received'
   const [transitioning, setTransitioning] = useState(false);
+  const [pdfBasisOpen, setPdfBasisOpen] = useState(false);
+  const [pdfBasis, setPdfBasis] = useState('shipped'); // 'allocated' | 'ordered' | 'shipped' | 'received'
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!so) return <div className="text-center py-20 text-muted-foreground">SO tidak ditemukan</div>;
@@ -59,6 +63,19 @@ export default function SODetailPage() {
     setConfirmTarget(target);
   };
 
+  const downloadInvoicePdf = () => {
+    try {
+      const opts = { weightBasis: pdfBasis, ...(so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {}) };
+      const doc = generateInvoicePDF(so, opts);
+      doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
+      toast.success('PDF Faktur (Customer) berhasil diunduh');
+      setPdfBasisOpen(false);
+    } catch (e) {
+      console.error('PDF Invoice error:', e);
+      toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
+    }
+  };
+
   const doTransition = async () => {
     const target = confirmTarget;
     const body = { status: target };
@@ -68,7 +85,7 @@ export default function SODetailPage() {
       const res = await fetch(`/api/sales-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await res.json();
       if (res.ok) {
-        toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : 'berat kirim'})` : ''));
+        toast.success('Status: ' + target + (target === 'Invoiced' ? ` (basis: ${body.invoiceWeightBasis === 'received' ? 'berat diterima' : body.invoiceWeightBasis === 'ordered' ? 'berat pesan' : 'berat kirim'})` : ''));
         setConfirmTarget(null);
         mutate();
       } else {
@@ -133,16 +150,7 @@ export default function SODetailPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => {
-                try {
-                  const doc = generateInvoicePDF(so, so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {});
-                  doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
-                  toast.success('PDF Faktur (Customer) berhasil diunduh');
-                } catch (e) {
-                  console.error('PDF Invoice error:', e);
-                  toast.error('Gagal membuat PDF Invoice: ' + (e.message || 'unknown'));
-                }
-              }}
+              onClick={() => { setPdfBasis(so.invoiceWeightBasis || 'shipped'); setPdfBasisOpen(true); }}
             >
               <FileDown className="w-4 h-4 mr-1" /> PDF Faktur (Customer)
             </Button>
@@ -206,34 +214,7 @@ export default function SODetailPage() {
         </Card>
       )}
 
-      {Array.isArray(so.commissions) && so.commissions.length > 0 && (
-        <Card className="border-pink-200 bg-pink-50/40">
-          <CardContent className="py-3">
-            {so.commissions.map((cm) => {
-              const typeLabel = cm.commissionType === 'per_kg' ? 'Per Kg'
-                : cm.commissionType === 'fixed' ? 'Nominal Tetap'
-                : cm.commissionType === 'percent_profit' ? '% Profit Bersih' : (cm.commissionType || '-');
-              const valLabel = cm.commissionType === 'percent_profit'
-                ? `${Number(cm.commissionValue || 0)}%`
-                : `Rp ${Number(cm.commissionValue || 0).toLocaleString('id-ID')}`;
-              return (
-                <div key={cm.id} className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
-                  <div className="flex items-center gap-2 font-semibold text-pink-800"><Wallet className="w-4 h-4" />Komisi Dropshipper</div>
-                  <div><span className="text-muted-foreground">Dropshipper: </span><b>{cm.dropshipper ? `${cm.dropshipper.code} · ${cm.dropshipper.displayName}` : '-'}</b></div>
-                  <div><span className="text-muted-foreground">Tipe: </span><b>{typeLabel}</b> <span className="text-muted-foreground">({valLabel})</span></div>
-                  <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">Rp {Number(cm.commissionAmount || 0).toLocaleString('id-ID')}</b></div>
-                  <div>
-                    <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
-                      cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
-                      {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
+      <CommissionCard so={so} canEdit={canEdit} onSaved={mutate} />
 
       <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
 
@@ -258,6 +239,8 @@ export default function SODetailPage() {
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
 
+      <DangerZoneRollback kind="so" id={so.id} number={so.soNumber} router={router} listPath="/dashboard/sales-orders" onRolledBack={mutate} />
+
       {/* Konfirmasi perubahan status (menggantikan native confirm) */}
       <Dialog open={!!confirmTarget} onOpenChange={(o) => { if (!o && !transitioning) setConfirmTarget(null); }}>
         <DialogContent className="max-w-md">
@@ -276,6 +259,7 @@ export default function SODetailPage() {
           {confirmTarget === 'Invoiced' && (
             <div className="space-y-2 py-1">
               {[
+                { v: 'ordered', title: 'Berat Pesan', desc: 'Nilai invoice mengikuti berat yang dipesan customer, terlepas dari berat kirim/terima riil.' },
                 { v: 'shipped', title: 'Berat Kirim (Surat Jalan)', desc: 'Nilai invoice mengikuti berat riil yang dikirim.' },
                 { v: 'received', title: 'Berat Diterima (Penerimaan)', desc: 'Nilai invoice mengikuti berat yang diterima customer (setelah susut).' },
               ].map(opt => (
@@ -305,6 +289,36 @@ export default function SODetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Pilih basis berat yang dicetak pada PDF Faktur (Customer) */}
+      <Dialog open={pdfBasisOpen} onOpenChange={setPdfBasisOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cetak PDF Faktur (Customer)</DialogTitle>
+            <DialogDescription>Pilih basis berat yang dicetak pada faktur.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            {[
+              { v: 'allocated', title: 'Berat Dipilih', desc: 'Total berat kode simpan yang dipilih untuk item ini.' },
+              { v: 'ordered', title: 'Berat Pesan', desc: 'Berat yang dipesan customer.' },
+              { v: 'shipped', title: 'Berat Kirim (SJ)', desc: 'Berat riil yang dikirim via Surat Jalan.' },
+              { v: 'received', title: 'Berat Terima', desc: 'Berat yang diterima customer (setelah susut).' },
+            ].map(opt => (
+              <label key={opt.v} className={cn('flex items-start gap-3 border rounded-lg p-3 cursor-pointer', pdfBasis === opt.v ? 'border-emerald-500 bg-emerald-50/60' : 'hover:bg-slate-50')}>
+                <input type="radio" name="pdfBasis" className="mt-1 accent-emerald-600" checked={pdfBasis === opt.v} onChange={() => setPdfBasis(opt.v)} />
+                <div>
+                  <div className="font-medium text-sm">{opt.title}</div>
+                  <div className="text-xs text-muted-foreground">{opt.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPdfBasisOpen(false)}>Batal</Button>
+            <Button onClick={downloadInvoicePdf} className="bg-emerald-600 hover:bg-emerald-700"><FileDown className="w-4 h-4 mr-1" />Unduh PDF</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -321,7 +335,14 @@ function SumCard({ label, value, sub, color = 'slate' }) {
 }
 
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
-const effW = (it) => (Number(it.shippedWeight || 0) > 0 ? Number(it.shippedWeight) : Number(it.weight || it.quantity || 0));
+// Berat yang DIBAYAR customer — tidak selalu berat kirim. Basis-nya bisa dipilih (lihat MarkupCard):
+// 'ordered' = Berat Pesan, 'shipped' = Berat Kirim (fallback ke Pesan bila belum dikirim),
+// 'received' = Berat Terima (fallback berjenjang ke Kirim lalu Pesan bila belum ada penerimaan).
+const weightByBasis = (it, basis) => {
+  if (basis === 'ordered') return Number(it.weight || 0);
+  if (basis === 'received') return Number(it.receivedWeight || 0) || Number(it.shippedWeight || 0) || Number(it.allocatedWeight || 0) || Number(it.weight || 0);
+  return Number(it.shippedWeight || 0) || Number(it.allocatedWeight || 0) || Number(it.weight || 0); // 'shipped' (default)
+};
 
 function MarkupCard({ so, canEdit, onSaved }) {
   const items = so.items || [];
@@ -333,6 +354,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
   });
   const [recipient, setRecipient] = useState(so.cashbackRecipient || '');
   const [cashAccount, setCashAccount] = useState(so.cashbackAccount || '');
+  const [weightBasis, setWeightBasis] = useState(so.invoiceWeightBasis || 'shipped');
   const [saving, setSaving] = useState(false);
 
   const { data: accData } = useSWR(canEdit ? '/api/cash-bank-accounts' : null, fetcher);
@@ -355,12 +377,15 @@ function MarkupCard({ so, canEdit, onSaved }) {
     );
   }
 
-  const totalReal = items.reduce((a, it) => a + Number(it.subtotal || 0), 0); // = so.totalAmount (harga asli)
+  // Cashback dihitung dari berat yang DIBAYAR (basis pilihan di bawah), bukan selalu subtotal
+  // ter-invoice — supaya preview di sini konsisten dengan berat yang sebenarnya jadi acuan tagihan.
+  const basisSubtotal = (it) => Math.max(0, weightByBasis(it, weightBasis) * Number(it.unitPrice || 0) - Number(it.discount || 0));
+  const totalReal = items.reduce((a, it) => a + basisSubtotal(it), 0);
   const totalCashback = Math.round(items.reduce((a, it) => {
     const real = Number(it.unitPrice || 0);
     const mk = Math.max(Number(markup[it.id] || 0), real);
     const ratio = real > 0 ? mk / real : 1;
-    return a + Number(it.subtotal || 0) * (ratio - 1);
+    return a + basisSubtotal(it) * (ratio - 1);
   }, 0));
   const totalDiup = totalReal + totalCashback;
 
@@ -379,6 +404,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
         items: items.map(it => ({ itemId: it.id, markupUnitPrice: Number(markup[it.id] || 0) })),
         cashbackRecipient: recipient,
         cashbackAccount: cashAccount || null,
+        weightBasis,
       };
       const res = await fetch(`/api/sales-orders/${so.id}/markup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload),
@@ -406,6 +432,18 @@ function MarkupCard({ so, canEdit, onSaved }) {
       </CardHeader>
       {enabled && (
         <CardContent className="space-y-4">
+          <div className="max-w-xs">
+            <Label className="text-xs">Basis Berat (berat yang dibayar customer)</Label>
+            <Select value={weightBasis} onValueChange={setWeightBasis}>
+              <SelectTrigger className="mt-1 h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ordered">Berat Pesan</SelectItem>
+                <SelectItem value="shipped">Berat Kirim</SelectItem>
+                <SelectItem value="received">Berat Terima</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="text-[11px] text-muted-foreground mt-1">Cashback dihitung dari berat yang benar-benar ditagih ke customer — tidak selalu berat kirim.</div>
+          </div>
           <div className="rounded-md border overflow-x-auto">
             <Table>
               <TableHeader><TableRow>
@@ -418,12 +456,12 @@ function MarkupCard({ so, canEdit, onSaved }) {
               </TableRow></TableHeader>
               <TableBody>
                 {items.map(it => {
-                  const w = effW(it);
+                  const w = weightByBasis(it, weightBasis);
                   const real = Number(it.unitPrice || 0);
                   const mk = Number(markup[it.id] || 0);
                   const cbKg = Math.max(0, Math.max(mk, real) - real);
                   const ratio = real > 0 ? Math.max(mk, real) / real : 1;
-                  const cbLine = Math.max(0, Math.round(Number(it.subtotal || 0) * (ratio - 1)));
+                  const cbLine = Math.max(0, Math.round(basisSubtotal(it) * (ratio - 1)));
                   return (
                     <TableRow key={it.id}>
                       <TableCell className="text-sm">{it.product?.name || '-'}<div className="text-[11px] text-muted-foreground">{it.product?.sku}</div></TableCell>
@@ -478,16 +516,37 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
   const [note, setNote] = useState(so.cashbackRefundNote || '');
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [checkingShortfall, setCheckingShortfall] = useState(false);
+  const [shortfallInfo, setShortfallInfo] = useState(null); // hasil terakhir dari tombol "Hitung Kelebihan Kirim"
+  const [deduction, setDeduction] = useState(Number(so.cashbackDeduction || 0));
   const refunded = !!so.cashbackRefunded;
+  const cashbackAmount = Number(so.cashbackAmount || 0);
+  const actualRefund = Math.max(0, Math.round((cashbackAmount - Number(deduction || 0)) * 100) / 100);
+
+  // Hitung kelebihan berat kirim (surplus) dari data Penerimaan Customer HANYA saat tombol ditekan
+  // (tidak otomatis) — lihat GET /cashback-shortfall di backend. Hasilnya jadi SARAN; admin masih
+  // bisa ubah angka potongannya.
+  const checkShortfall = async () => {
+    setCheckingShortfall(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${so.id}/cashback-shortfall`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menghitung');
+      setShortfallInfo(j.data);
+      setDeduction(j.data.suggestedDeduction);
+    } catch (e) { toast.error(e.message); } finally { setCheckingShortfall(false); }
+  };
 
   const submit = async () => {
     if (file && file.size > 10 * 1024 * 1024) return toast.error('Ukuran bukti maksimal 10MB');
+    if (deduction < 0 || deduction > cashbackAmount) return toast.error('Potongan cashback tidak valid');
     setSaving(true);
     try {
       const fd = new FormData();
       if (file) fd.append('file', file);
       fd.append('refundedAt', refundedAt);
       fd.append('note', note || '');
+      fd.append('deduction', String(deduction || 0));
       const res = await fetch(`/api/sales-orders/${so.id}/cashback-refund`, { method: 'POST', body: fd });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
@@ -524,6 +583,11 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
         {refunded && (
           <div className="text-sm bg-emerald-50/70 border border-emerald-100 rounded-md px-3 py-2 space-y-1">
             <div>Tanggal transfer: <b>{so.cashbackRefundedAt || '-'}</b></div>
+            {Number(so.cashbackDeduction || 0) > 0 && (
+              <div className="text-amber-700">
+                Dipotong <b>{rp(so.cashbackDeduction)}</b> (kelebihan berat kirim) — ditransfer <b>{rp(cashbackAmount - Number(so.cashbackDeduction || 0))}</b> dari total cashback {rp(cashbackAmount)}.
+              </div>
+            )}
             {so.cashbackRefundNote && <div>Catatan: <b>{so.cashbackRefundNote}</b></div>}
             {so.cashbackRefundedBy && <div className="text-xs text-muted-foreground">Ditandai oleh: {so.cashbackRefundedBy}</div>}
             {so.cashbackProofKey && (
@@ -549,6 +613,29 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
               <Label className="text-xs">Catatan (opsional)</Label>
               <Input value={note} onChange={e => setNote(e.target.value)} placeholder="mis. Transfer BCA a.n. Budi" className="mt-1" />
             </div>
+
+            <div className="rounded-md border border-dashed p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Potongan Cashback (kelebihan berat kirim)</Label>
+                <Button size="sm" variant="outline" onClick={checkShortfall} disabled={checkingShortfall}>
+                  {checkingShortfall ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Calculator className="w-3.5 h-3.5 mr-1" />}
+                  Hitung Kelebihan Kirim
+                </Button>
+              </div>
+              {shortfallInfo && (
+                <div className="text-xs text-muted-foreground">
+                  Dipesan {shortfallInfo.totalOrderedWeight.toFixed(2)} kg, diterima customer {shortfallInfo.totalReceivedWeight.toFixed(2)} kg →
+                  kelebihan <b className="text-amber-700">{shortfallInfo.surplusWeight.toFixed(2)} kg senilai {rp(shortfallInfo.surplusValue)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
+                </div>
+              )}
+              <Input
+                type="number" min={0} max={cashbackAmount} step="1" value={deduction}
+                onChange={e => setDeduction(Math.max(0, Math.min(cashbackAmount, Number(e.target.value) || 0)))}
+                className="mt-1"
+              />
+              <div className="text-sm">Cashback yang akan ditransfer: <b className="text-rose-700">{rp(actualRefund)}</b> dari total {rp(cashbackAmount)}</div>
+            </div>
+
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={submit} disabled={saving}>
                 {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : (refunded ? <Upload className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />)}
@@ -564,7 +651,202 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
 }
 
 
+const COMMISSION_TYPE_LABEL = { per_kg: 'Per Kg', fixed: 'Nominal Tetap', percent_profit: '% Profit Bersih', manual: 'Manual' };
+
+function CommissionCard({ so, canEdit, onSaved }) {
+  const commissions = Array.isArray(so.commissions) ? so.commissions : [];
+  const [addOpen, setAddOpen] = useState(false);
+  const [dropshippers, setDropshippers] = useState([]);
+  const [dsId, setDsId] = useState('');
+  const [commissionType, setCommissionType] = useState('per_kg');
+  const [commissionValue, setCommissionValue] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [editRec, setEditRec] = useState(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  if (!canEdit && commissions.length === 0) return null;
+
+  const openAdd = async () => {
+    setDsId(''); setCommissionType('per_kg'); setCommissionValue(0);
+    setAddOpen(true);
+    try {
+      const res = await fetch('/api/contacts?type=Dropshipper');
+      const j = await res.json();
+      if (res.ok) setDropshippers(j.data || []);
+    } catch { /* ignore */ }
+  };
+
+  const onDsChange = (val) => {
+    setDsId(val);
+    const ds = dropshippers.find(d => d.id === val);
+    if (ds) { setCommissionType(ds.commissionType || 'per_kg'); setCommissionValue(Number(ds.commissionValue || 0)); }
+  };
+
+  const saveAdd = async () => {
+    if (!dsId) return toast.error('Pilih dropshipper');
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/contacts/${dsId}/commissions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ salesOrderId: so.id, commissionType, commissionValue: Number(commissionValue || 0) }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Komisi ditambahkan'); setAddOpen(false); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+
+  const openEdit = (cm) => { setEditRec(cm); setEditAmount(String(Number(cm.commissionAmount || 0))); };
+  const saveEdit = async () => {
+    if (!editRec) return;
+    const amt = Number(editAmount);
+    if (!Number.isFinite(amt) || amt < 0) return toast.error('Jumlah komisi tidak valid');
+    setSavingEdit(true);
+    try {
+      const res = await fetch(`/api/contacts/${editRec.dropshipperId}/commissions/${editRec.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commissionAmount: amt }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Jumlah komisi diperbarui'); setEditRec(null); onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSavingEdit(false); }
+  };
+
+  const removeRec = async (cm) => {
+    if (!confirm(`Hapus komisi ${cm.dropshipper?.displayName || ''} untuk SO ini?`)) return;
+    const res = await fetch(`/api/contacts/${cm.dropshipperId}/commissions/${cm.id}`, { method: 'DELETE' });
+    if (res.ok) { toast.success('Terhapus'); onSaved(); } else { const j = await res.json(); toast.error(j.error); }
+  };
+
+  return (
+    <Card className="border-pink-200 bg-pink-50/40">
+      <CardContent className="py-3 space-y-2">
+        {commissions.length === 0 ? (
+          <div className="text-sm text-muted-foreground">Belum ada komisi dropshipper untuk SO ini.</div>
+        ) : commissions.map((cm) => {
+          const valLabel = cm.commissionType === 'percent_profit'
+            ? `${Number(cm.commissionValue || 0)}%`
+            : rp(cm.commissionValue);
+          return (
+            <div key={cm.id} className="flex items-center flex-wrap gap-x-6 gap-y-1.5 text-sm">
+              <div className="flex items-center gap-2 font-semibold text-pink-800"><Wallet className="w-4 h-4" />Komisi Dropshipper</div>
+              <div><span className="text-muted-foreground">Dropshipper: </span><b>{cm.dropshipper ? `${cm.dropshipper.code} · ${cm.dropshipper.displayName}` : '-'}</b></div>
+              <div><span className="text-muted-foreground">Tipe: </span><b>{COMMISSION_TYPE_LABEL[cm.commissionType] || cm.commissionType || '-'}</b> <span className="text-muted-foreground">({valLabel})</span></div>
+              <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">{rp(cm.commissionAmount)}</b></div>
+              <div>
+                <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
+                  cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+                  {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
+                </span>
+              </div>
+              {canEdit && cm.status !== 'paid' && (
+                <div className="flex items-center gap-0.5 ml-auto">
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit jumlah" onClick={() => openEdit(cm)}><Pencil className="w-3.5 h-3.5 text-blue-600" /></Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Hapus" onClick={() => removeRec(cm)}><Trash2 className="w-3.5 h-3.5 text-red-500" /></Button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {canEdit && (
+          <Button size="sm" variant="outline" onClick={openAdd}><Plus className="w-4 h-4 mr-1" />Tambah Komisi</Button>
+        )}
+      </CardContent>
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Tambah Komisi Dropshipper</DialogTitle>
+            <DialogDescription>Untuk SO {so.soNumber} — bisa ditambahkan kapan pun terlepas dari status SO.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Dropshipper *</Label>
+              <Select value={dsId} onValueChange={onDsChange}>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih dropshipper" /></SelectTrigger>
+                <SelectContent>
+                  {dropshippers.map(d => <SelectItem key={d.id} value={d.id}>{d.code} · {d.displayName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Tipe Komisi</Label>
+                <Select value={commissionType} onValueChange={setCommissionType}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_kg">Per Kg</SelectItem>
+                    <SelectItem value="fixed">Nominal Tetap</SelectItem>
+                    <SelectItem value="percent_profit">% Profit Bersih</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">{commissionType === 'percent_profit' ? 'Nilai (%)' : 'Nilai (Rp)'}</Label>
+                <Input type="number" className="mt-1" value={commissionValue} onChange={e => setCommissionValue(e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={saveAdd} disabled={saving || !dsId}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editRec} onOpenChange={(o) => { if (!o) setEditRec(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Jumlah Komisi</DialogTitle>
+            <DialogDescription>{editRec?.dropshipper?.displayName || ''} — bisa diedit kapan pun sebelum dibayar.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Jumlah Komisi (Rp)</Label>
+              <Input type="number" min={0} className="mt-1" value={editAmount} onChange={e => setEditAmount(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={saveEdit} disabled={savingEdit}>{savingEdit && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
 function InfoTab({ so }) {
+  const items = so.items || [];
+  const sumW = (k) => items.reduce((a, it) => a + Number(it[k] || 0), 0);
+  const beratPesan = sumW('weight');
+  const beratDipilih = sumW('allocatedWeight');
+  const beratKirim = sumW('shippedWeight');
+  const beratTerima = sumW('receivedWeight');
+  // Susut per tahap: CS (Dipilih -> Kirim, di gudang sebelum berangkat) dan Di Terima (Kirim ->
+  // Terima, transit ke customer). Dihitung per item lalu dijumlah, hanya saat kedua sisi > 0
+  // (belum bisa dinilai kalau salah satu tahap belum tercatat).
+  const susutCs = items.reduce((a, it) => {
+    const d = Number(it.allocatedWeight || 0), k = Number(it.shippedWeight || 0);
+    return a + (d > 0 && k > 0 ? Math.max(0, d - k) : 0);
+  }, 0);
+  const susutDiTerima = items.reduce((a, it) => {
+    const k = Number(it.shippedWeight || 0), t = Number(it.receivedWeight || 0);
+    return a + (k > 0 && t > 0 ? Math.max(0, k - t) : 0);
+  }, 0);
+  // Susut retur: di tangan customer sebelum dikirim balik (totalWeight -> weightAtPickup), dan
+  // pengembalian retur: transit balik ke gudang (weightAtPickup -> weightAtWarehouse). Keduanya
+  // hanya terisi kalau titik ukur terkait sudah diinput saat Buat Retur.
+  const returns = so.returns || [];
+  const susutRetur = returns.reduce((a, r) => {
+    const declared = Number(r.totalWeight || 0), pickup = Number(r.weightAtPickup || 0);
+    return a + (pickup > 0 ? Math.max(0, declared - pickup) : 0);
+  }, 0);
+  const susutPengembalianRetur = returns.reduce((a, r) => {
+    const pickup = Number(r.weightAtPickup || 0), wh = Number(r.weightAtWarehouse || 0);
+    return a + (pickup > 0 && wh > 0 ? Math.max(0, pickup - wh) : 0);
+  }, 0);
+  const fmtKg = (v, measured) => measured ? `${v.toFixed(1)} kg` : '- (belum diukur)';
   const rows = [
     ['Customer', so.customer?.displayName],
     ['Kode Customer', so.customer?.code],
@@ -578,6 +860,14 @@ function InfoTab({ so }) {
     ['Invoice Number', so.invoiceNumber || '-'],
     ['Invoice Date', so.invoiceDate && format(new Date(so.invoiceDate), 'dd MMM yyyy')],
     ['Due Date', so.dueDate && format(new Date(so.dueDate), 'dd MMM yyyy')],
+    ['Berat Pesan', `${beratPesan.toFixed(1)} kg`],
+    ['Berat Dipilih', beratDipilih > 0 ? `${beratDipilih.toFixed(1)} kg` : '-'],
+    ['Berat Kirim', beratKirim > 0 ? `${beratKirim.toFixed(1)} kg` : '-'],
+    ['Berat Terima', beratTerima > 0 ? `${beratTerima.toFixed(1)} kg` : '-'],
+    ['Susut CS (Dipilih → Kirim)', fmtKg(susutCs, beratDipilih > 0 && beratKirim > 0)],
+    ['Susut di Terima (Kirim → Terima)', fmtKg(susutDiTerima, beratKirim > 0 && beratTerima > 0)],
+    ['Susut Retur', fmtKg(susutRetur, returns.some(r => Number(r.weightAtPickup || 0) > 0))],
+    ['Susut Pengembalian Retur', fmtKg(susutPengembalianRetur, returns.some(r => Number(r.weightAtPickup || 0) > 0 && Number(r.weightAtWarehouse || 0) > 0))],
   ];
   return (
     <Card><CardContent className="pt-6 space-y-4">
@@ -645,7 +935,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle className="text-base">Items SO</CardTitle>
-          {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Berat &amp; subtotal otomatis mengikuti kode simpan terpilih.</CardDescription>}
+          {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Subtotal otomatis mengikuti kode simpan terpilih — Berat Pesan tidak berubah.</CardDescription>}
         </div>
         <div className="flex items-center gap-2">
           {canEditItems && (
@@ -662,7 +952,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
       </CardHeader>
       <CardContent className="p-0">
         <Table>
-          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">HPP/kg</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Produk / Kode Simpan</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Berat Pesan</TableHead><TableHead className="text-right">Harga</TableHead><TableHead className="text-right">HPP/kg</TableHead><TableHead className="text-right">Subtotal</TableHead></TableRow></TableHeader>
           <TableBody>
             {so.items?.map(it => (
               <TableRow key={it.id}>
@@ -683,7 +973,14 @@ function ItemsTab({ so, onSaved, canEdit }) {
                   )}
                 </TableCell>
                 <TableCell className="text-right">{it.quantity} {pkgShort(it.product?.packagingType)}</TableCell>
-                <TableCell className="text-right">{Number(it.weight).toFixed(1)} kg</TableCell>
+                <TableCell className="text-right">
+                  <div>{Number(it.weight).toFixed(1)} kg</div>
+                  <div className="text-[10px] text-muted-foreground space-y-0.5 mt-0.5">
+                    {Number(it.allocatedWeight) > 0 && <div>Dipilih: {Number(it.allocatedWeight).toFixed(1)} kg</div>}
+                    {Number(it.shippedWeight) > 0 && <div className="text-blue-600">Kirim: {Number(it.shippedWeight).toFixed(1)} kg</div>}
+                    {Number(it.receivedWeight) > 0 && <div className="text-emerald-600">Terima: {Number(it.receivedWeight).toFixed(1)} kg</div>}
+                  </div>
+                </TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                 <TableCell className="text-right text-xs text-muted-foreground">{it.hppAvgPerKg > 0 ? `Rp ${Number(it.hppAvgPerKg).toLocaleString('id-ID')}` : '-'}</TableCell>
                 <TableCell className="text-right font-semibold">Rp {Number(it.subtotal).toLocaleString('id-ID')}</TableCell>
@@ -779,7 +1076,7 @@ function EditItemsDialog({ so, onClose, onSaved }) {
                 </Select>
               </div>
               <div className="col-span-1"><Label className="text-xs">Qty</Label><Input type="number" value={r.quantity} onChange={e => upd(i, 'quantity', Number(e.target.value))} className="h-9" /></div>
-              <div className="col-span-2"><Label className="text-xs">Berat (kg)</Label><WeightInput value={r.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
+              <div className="col-span-2"><Label className="text-xs">Berat Pesan (kg)</Label><WeightInput value={r.weight} onChange={v => upd(i, 'weight', v)} placeholder="0" /></div>
               <div className="col-span-2"><Label className="text-xs">Harga/kg</Label><CurrencyInput value={r.unitPrice} onChange={v => upd(i, 'unitPrice', v)} placeholder="0" /></div>
               <div className="col-span-2"><Label className="text-xs">Diskon</Label><CurrencyInput value={r.discount} onChange={v => upd(i, 'discount', v)} placeholder="0" /></div>
               <div className="col-span-1"><Button size="icon" variant="ghost" onClick={() => remove(i)}><Trash2 className="w-4 h-4 text-red-500" /></Button></div>
@@ -805,6 +1102,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
   const [stocks, setStocks] = useState(null);
   const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
   const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
   useEffect(() => {
     (async () => {
       try {
@@ -819,7 +1117,13 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
     })();
   }, [so.id, item.productId]);
   const toggle = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const list = stocks || [];
+  // Urut berdasar nomor kode simpan (kecil -> besar; numeric compare biar "1000010" < "1000009" tidak
+  // salah urut kalau suatu saat ada kode manual dengan panjang berbeda), lalu filter cari kode/berat.
+  const sorted = (stocks || []).slice().sort((a, b) => String(a.kodeSimpan || '').localeCompare(String(b.kodeSimpan || ''), undefined, { numeric: true }));
+  const qNorm = q.trim().toLowerCase();
+  const list = qNorm
+    ? sorted.filter((st) => String(st.kodeSimpan || '').toLowerCase().includes(qNorm) || String(st.weight ?? '').includes(qNorm))
+    : sorted;
   const chosen = list.filter(s => selected.has(s.id));
   const totalW = chosen.reduce((a, b) => a + Number(b.weight || 0), 0);
   const totalQ = chosen.reduce((a, b) => a + Number(b.quantity || 0), 0);
@@ -842,12 +1146,17 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Package className="w-5 h-5" /> Pilih Kode Simpan — {item.product?.name}</DialogTitle>
-          <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Berat &amp; subtotal SO otomatis direvisi.</DialogDescription>
+          <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Subtotal SO mengikuti total berat yang dipilih — Berat Pesan tidak ikut berubah.</DialogDescription>
         </DialogHeader>
+        {stocks !== null && sorted.length > 0 && (
+          <Input placeholder="Cari kode simpan atau berat (kg)..." value={q} onChange={(e) => setQ(e.target.value)} className="mb-1" />
+        )}
         {stocks === null ? (
           <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Memuat stok…</div>
-        ) : list.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <div className="py-10 text-center text-muted-foreground text-sm">Tidak ada kode simpan aktif untuk produk ini.</div>
+        ) : list.length === 0 ? (
+          <div className="py-10 text-center text-muted-foreground text-sm">Tidak ada kode simpan yang cocok dengan pencarian &quot;{q}&quot;.</div>
         ) : (
           <div className="space-y-2">
             {list.map(st => {
@@ -941,7 +1250,8 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
       if (sj.shipToCustomerId) { setShipMode(sj.shipToCustomerId); }
       else if (sj.shipToName) { setShipMode('manual'); setShipManual({ shipToName: sj.shipToName || '', shipToPhone: sj.shipToPhone || '', shipToAddress: sj.shipToAddress || '' }); }
       else { setShipMode('default'); setShipManual({ shipToName: '', shipToPhone: '', shipToAddress: '' }); }
-      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      // Default berat kirim: pakai yang sudah tercatat riil > estimasi dari kode simpan terpilih > berat pesanan.
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.allocatedWeight || it.weight || 0; });
       setItemWeights(init);
     }
     setOpen(o);
@@ -991,7 +1301,7 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
             <div className="space-y-1">
               {(so.items || []).map(it => (
                 <div key={it.id} className="flex items-center gap-2 text-sm">
-                  <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                  <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(Pesan: {it.weight}kg{Number(it.allocatedWeight) > 0 && Number(it.allocatedWeight) !== Number(it.weight) ? ` · Dipilih: ${it.allocatedWeight}kg` : ''})</span></span>
                   <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
                 </div>
               ))}
@@ -1022,7 +1332,8 @@ function SjTab({ so, onSaved, canOperate }) {
   const endCustomers = ccData?.data || [];
   const openDialog = (o) => {
     if (o) {
-      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.weight || 0; });
+      // Default berat kirim: pakai yang sudah tercatat riil > estimasi dari kode simpan terpilih > berat pesanan.
+      const init = {}; (so.items || []).forEach(it => { init[it.id] = it.shippedWeight || it.allocatedWeight || it.weight || 0; });
       setItemWeights(init);
     }
     setOpen(o);
@@ -1078,7 +1389,7 @@ function SjTab({ so, onSaved, canOperate }) {
                   <div className="space-y-1">
                     {(so.items || []).map(it => (
                       <div key={it.id} className="flex items-center gap-2 text-sm">
-                        <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(SO: {it.weight}kg)</span></span>
+                        <span className="flex-1 truncate">{it.product?.name || it.productId} <span className="text-xs text-muted-foreground">(Pesan: {it.weight}kg{Number(it.allocatedWeight) > 0 && Number(it.allocatedWeight) !== Number(it.weight) ? ` · Dipilih: ${it.allocatedWeight}kg` : ''})</span></span>
                         <WeightInput className="h-8 w-28" value={itemWeights[it.id] ?? ''} onChange={v => setItemWeights(w => ({ ...w, [it.id]: v }))} placeholder="kg riil" />
                       </div>
                     ))}
@@ -1342,7 +1653,7 @@ function GrossProfitCard({ so }) {
 
 function ReturnsTab({ so, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ returnDate: new Date().toISOString().slice(0,10), reason: '', resolution: 'potong_invoice', totalAmount: 0, totalWeight: 0, notes: '' });
+  const [form, setForm] = useState({ returnDate: new Date().toISOString().slice(0,10), reason: '', resolution: 'potong_invoice', totalAmount: 0, totalWeight: 0, weightAtPickup: 0, weightAtWarehouse: 0, notes: '' });
   const [saving, setSaving] = useState(false);
   const create = async () => {
     if (!form.reason) return toast.error('Alasan retur wajib');
@@ -1375,7 +1686,9 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
                 <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
-                <F label="Berat (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
+                <F label="Berat Retur (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
+                <F label="Berat Saat Dikirim Customer (kg)"><WeightInput value={form.weightAtPickup} onChange={v => setForm({ ...form, weightAtPickup: v })} placeholder="Opsional" /></F>
+                <F label="Berat Saat Tiba Gudang (kg)"><WeightInput value={form.weightAtWarehouse} onChange={v => setForm({ ...form, weightAtWarehouse: v })} placeholder="Opsional" /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buat Retur</Button></DialogFooter>
@@ -1395,6 +1708,13 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 <div className="text-xs text-muted-foreground mt-1">{format(new Date(r.returnDate), 'dd MMM yyyy')}</div>
                 <div className="mt-2">{r.reason}</div>
                 <div className="mt-1 text-sm font-semibold">Rp {Number(r.totalAmount).toLocaleString('id-ID')} · {r.totalWeight} kg</div>
+                {(Number(r.weightAtPickup) > 0 || Number(r.weightAtWarehouse) > 0) && (
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {Number(r.weightAtPickup) > 0 && <>Dikirim customer: {Number(r.weightAtPickup).toFixed(1)} kg</>}
+                    {Number(r.weightAtPickup) > 0 && Number(r.weightAtWarehouse) > 0 && ' · '}
+                    {Number(r.weightAtWarehouse) > 0 && <>Tiba gudang: {Number(r.weightAtWarehouse).toFixed(1)} kg</>}
+                  </div>
+                )}
               </div>
             ))}
           </div>}

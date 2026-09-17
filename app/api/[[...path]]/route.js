@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import nodePath from 'path';
+import { timingSafeEqual } from 'crypto';
 import { eq, and, like, or, ne, desc, sql, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getDb, getRawSqlite } from '@/lib/db';
 import * as s from '@/lib/db/schema';
@@ -22,8 +23,11 @@ import * as assetsOpnameMongo from '@/lib/db/assets-opname-mongo';
 import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import * as miscMongo from '@/lib/db/misc-mongo';
+import * as crmMongo from '@/lib/db/crm-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
+import { recordLedger } from '@/lib/inventory/ledger';
+import * as soPoRollback from '@/lib/ops/so-po-rollback';
 // -----------------------
 // Helpers
 // -----------------------
@@ -38,10 +42,43 @@ function cors(res) {
 function json(data, init = {}) { return cors(NextResponse.json(data, init)); }
 function err(msg, status = 400) { return json({ error: msg }, { status }); }
 
+// -----------------------
+// Server-to-server API key auth (for external AI agent integrations, e.g. Hermes).
+// Opt-in: only active when AGENT_API_KEY is actually set in the environment — zero behavior
+// change for deployments that haven't configured it. A matching `Authorization: Bearer <key>`
+// (or `X-API-Key: <key>`) header stands in for a browser session, with a synthetic user identity
+// so every existing requireRole() check in this file applies to it exactly like a real user.
+// The role is configurable (AGENT_ROLE, default 'admin') so access can be dialed down (e.g. to
+// 'akuntan' or 'supervisor') without touching code.
+// -----------------------
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a || ''));
+  const bufB = Buffer.from(String(b || ''));
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function checkAgentApiKey(hdrs) {
+  const configured = process.env.AGENT_API_KEY;
+  if (!configured) return null;
+  const authHeader = hdrs.get('authorization') || '';
+  const key = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : (hdrs.get('x-api-key') || '').trim();
+  if (!key || !safeEqual(key, configured)) return null;
+  return {
+    id: 'agent-hermes',
+    email: 'hermes-agent@integration.local',
+    name: 'Hermes Agent',
+    role: process.env.AGENT_ROLE || 'admin',
+  };
+}
+
 async function requireAuth() {
   try {
+    const hdrs = await headers();
+    const agentUser = checkAgentApiKey(hdrs);
+    if (agentUser) return { session: { user: agentUser } };
     const auth = getAuth();
-    const session = await auth.api.getSession({ headers: await headers() });
+    const session = await auth.api.getSession({ headers: hdrs });
     if (!session?.user) return { error: err('Unauthorized', 401) };
     return { session };
   } catch (e) {
@@ -56,71 +93,6 @@ function requireRole(session, allowed) {
   // trik ini tidak mengganggu pembatasan cashbook untuk admin/supervisor.
   if (session.user.role === 'akuntan' && allowed.includes('admin')) return true;
   return allowed.includes(session.user.role);
-}
-
-// -----------------------
-// Stock Ledger (Kartu Stok) helper
-// Records a per-product stock movement. Wrapped in try/catch so a ledger
-// failure never breaks the primary operation.
-// -----------------------
-function recordLedger(db, entry) {
-  const id = uuidv4();
-  const ledgerDate = entry.ledgerDate || new Date();
-  const createdAt = new Date();
-  const vals = {
-    id,
-    ledgerDate,
-    productId: entry.productId,
-    coldStorageId: entry.coldStorageId || null,
-    zoneId: entry.zoneId || null,
-    movementType: entry.movementType,
-    referenceType: entry.referenceType || null,
-    referenceId: entry.referenceId || null,
-    referenceNumber: entry.referenceNumber || null,
-    qtyIn: Number(entry.qtyIn || 0),
-    weightIn: Number(entry.weightIn || 0),
-    qtyOut: Number(entry.qtyOut || 0),
-    weightOut: Number(entry.weightOut || 0),
-    hppPerKg: Number(entry.hppPerKg || 0),
-    kodeSimpan: entry.kodeSimpan || null,
-    transactionId: entry.transactionId || null,
-    stockId: entry.stockId || null,
-    notes: entry.notes || null,
-    createdBy: entry.createdBy || null,
-    createdAt,
-  };
-  try {
-    db.insert(s.stockLedger).values(vals).run();
-  } catch (e) {
-    console.error('[stock_ledger] record failed:', e?.message || e);
-  }
-  // Mirror to MongoDB (shared Kartu Stok across replicas). Fire-and-forget;
-  // stored in seconds to match the raw SQLite integer(timestamp) column.
-  try {
-    const toSec = (d) => Math.floor((d instanceof Date ? d.getTime() : new Date(d).getTime()) / 1000);
-    jmongo.recordStockLedgerMongo({
-      id,
-      ledger_date: toSec(ledgerDate),
-      product_id: vals.productId,
-      cold_storage_id: vals.coldStorageId,
-      zone_id: vals.zoneId,
-      movement_type: vals.movementType,
-      reference_type: vals.referenceType,
-      reference_id: vals.referenceId,
-      reference_number: vals.referenceNumber,
-      qty_in: vals.qtyIn,
-      weight_in: vals.weightIn,
-      qty_out: vals.qtyOut,
-      weight_out: vals.weightOut,
-      hpp_per_kg: vals.hppPerKg,
-      kode_simpan: vals.kodeSimpan,
-      transaction_id: vals.transactionId,
-      stock_id: vals.stockId,
-      notes: vals.notes,
-      created_by: vals.createdBy,
-      created_at: toSec(createdAt),
-    });
-  } catch (e) { /* best-effort */ }
 }
 
 // -----------------------
@@ -255,6 +227,9 @@ const INVENTORY_PATHS = new Set([
   'inventory', 'inventory-stocks', 'inventory-reports',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'opnames',
   'accounting', 'dashboard', 'reports',
+  // purchase-orders: added for POST /purchase-orders/:id/rollback, which can delete
+  // inventory_stock lots created by a PO's GRN inbound (reversePoInboundStock).
+  'purchase-orders',
 ]);
 
 // Phase 5: path[0] prefixes whose handlers READ or WRITE the PO aggregate / commission /
@@ -312,6 +287,9 @@ const MISC_PATHS = new Set([
   'purchase-orders', 'sales-orders', 'tally-outbound', 'tally-sessions',
   'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
 ]);
+
+// Phase 11: path[0] prefixes that READ or WRITE leads / lead_tasks (CRM pipeline & follow-up).
+const CRM_PATHS = new Set(['leads', 'lead-tasks']);
 
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
@@ -423,6 +401,10 @@ async function handleRoute(request, { params }) {
       if (stale('misc')) tasks.push((async () => { try { await miscMongo.ensureReady(raw); g.misc = Date.now(); } catch { /* best-effort */ } })());
       if (isMut) snappers.push(() => miscMongo.captureSnapshot(request, raw));
     }
+    if (want('crm', CRM_PATHS.has(p0))) {
+      if (stale('crm')) tasks.push((async () => { try { await crmMongo.ensureReady(raw); g.crm = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => crmMongo.captureSnapshot(request, raw));
+    }
     if (tasks.length) { try { await Promise.all(tasks); } catch { /* best-effort */ } }
     for (const fn of snappers) { try { fn(); } catch { /* best-effort */ } }
   }
@@ -460,6 +442,7 @@ async function handleRoute(request, { params }) {
       'work-orders':      { table: s.workOrder,      roles: ['admin', 'supervisor'] },
       'inventory-stocks': { table: s.inventoryStock, roles: ['admin', 'supervisor'] },
       'users':            { table: s.user,           roles: ['admin', 'supervisor', 'direktur'] },
+      'leads':            { table: s.leads,           roles: ['admin', 'supervisor', 'direktur'] },
     };
     // Build the archived filter for a list GET based on ?archived= param.
     // default => only ACTIVE (archived_at IS NULL); '1'|'true' => only ARCHIVED; 'all' => both.
@@ -926,6 +909,225 @@ async function handleRoute(request, { params }) {
     }
 
 
+
+    // ---------- CRM: Pipeline Prospek/Leads + Follow-up ----------
+    // Semua role login bisa akses modul ini, tapi role non-manajemen (bukan admin/supervisor/
+    // direktur) hanya bisa lihat & kelola leads/tugas yang jadi PIC/assignee mereka sendiri.
+    const CRM_FULL_ACCESS_ROLES = ['admin', 'supervisor', 'direktur'];
+    const isCrmFullAccess = (session) => CRM_FULL_ACCESS_ROLES.includes(session?.user?.role);
+    const LEAD_STAGES = ['Kontak Awal', 'Penawaran', 'Negosiasi', 'Deal', 'Gagal'];
+    const LEAD_TERMINAL_STAGES = ['Deal', 'Gagal'];
+    const nextLeadNumber = (dateArg) => {
+      const ym = dateArg ? new Date(dateArg) : new Date();
+      const prefix = `LEAD/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
+      const rows = db.select({ n: s.leads.leadNumber }).from(s.leads).where(like(s.leads.leadNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      let next = max + 1;
+      while (db.select({ id: s.leads.id }).from(s.leads).where(eq(s.leads.leadNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) next += 1;
+      return `${prefix}${String(next).padStart(4, '0')}`;
+    };
+
+    // GET /leads - list (pipeline board data). ?stage=&source=&q=&mine=1&archived=
+    if (route === '/leads' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const url = new URL(request.url);
+      const fullAccess = isCrmFullAccess(session);
+      const conds = [];
+      { const ac = archivedCond(s.leads, url); if (ac) conds.push(ac); }
+      const stage = url.searchParams.get('stage');
+      if (stage && LEAD_STAGES.includes(stage)) conds.push(eq(s.leads.stage, stage));
+      const source = url.searchParams.get('source');
+      if (source) conds.push(eq(s.leads.source, source));
+      const q = url.searchParams.get('q');
+      if (q) conds.push(or(like(s.leads.contactName, `%${q}%`), like(s.leads.companyName, `%${q}%`), like(s.leads.phone, `%${q}%`), like(s.leads.leadNumber, `%${q}%`)));
+      // Non-management role: selalu dipaksa ke leads miliknya sendiri, apa pun query mine=.
+      // Role manajemen: default semua leads, bisa filter ?mine=1 atau ?pic=<email> kalau mau.
+      if (!fullAccess) {
+        conds.push(eq(s.leads.picEmail, session.user.email));
+      } else {
+        if (url.searchParams.get('mine') === '1') conds.push(eq(s.leads.picEmail, session.user.email));
+        const pic = url.searchParams.get('pic');
+        if (pic) conds.push(eq(s.leads.picEmail, pic));
+      }
+      let query = db.select().from(s.leads);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(desc(s.leads.createdAt)).all();
+      return json({ data: rows });
+    }
+
+    // POST /leads - create new lead
+    if (route === '/leads' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json().catch(() => ({}));
+      if (!body.contactName) return err('Nama kontak wajib diisi');
+      const now = new Date();
+      const id = uuidv4();
+      const row = {
+        id,
+        leadNumber: nextLeadNumber(now),
+        companyName: body.companyName || null,
+        contactName: body.contactName,
+        phone: body.phone || null,
+        email: body.email || null,
+        address: body.address || null,
+        city: body.city || null,
+        source: body.source || 'lainnya',
+        stage: 'Kontak Awal',
+        estimatedValue: Number(body.estimatedValue || 0),
+        // Non-management role selalu jadi PIC atas leads yang dia buat sendiri; role manajemen
+        // boleh menugaskan ke sales lain lewat picEmail.
+        picEmail: (isCrmFullAccess(session) && body.picEmail) ? body.picEmail : session.user.email,
+        notes: body.notes || null,
+        createdBy: session.user.email,
+        createdAt: now,
+        updatedAt: now,
+      };
+      db.insert(s.leads).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+
+    // GET /leads/:id - detail + daftar follow-up task
+    if (route.startsWith('/leads/') && path.length === 2 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const tasks = db.select().from(s.leadTasks).where(eq(s.leadTasks.leadId, id)).orderBy(s.leadTasks.dueDate).all();
+      let convertedContact = null;
+      if (lead.convertedContactId) {
+        convertedContact = db.select({ id: s.contacts.id, code: s.contacts.code, displayName: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, lead.convertedContactId)).get() || null;
+      }
+      return json({ data: { ...lead, tasks, convertedContact } });
+    }
+
+    // PATCH /leads/:id - edit field dasar (bukan stage/archive, ada endpoint sendiri)
+    if (route.startsWith('/leads/') && path.length === 2 && method === 'PATCH') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const body = await request.json().catch(() => ({}));
+      const patch = { updatedAt: new Date() };
+      for (const k of ['companyName', 'contactName', 'phone', 'email', 'address', 'city', 'source', 'notes']) {
+        if (body[k] !== undefined) patch[k] = body[k] || null;
+      }
+      if (body.estimatedValue !== undefined) patch.estimatedValue = Number(body.estimatedValue || 0);
+      if (body.picEmail !== undefined && isCrmFullAccess(session)) patch.picEmail = body.picEmail;
+      db.update(s.leads).set(patch).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/stage - transisi tahap pipeline. Body: { stage, lostReason? }
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'stage' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      if (LEAD_TERMINAL_STAGES.includes(lead.stage)) return err(`Lead sudah di tahap final (${lead.stage}), tidak bisa dipindah lagi`, 400);
+      const body = await request.json().catch(() => ({}));
+      const target = body.stage;
+      if (!LEAD_STAGES.includes(target)) return err('Tahap tidak valid', 400);
+      if (target === 'Gagal' && !body.lostReason) return err('Alasan gagal wajib diisi', 400);
+      if (target === 'Deal') return err('Gunakan endpoint /leads/:id/convert untuk menandai Deal', 400);
+      db.update(s.leads).set({ stage: target, lostReason: target === 'Gagal' ? body.lostReason : null, updatedAt: new Date() }).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/convert - tandai Deal & tautkan ke Contact (dibuat lewat POST /contacts
+    // yang sudah ada — supaya tidak duplikasi logika generate kode kontak, dsb). Body: { contactId }
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'convert' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      if (LEAD_TERMINAL_STAGES.includes(lead.stage)) return err(`Lead sudah di tahap final (${lead.stage})`, 400);
+      const body = await request.json().catch(() => ({}));
+      if (!body.contactId) return err('contactId wajib diisi (buat Contact dulu lewat POST /contacts)', 400);
+      const now = new Date();
+      db.update(s.leads).set({ stage: 'Deal', lostReason: null, convertedContactId: body.contactId, convertedAt: now, updatedAt: now }).where(eq(s.leads.id, id)).run();
+      return json({ data: db.select().from(s.leads).where(eq(s.leads.id, id)).get() });
+    }
+
+    // POST /leads/:id/tasks - tambah follow-up/reminder
+    if (route.startsWith('/leads/') && path.length === 3 && path[2] === 'tasks' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const body = await request.json().catch(() => ({}));
+      if (!body.title) return err('Judul tugas wajib diisi');
+      if (!body.dueDate) return err('Tanggal jatuh tempo wajib diisi');
+      const now = new Date();
+      const row = {
+        id: uuidv4(), leadId: id, title: body.title, dueDate: new Date(body.dueDate), status: 'pending',
+        assignedTo: (isCrmFullAccess(session) && body.assignedTo) ? body.assignedTo : lead.picEmail,
+        notes: body.notes || null, createdBy: session.user.email, createdAt: now,
+      };
+      db.insert(s.leadTasks).values(row).run();
+      return json({ data: row }, { status: 201 });
+    }
+
+    // PATCH /leads/:id/tasks/:taskId - update status/isi tugas
+    if (route.startsWith('/leads/') && path.length === 4 && path[2] === 'tasks' && method === 'PATCH') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1]; const taskId = path[3];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      const task = db.select().from(s.leadTasks).where(and(eq(s.leadTasks.id, taskId), eq(s.leadTasks.leadId, id))).get();
+      if (!task) return err('Tugas tidak ditemukan', 404);
+      const body = await request.json().catch(() => ({}));
+      const patch = {};
+      if (body.title !== undefined) patch.title = body.title;
+      if (body.dueDate !== undefined) patch.dueDate = new Date(body.dueDate);
+      if (body.notes !== undefined) patch.notes = body.notes || null;
+      if (body.assignedTo !== undefined && isCrmFullAccess(session)) patch.assignedTo = body.assignedTo;
+      if (body.status !== undefined) {
+        if (!['pending', 'done', 'cancelled'].includes(body.status)) return err('Status tidak valid', 400);
+        patch.status = body.status;
+        if (body.status === 'done') { patch.completedAt = new Date(); patch.completedBy = session.user.email; }
+        else { patch.completedAt = null; patch.completedBy = null; }
+      }
+      db.update(s.leadTasks).set(patch).where(eq(s.leadTasks.id, taskId)).run();
+      return json({ data: db.select().from(s.leadTasks).where(eq(s.leadTasks.id, taskId)).get() });
+    }
+
+    // DELETE /leads/:id/tasks/:taskId - hapus tugas (salah input dsb)
+    if (route.startsWith('/leads/') && path.length === 4 && path[2] === 'tasks' && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const id = path[1]; const taskId = path[3];
+      const lead = db.select().from(s.leads).where(eq(s.leads.id, id)).get();
+      if (!lead) return err('Lead tidak ditemukan', 404);
+      if (!isCrmFullAccess(session) && lead.picEmail !== session.user.email) return err('Forbidden', 403);
+      db.delete(s.leadTasks).where(and(eq(s.leadTasks.id, taskId), eq(s.leadTasks.leadId, id))).run();
+      return json({ ok: true });
+    }
+
+    // GET /lead-tasks - daftar tugas lintas-lead (buat panel "Tugas Saya"). ?status=&overdue=1&mine=1
+    if (route === '/lead-tasks' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const url = new URL(request.url);
+      const fullAccess = isCrmFullAccess(session);
+      const conds = [];
+      if (!fullAccess || url.searchParams.get('mine') === '1') conds.push(eq(s.leadTasks.assignedTo, session.user.email));
+      const status = url.searchParams.get('status');
+      if (status) conds.push(eq(s.leadTasks.status, status));
+      if (url.searchParams.get('overdue') === '1') { conds.push(eq(s.leadTasks.status, 'pending')); conds.push(sql`${s.leadTasks.dueDate} < ${Math.floor(Date.now() / 1000)}`); }
+      let query = db.select().from(s.leadTasks);
+      if (conds.length) query = query.where(and(...conds));
+      const rows = query.orderBy(s.leadTasks.dueDate).all();
+      // Enrich dengan info lead (nomor + nama kontak) buat tampilan panel
+      const leadIds = [...new Set(rows.map((r) => r.leadId))];
+      const leadMap = {};
+      if (leadIds.length) for (const l of db.select({ id: s.leads.id, leadNumber: s.leads.leadNumber, contactName: s.leads.contactName, companyName: s.leads.companyName }).from(s.leads).where(inArray(s.leads.id, leadIds)).all()) leadMap[l.id] = l;
+      return json({ data: rows.map((r) => ({ ...r, lead: leadMap[r.leadId] || null })) });
+    }
 
     // ---------- AGENTIC AI ASSISTANT ----------
     // POST /ai/chat  { message, sessionId, history:[{role,content}] }
@@ -2117,6 +2319,10 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const body = await request.json();
       delete body.id; delete body.createdAt; delete body.avgHppPerKg;
+      if (body.sku) {
+        const dup = await md.mdFindOne(md.MD.products, { sku: body.sku, _id: { $ne: id } });
+        if (dup) return err(`SKU "${body.sku}" sudah digunakan`, 409);
+      }
       const patch = { ...body, updatedAt: new Date() };
       const row = await md.mdUpdate(md.MD.products, id, patch);
       if (!row) return err('Not found', 404);
@@ -2289,7 +2495,13 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(like(s.purchaseOrder.poNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      // Guard against a collision (e.g. two near-simultaneous creates computing the same next
+      // number before either INSERT lands) — keep bumping until the candidate is free.
+      let next = max + 1;
+      while (db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(eq(s.purchaseOrder.poNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextGrnNumber = () => {
       const ym = new Date();
@@ -2750,6 +2962,21 @@ async function handleRoute(request, { params }) {
       return json({ data: updated });
     }
 
+    // POST /purchase-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
+    // Body: { apply?: boolean, full?: boolean }. Sama seperti /sales-orders/:id/rollback. Kalau PO ini
+    // ternyata PO dropship otomatis milik sebuah SO, diarahkan otomatis lewat SO supaya keduanya
+    // diproses dalam satu aksi (bukan PO sendirian jadi yatim). Diblokir kalau PO dipakai Work Order.
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['direktur'])) return err('Forbidden - hanya direktur', 403);
+      const id = path[1];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await soPoRollback.runPoRollback(db, id, { apply: !!body.apply, full: !!body.full, userEmail: session.user.email });
+        return json({ data: result });
+      } catch (e) { return err(e.message || 'Gagal memproses rollback/hapus PO', e.status || 400); }
+    }
+
     // POST /purchase-orders/:id/weighings - update per-item weighing (bulk)
     if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'weighings' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3083,7 +3310,13 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(like(s.salesOrder.soNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      // Guard against a collision (e.g. two near-simultaneous creates computing the same next
+      // number before either INSERT lands) — keep bumping until the candidate is free.
+      let next = max + 1;
+      while (db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.soNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextInvoiceNumber = (dateArg) => {
       const ym = dateArg ? new Date(dateArg) : new Date();
@@ -3092,7 +3325,11 @@ async function handleRoute(request, { params }) {
       const rows = db.select({ n: s.salesOrder.invoiceNumber }).from(s.salesOrder).where(like(s.salesOrder.invoiceNumber, `${prefix}%`)).all();
       let max = 0;
       for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
-      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+      let next = max + 1;
+      while (db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.invoiceNumber, `${prefix}${String(next).padStart(4, '0')}`)).get()) {
+        next += 1;
+      }
+      return `${prefix}${String(next).padStart(4, '0')}`;
     };
     const nextSjNumber = () => {
       const ym = new Date();
@@ -3140,7 +3377,13 @@ async function handleRoute(request, { params }) {
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
-        const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
+        // Berat Pesan (it.weight) TIDAK pernah ditimpa oleh alokasi kode simpan — keduanya berdiri
+        // sendiri. Billing di Draft mengikuti Berat Dipilih (allocatedWeight) kalau sudah ada
+        // alokasi, else fallback ke Berat Pesan.
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+        const allocatedWeight = allocs.reduce((a, b) => a + Number(b.weight || 0), 0);
+        const billingWeight = allocatedWeight > 0 ? allocatedWeight : Number(it.weight || it.quantity || 0);
+        const line = Number(it.unitPrice) * billingWeight;
         const disc = Number(it.discount || 0);
         const st = line - disc;
         subtotal += line;
@@ -3163,7 +3406,13 @@ async function handleRoute(request, { params }) {
       // Customer membayar penuh nilai faktur di-up = total (harga asli) + cashback; cashback direfund terpisah.
       const billable = (soRow.markupEnabled && Number(soRow.cashbackAmount) > 0)
         ? Number(soRow.totalAmount) + Number(soRow.cashbackAmount) : Number(soRow.totalAmount);
-      const netTotal = billable - totalReturns;
+      // cashbackDeduction (> 0) menandakan kekurangan bayar SO ini SUDAH ditutup dengan memotong
+      // refund cashback (lih. POST /sales-orders/:id/cashback-refund), bukan ditagih customer secara
+      // terpisah. Begitu jalur ini dipakai, "Lunas" dinilai dari total asli (bukan total+cashback —
+      // porsi cashback memang tidak dikembalikan penuh, itulah intinya) dikurangi bagian yang dipotong.
+      const netTotal = Number(soRow.cashbackDeduction || 0) > 0
+        ? Number(soRow.totalAmount) - totalReturns - Number(soRow.cashbackDeduction || 0)
+        : billable - totalReturns;
       let ps = 'unpaid';
       if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
       else if (totalPaid > 0) ps = 'partial';
@@ -3552,6 +3801,22 @@ async function handleRoute(request, { params }) {
       return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
+    // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
+    // Body: { apply?: boolean, full?: boolean }. apply falsy (default) = PREVIEW saja, tidak
+    // menulis apa pun. apply=true = eksekusi (backup JSON otomatis dulu). full=true = hapus total
+    // (header SO/PO ikut hilang), full=false = rollback ke Draft (item dipertahankan). Kalau SO ini
+    // punya PO dropship otomatis terkait, PO-nya ikut diproses dalam aksi yang sama.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'rollback' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['direktur'])) return err('Forbidden - hanya direktur', 403);
+      const id = path[1];
+      const body = await request.json().catch(() => ({}));
+      try {
+        const result = await soPoRollback.runSoRollback(db, id, { apply: !!body.apply, full: !!body.full, userEmail: session.user.email });
+        return json({ data: result });
+      } catch (e) { return err(e.message || 'Gagal memproses rollback/hapus SO', e.status || 400); }
+    }
+
     // GET /sales-orders/:id/available-stocks?productId= - kode simpan aktif (belum dialokasikan) utk produk
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'available-stocks' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3616,17 +3881,23 @@ async function handleRoute(request, { params }) {
         if (stk.productId !== item.productId) return err(`Kode simpan ${stk.kodeSimpan} bukan produk item ini`);
         if (stk.status !== 'active') return err(`Kode simpan ${stk.kodeSimpan} sudah dialokasikan / tidak aktif`);
         const w = Number(stk.weight || 0), q = Number(stk.quantity || 0);
+        // Claim atomically (UPDATE ... WHERE status='active') and check affected rows BEFORE
+        // inserting the allocation row, so two overlapping requests can never both claim the
+        // same kode simpan even if the read above raced with another request's write.
+        const claim = db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() })
+          .where(and(eq(s.inventoryStock.id, sid), eq(s.inventoryStock.status, 'active'))).run();
+        if (claim.changes === 0) return err(`Kode simpan ${stk.kodeSimpan} baru saja dialokasikan oleh proses lain, silakan pilih ulang`, 409);
         db.insert(s.soItemStocks).values({
           id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
           kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
         }).run();
-        db.update(s.inventoryStock).set({ status: 'allocated', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
         totW += w; totQ += q;
       }
-      // Revisi item SO mengikuti total kode simpan terpilih
+      // Subtotal mengikuti total kode simpan terpilih (Berat Dipilih), TAPI Berat Pesan
+      // (item.weight) tidak boleh ikut ditimpa — keduanya berdiri sendiri sebagai 2 tier terpisah.
       totW = Math.round(totW * 100) / 100;
       const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
-      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal, outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none' }).where(eq(s.salesOrderItems.id, itemId)).run();
+      db.update(s.salesOrderItems).set({ quantity: totQ, stockCodeId: stockIds[0] || null, subtotal, outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none' }).where(eq(s.salesOrderItems.id, itemId)).run();
       recalcSoTotals(soId);
       const updatedItem = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.id, itemId)).get();
       return json({ data: { item: updatedItem, allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
@@ -3786,10 +4057,11 @@ async function handleRoute(request, { params }) {
       }
       totW = Math.round(totW * 100) / 100;
       if (mode === 'final') {
-        // Simpan: revisi item mengikuti total lot terpilih + hitung ulang total SO
+        // Simpan: subtotal mengikuti total lot terpilih (Berat Dipilih). Berat Pesan (item.weight)
+        // tetap tidak berubah — keduanya berdiri sendiri sebagai 2 tier terpisah.
         const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
         db.update(s.salesOrderItems).set({
-          weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal,
+          quantity: totQ, stockCodeId: stockIds[0] || null, subtotal,
           outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none',
         }).where(eq(s.salesOrderItems.id, itemId)).run();
         recalcSoTotals(soId);
@@ -3916,7 +4188,7 @@ async function handleRoute(request, { params }) {
       if (!so) return err('Not found', 404);
       if (so.pipelineStatus !== 'Invoiced') return err('Basis invoice hanya dapat diubah pada SO berstatus Invoiced');
       const body = await request.json();
-      const basis = body.basis === 'received' ? 'received' : 'shipped';
+      const basis = ['ordered', 'received'].includes(body.basis) ? body.basis : 'shipped';
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
       // received per produk dari Receipts (Penerimaan Customer) untuk basis 'received'
       let recvByProduct = {};
@@ -3930,7 +4202,10 @@ async function handleRoute(request, { params }) {
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
         let w;
-        if (basis === 'received') {
+        if (basis === 'ordered') {
+          // Berat Pesan asli — TIDAK pernah tersubstitusi oleh shipped/received/allocated.
+          w = Number(it.weight || 0);
+        } else if (basis === 'received') {
           // Prefer the receipt weight (source of truth for "diterima") over any stale item value.
           if (recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId];
           else w = Number(it.receivedWeight || 0) || Number(it.shippedWeight || it.weight || 0);
@@ -4041,6 +4316,10 @@ async function handleRoute(request, { params }) {
           for (const al of allocs) {
             // Kode simpan dikonsumsi penuh (whole storage unit)
             const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
+            // Idempotency guard: if this lot is already 'used' (e.g. a retried/duplicate
+            // Confirm request after a mid-loop failure), skip it instead of re-ledgering and
+            // double-counting its weight/HPP.
+            if (!stk || stk.status === 'used') continue;
             recordLedger(db, {
               ledgerDate: new Date(),
               productId: al.productId || it.productId,
@@ -4082,9 +4361,9 @@ async function handleRoute(request, { params }) {
           db.update(s.contacts).set({ prepaidBalance: newBal, updatedAt: new Date() }).where(eq(s.contacts.id, cust.id)).run();
         }
       }
-      // On Invoiced: pilih basis berat (shipped/received) & recompute total, lalu auto-generate invoice
+      // On Invoiced: pilih basis berat (ordered/shipped/received) & recompute total, lalu auto-generate invoice
       if (target === 'Invoiced') {
-        const basis = body.invoiceWeightBasis === 'received' ? 'received' : 'shipped';
+        const basis = ['ordered', 'received'].includes(body.invoiceWeightBasis) ? body.invoiceWeightBasis : 'shipped';
         upd.invoiceWeightBasis = basis;
         const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
         // received per produk dari Receipts (auto), untuk basis 'received'
@@ -4099,7 +4378,10 @@ async function handleRoute(request, { params }) {
         let subtotal = 0, discountTotal = 0;
         for (const it of items) {
           let w;
-          if (basis === 'received') {
+          if (basis === 'ordered') {
+            // Berat Pesan asli — TIDAK pernah tersubstitusi oleh shipped/received/allocated.
+            w = Number(it.weight || 0);
+          } else if (basis === 'received') {
             w = Number(it.receivedWeight || 0);
             if (!w && recvByProduct[it.productId] !== undefined) w = recvByProduct[it.productId]; // auto dari receipts
             if (!w) w = Number(it.shippedWeight || it.weight || 0);
@@ -4407,11 +4689,25 @@ async function handleRoute(request, { params }) {
       const mkMap = {};
       if (Array.isArray(body.items)) for (const it of body.items) { if (it && it.itemId != null) mkMap[it.itemId] = it.markupUnitPrice; }
 
+      // Berat yang dipakai untuk basis cashback TIDAK selalu berat kirim — customer bisa dibayar
+      // dari Berat Pesan atau Berat Terima juga (lihat 4 tier weight SO). Kalau frontend mengirim
+      // weightBasis, hitung subtotal per item langsung dari berat itu (konsisten dgn yang dipilih
+      // di UI). Kalau tidak dikirim (klien lama / API lain), fallback ke it.subtotal (perilaku lama).
+      const weightBasis = ['ordered', 'shipped', 'received'].includes(body.weightBasis) ? body.weightBasis : null;
+      const itemAllocatedWeight = (it) => db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all()
+        .reduce((a, b) => a + Number(b.weight || 0), 0);
+      const basisWeight = (it) => {
+        if (weightBasis === 'ordered') return Number(it.weight || 0);
+        if (weightBasis === 'received') return Number(it.receivedWeight || 0) || Number(it.shippedWeight || 0) || itemAllocatedWeight(it) || Number(it.weight || 0);
+        if (weightBasis === 'shipped') return Number(it.shippedWeight || 0) || itemAllocatedWeight(it) || Number(it.weight || 0);
+        return null;
+      };
       let realAmount = total, cashback = 0, recipient = null, cashbackAccount = null;
       if (enabled) {
         cashback = 0;
         for (const it of soItems) {
-          const sub = Number(it.subtotal || 0);           // subtotal baris pada harga asli (sum = total_amount = nilai riil)
+          const bw = basisWeight(it);
+          const sub = bw !== null ? Math.max(0, bw * Number(it.unitPrice || 0) - Number(it.discount || 0)) : Number(it.subtotal || 0); // subtotal baris pada harga asli
           const realUnit = Number(it.unitPrice || 0);     // harga jual asli
           let mkUnit = (mkMap[it.id] !== undefined && mkMap[it.id] !== null && mkMap[it.id] !== '') ? Number(mkMap[it.id]) : realUnit;
           if (isNaN(mkUnit) || mkUnit < 0) mkUnit = 0;
@@ -4442,6 +4738,59 @@ async function handleRoute(request, { params }) {
       return json({ data: updated, info });
     }
 
+    // GET /sales-orders/:id/cashback-shortfall — hitung ATAS PERMINTAAN (tombol "Hitung Kelebihan
+    // Kirim" di form refund, TIDAK otomatis) berapa nilai kelebihan berat (surplus) yang sudah
+    // DITERIMA customer di atas yang dia PESAN, dari data Penerimaan Customer (so_receipts). Kasus:
+    // customer minta invoice tetap sesuai PESANAN (bukan yang diterima), tapi bersedia kelebihan
+    // beratnya dipotongkan dari cashback yang dia terima, alih-alih ditagih terpisah.
+    if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-shortfall' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const id = path[1];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+      if (!so) return err('Not found', 404);
+      if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      // PENTING: baseline pembanding HARUS Berat Pesan asli (so_items.weight), bukan
+      // sales_order_receipts.totalOrderedWeight — field itu diam-diam memakai Berat Kirim (SJ)
+      // kalau sudah ada (lihat pembuatan receipt), jadi salah untuk kasus ini: customer minta
+      // invoice tetap sesuai PESANAN meski yang dikirim/diterima lebih besar dari pesanan.
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      const orderedByProduct = {};
+      for (const it of soItems) {
+        if (!orderedByProduct[it.productId]) orderedByProduct[it.productId] = { orderedWeight: 0, value: 0 };
+        orderedByProduct[it.productId].orderedWeight += Number(it.weight || 0);
+        orderedByProduct[it.productId].value += Number(it.weight || 0) * Number(it.unitPrice || 0);
+      }
+      const receipts = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).all();
+      const receiptIds = receipts.map(r => r.id);
+      const receiptItems = receiptIds.length
+        ? db.select().from(s.salesOrderReceiptItems).where(inArray(s.salesOrderReceiptItems.receiptId, receiptIds)).all()
+        : [];
+      const receivedByProduct = {};
+      for (const ri of receiptItems) {
+        receivedByProduct[ri.productId] = (receivedByProduct[ri.productId] || 0) + Number(ri.receivedWeight || 0);
+      }
+      let totalOrderedWeight = 0, totalReceivedWeight = 0, surplusWeight = 0, surplusValue = 0;
+      for (const pid of new Set([...Object.keys(orderedByProduct), ...Object.keys(receivedByProduct)])) {
+        const ob = orderedByProduct[pid] || { orderedWeight: 0, value: 0 };
+        const received = receivedByProduct[pid] || 0;
+        const unitPrice = ob.orderedWeight > 0 ? ob.value / ob.orderedWeight : 0;
+        totalOrderedWeight += ob.orderedWeight;
+        totalReceivedWeight += received;
+        const surplus = Math.max(0, received - ob.orderedWeight);
+        surplusWeight += surplus;
+        surplusValue += surplus * unitPrice;
+      }
+      const cashbackAmount = Number(so.cashbackAmount || 0);
+      // Tidak mungkin memotong lebih dari nilai cashback itu sendiri.
+      const suggestedDeduction = Math.min(surplusValue, cashbackAmount);
+      return json({ data: {
+        totalOrderedWeight, totalReceivedWeight, surplusWeight, surplusValue, cashbackAmount,
+        suggestedDeduction,
+        cashbackAfterDeduction: Math.round((cashbackAmount - suggestedDeduction) * 100) / 100,
+      } });
+    }
+
     // POST /sales-orders/:id/cashback-refund — tandai cashback SUDAH dikembalikan + unggah bukti transfer (multipart).
     // Ini pencatatan OPERASIONAL (bukti transfer nyata ke PIC). Jurnal akuntansi cashback sudah otomatis saat invoice.
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-refund' && method === 'POST') {
@@ -4464,11 +4813,19 @@ async function handleRoute(request, { params }) {
           if (!ok) return err('Akun kas/bank tidak valid', 400);
         } catch { /* best-effort */ }
       }
+      // Potongan cashback (opsional) — dihitung manual oleh admin/akuntan lewat tombol "Hitung
+      // Kekurangan" (GET /cashback-shortfall), BUKAN otomatis di sini. Jumlah yang benar-benar
+      // ditransfer ke penerima = cashbackAmount - deduction.
+      let deduction = form.get('deduction') !== null ? Number(form.get('deduction')) : 0;
+      if (isNaN(deduction) || deduction < 0) return err('Potongan cashback tidak valid', 400);
+      if (deduction > Number(so.cashbackAmount)) return err('Potongan tidak boleh melebihi jumlah cashback', 400);
+      deduction = Math.round(deduction * 100) / 100;
       const set = {
         cashbackRefunded: true,
         cashbackRefundedAt: refundedAt,
         cashbackRefundNote: note,
         cashbackRefundedBy: session.user?.email || session.user?.id || null,
+        cashbackDeduction: deduction,
         updatedAt: new Date(),
       };
       if (accountCode) set.cashbackAccount = accountCode;
@@ -4491,8 +4848,18 @@ async function handleRoute(request, { params }) {
         set.cashbackProofType = file.type;
       }
       db.update(s.salesOrder).set(set).where(eq(s.salesOrder.id, id)).run();
+      // Potongan cashback menutup kekurangan bayar SO ini -> recompute paymentStatus (lih. catatan di
+      // recomputeSoPaymentStatus perihal cashbackDeduction).
+      const statusInfo = recomputeSoPaymentStatus(id);
       const updated = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
-      return json({ data: { id, cashbackRefunded: true, cashbackRefundedAt: refundedAt, cashbackRefundNote: note, cashbackRefundedBy: set.cashbackRefundedBy, hasProof: !!updated.cashbackProofKey, proofName: updated.cashbackProofName, proofUrl: updated.cashbackProofKey ? `/api/sales-orders/${id}/cashback-proof` : null } }, { status: 201 });
+      const actualRefundAmount = Math.round((Number(so.cashbackAmount) - deduction) * 100) / 100;
+      return json({ data: {
+        id, cashbackRefunded: true, cashbackRefundedAt: refundedAt, cashbackRefundNote: note,
+        cashbackRefundedBy: set.cashbackRefundedBy, cashbackDeduction: deduction, actualRefundAmount,
+        paymentStatus: statusInfo.paymentStatus,
+        hasProof: !!updated.cashbackProofKey, proofName: updated.cashbackProofName,
+        proofUrl: updated.cashbackProofKey ? `/api/sales-orders/${id}/cashback-proof` : null,
+      } }, { status: 201 });
     }
 
     // GET /sales-orders/:id/cashback-proof — sajikan file bukti pengembalian cashback (authenticated).
@@ -4528,8 +4895,10 @@ async function handleRoute(request, { params }) {
       if (so.cashbackProofKey) { try { fs.unlinkSync(nodePath.join(process.cwd(), 'data', 'uploads', so.cashbackProofKey)); } catch {} }
       db.update(s.salesOrder).set({
         cashbackRefunded: false, cashbackRefundedAt: null, cashbackRefundNote: null, cashbackRefundedBy: null,
-        cashbackProofKey: null, cashbackProofName: null, cashbackProofType: null, updatedAt: new Date(),
+        cashbackProofKey: null, cashbackProofName: null, cashbackProofType: null, cashbackDeduction: 0, updatedAt: new Date(),
       }).where(eq(s.salesOrder.id, id)).run();
+      // Batal refund -> potongan (jika ada) ikut batal, recompute paymentStatus ke basis normal.
+      recomputeSoPaymentStatus(id);
       return json({ ok: true });
     }
 
@@ -4607,6 +4976,8 @@ async function handleRoute(request, { params }) {
         resolution: body.resolution || 'potong_invoice',
         totalAmount: Number(body.totalAmount || sumAmount || 0),
         totalWeight: Number(body.totalWeight || sumWeight || 0),
+        weightAtPickup: Number(body.weightAtPickup || 0),
+        weightAtWarehouse: Number(body.weightAtWarehouse || 0),
         status: 'open',
         notes: body.notes || null,
         createdBy: session.user.email,
@@ -6948,6 +7319,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await tallyTxMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 10: diff-persist any notifications / contact_customers / contact_documents / app_settings rows.
       try { await miscMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 11: diff-persist any leads / lead_tasks rows this request changed (concurrency-safe).
+      try { await crmMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;

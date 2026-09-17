@@ -70,6 +70,9 @@ agenthub/agents/youtube/db
 /data/*.db-shm
 /data/*.restore.tmp*
 /data/.erp-backup-*.db
+# JSON backups auto-written before a Rollback/Hapus SO-PO action (lib/ops/so-po-rollback.js) —
+# contain real customer/transaction data, must never be committed.
+/data/backups/
 
 # Archive files and large assets
 **/*.zip

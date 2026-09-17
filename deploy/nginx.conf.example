@@ -1,0 +1,29 @@
+# Example Nginx site config for the LPI ERP app on a Hostinger VPS.
+# Copy to /etc/nginx/sites-available/erp.yourdomain.id, symlink into sites-enabled, then run
+# `certbot --nginx -d erp.yourdomain.id` to fill in the TLS block automatically.
+#
+# This assumes the app container is published only on 127.0.0.1:3000 (see docker-compose.yml)
+# so Nginx is the only thing exposed on 80/443.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name erp.yourdomain.id;
+
+    # certbot will add its own location block here and later rewrite this server block
+    # to redirect to https automatically — leave as-is before running certbot.
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # File uploads (contact docs, cashback proofs) can be a few MB; raise the default 1M limit.
+    client_max_body_size 20m;
+}
