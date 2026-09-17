@@ -4722,13 +4722,37 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      // PENTING: baseline pembanding HARUS Berat Pesan asli (so_items.weight), bukan
+      // sales_order_receipts.totalOrderedWeight — field itu diam-diam memakai Berat Kirim (SJ)
+      // kalau sudah ada (lihat pembuatan receipt), jadi salah untuk kasus ini: customer minta
+      // invoice tetap sesuai PESANAN meski yang dikirim/diterima lebih besar dari pesanan.
+      const soItems = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, id)).all();
+      const orderedByProduct = {};
+      for (const it of soItems) {
+        if (!orderedByProduct[it.productId]) orderedByProduct[it.productId] = { orderedWeight: 0, value: 0 };
+        orderedByProduct[it.productId].orderedWeight += Number(it.weight || 0);
+        orderedByProduct[it.productId].value += Number(it.weight || 0) * Number(it.unitPrice || 0);
+      }
       const receipts = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).all();
-      const totalOrderedWeight = receipts.reduce((a, r) => a + Number(r.totalOrderedWeight || 0), 0);
-      const totalReceivedWeight = receipts.reduce((a, r) => a + Number(r.totalReceivedWeight || 0), 0);
-      // totalShrinkageValue per receipt: negatif = kelebihan (surplus), positif = susut (kekurangan).
-      const totalShrinkageValue = receipts.reduce((a, r) => a + Number(r.totalShrinkageValue || 0), 0);
-      const surplusWeight = Math.max(0, totalReceivedWeight - totalOrderedWeight);
-      const surplusValue = Math.max(0, -totalShrinkageValue);
+      const receiptIds = receipts.map(r => r.id);
+      const receiptItems = receiptIds.length
+        ? db.select().from(s.salesOrderReceiptItems).where(inArray(s.salesOrderReceiptItems.receiptId, receiptIds)).all()
+        : [];
+      const receivedByProduct = {};
+      for (const ri of receiptItems) {
+        receivedByProduct[ri.productId] = (receivedByProduct[ri.productId] || 0) + Number(ri.receivedWeight || 0);
+      }
+      let totalOrderedWeight = 0, totalReceivedWeight = 0, surplusWeight = 0, surplusValue = 0;
+      for (const pid of new Set([...Object.keys(orderedByProduct), ...Object.keys(receivedByProduct)])) {
+        const ob = orderedByProduct[pid] || { orderedWeight: 0, value: 0 };
+        const received = receivedByProduct[pid] || 0;
+        const unitPrice = ob.orderedWeight > 0 ? ob.value / ob.orderedWeight : 0;
+        totalOrderedWeight += ob.orderedWeight;
+        totalReceivedWeight += received;
+        const surplus = Math.max(0, received - ob.orderedWeight);
+        surplusWeight += surplus;
+        surplusValue += surplus * unitPrice;
+      }
       const cashbackAmount = Number(so.cashbackAmount || 0);
       // Tidak mungkin memotong lebih dari nilai cashback itu sendiri.
       const suggestedDeduction = Math.min(surplusValue, cashbackAmount);
