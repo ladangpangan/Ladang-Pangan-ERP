@@ -1,7 +1,8 @@
-// Katalog produk untuk landing page "Jual Ayam Frozen".
-// Harga di bawah ini adalah CONTOH/PLACEHOLDER untuk keperluan demo checkout —
-// wajib disesuaikan dengan harga jual resmi Ladang pangan.id sebelum dipakai produksi.
-export const PRODUCTS = [
+// Default/seed katalog produk untuk landing page "Jual Ayam Frozen".
+// Ini hanya dipakai sebagai nilai awal saat belum ada pengaturan tersimpan di database —
+// setelah itu produk dikelola lewat halaman admin (/dashboard/landing-page).
+// Harga di bawah ini adalah CONTOH/PLACEHOLDER, wajib disesuaikan lewat halaman admin.
+export const DEFAULT_PRODUCTS = [
   {
     id: 'karkas-frozen',
     name: 'Karkas Ayam Frozen',
@@ -21,10 +22,6 @@ export const PRODUCTS = [
       'Ceker pilihan yang bersih dan higienis — favorit untuk kaldu, seblak, mie ayam, hingga camilan pedas.',
   },
 ]
-
-export function findProduct(productId) {
-  return PRODUCTS.find((p) => p.id === productId) || null
-}
 
 export function formatIDR(amount) {
   return new Intl.NumberFormat('id-ID', {

@@ -12,20 +12,18 @@ import {
   Truck,
 } from 'lucide-react'
 import OrderForm from './order-form'
-import { PRODUCTS, formatIDR } from './products'
+import { formatIDR } from './products'
+import { getPublicLandingSettings } from '@/lib/db/landing-settings'
+
+// Konten (nomor WA, produk, kredensial Midtrans) diedit lewat Dashboard > Landing Page Ayam
+// Frozen dan disimpan di database, jadi halaman ini harus selalu dirender ulang per-request.
+export const dynamic = 'force-dynamic'
 
 export const metadata = {
   title: 'Ladang pangan.id — Ayam Frozen Segar Langsung dari Peternak',
   description:
     'Beli ayam frozen berkualitas langsung dari peternak mitra Ladang pangan.id. Bersertifikat Halal & NKV, harga bersaing, pesan dan bayar online tanpa ribet.',
 }
-
-// TODO: ganti dengan nomor WhatsApp resmi Ladang pangan.id (format internasional, tanpa "+").
-const WHATSAPP_NUMBER = '6281234567890'
-const WHATSAPP_MESSAGE = encodeURIComponent(
-  'Halo Ladang pangan.id, saya ingin tanya-tanya soal ayam frozen.'
-)
-const WA_LINK = `https://wa.me/${WHATSAPP_NUMBER}?text=${WHATSAPP_MESSAGE}`
 
 const VALUE_PROPS = [
   {
@@ -72,7 +70,12 @@ const CERTIFICATIONS = [
   { icon: MapPin, label: 'Diproduksi di Sidoarjo, Jawa Timur' },
 ]
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const settings = await getPublicLandingSettings()
+  const products = settings.products
+  const waMessage = encodeURIComponent(settings.waMessage)
+  const WA_LINK = `https://wa.me/${settings.whatsappNumber}?text=${waMessage}`
+
   return (
     <div className="min-h-screen bg-[#FBF6EE] text-[#241C15]">
       <style>{`
@@ -216,7 +219,7 @@ export default function LandingPage() {
               </h2>
             </div>
             <div className="mt-12 grid gap-8 sm:grid-cols-2">
-              {PRODUCTS.map((p) => (
+              {products.map((p) => (
                 <div
                   key={p.id}
                   className="group overflow-hidden rounded-3xl border border-[#E7D9C4] bg-white shadow-sm transition hover:shadow-xl"
@@ -265,7 +268,11 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="mt-12">
-            <OrderForm />
+            <OrderForm
+              products={products}
+              midtransClientKey={settings.midtransClientKey}
+              midtransIsProduction={settings.midtransIsProduction}
+            />
           </div>
 
           <div className="mx-auto mt-10 grid max-w-3xl gap-6 sm:grid-cols-3">

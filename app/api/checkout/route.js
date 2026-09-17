@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getSnapClient } from '@/lib/midtrans'
-import { findProduct } from '@/app/jual-ayam-frozen/products'
+import { getLandingSettings } from '@/lib/db/landing-settings'
 
 export async function POST(request) {
   let body
@@ -13,7 +13,8 @@ export async function POST(request) {
   const { productId, qty, customer } = body || {}
   const quantity = Number(qty)
 
-  const product = findProduct(productId)
+  const settings = await getLandingSettings()
+  const product = settings.products.find((p) => p.id === productId)
   if (!product) {
     return NextResponse.json({ error: 'Produk tidak ditemukan.' }, { status: 400 })
   }
@@ -29,7 +30,7 @@ export async function POST(request) {
   const orderId = `LPI-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
 
   try {
-    const snap = getSnapClient()
+    const snap = await getSnapClient()
     const transaction = await snap.createTransaction({
       transaction_details: {
         order_id: orderId,

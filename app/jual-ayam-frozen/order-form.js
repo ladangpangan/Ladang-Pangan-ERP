@@ -3,15 +3,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Loader2, Minus, Plus, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
-import { PRODUCTS, formatIDR } from './products'
+import { formatIDR } from './products'
 
-const SNAP_SRC =
-  process.env.NEXT_PUBLIC_MIDTRANS_IS_PRODUCTION === 'true'
+export default function OrderForm({ products, midtransClientKey, midtransIsProduction }) {
+  const snapSrc = midtransIsProduction
     ? 'https://app.midtrans.com/snap/snap.js'
     : 'https://app.sandbox.midtrans.com/snap/snap.js'
-
-export default function OrderForm() {
-  const [productId, setProductId] = useState(PRODUCTS[0].id)
+  const [productId, setProductId] = useState(products[0].id)
   const [qty, setQty] = useState(2)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -20,21 +18,21 @@ export default function OrderForm() {
   const [snapReady, setSnapReady] = useState(false)
 
   useEffect(() => {
-    const clientKey = process.env.NEXT_PUBLIC_MIDTRANS_CLIENT_KEY
-    if (!clientKey || typeof window === 'undefined') return
+    if (!midtransClientKey || typeof window === 'undefined') return
     if (window.snap) {
       setSnapReady(true)
       return
     }
     const script = document.createElement('script')
-    script.src = SNAP_SRC
-    script.setAttribute('data-client-key', clientKey)
+    script.src = snapSrc
+    script.setAttribute('data-client-key', midtransClientKey)
     script.async = true
     script.onload = () => setSnapReady(true)
     document.head.appendChild(script)
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [midtransClientKey])
 
-  const product = useMemo(() => PRODUCTS.find((p) => p.id === productId), [productId])
+  const product = useMemo(() => products.find((p) => p.id === productId), [products, productId])
   const total = product ? product.price * qty : 0
 
   async function handlePay(e) {
@@ -43,7 +41,7 @@ export default function OrderForm() {
       toast.error('Mohon isi nama dan nomor WhatsApp Anda.')
       return
     }
-    if (!process.env.NEXT_PUBLIC_MIDTRANS_CLIENT_KEY) {
+    if (!midtransClientKey) {
       toast.error('Payment gateway belum dikonfigurasi oleh admin. Silakan pesan via WhatsApp.')
       return
     }
@@ -92,7 +90,7 @@ export default function OrderForm() {
             onChange={(e) => setProductId(e.target.value)}
             className="w-full rounded-xl border border-[#E7D9C4] bg-[#FBF6EE] px-4 py-3 text-[#3B2C21] outline-none focus:border-[#B3402A] focus:ring-2 focus:ring-[#B3402A]/20"
           >
-            {PRODUCTS.map((p) => (
+            {products.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} — {formatIDR(p.price)} ({p.unit})
               </option>

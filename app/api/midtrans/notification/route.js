@@ -22,7 +22,7 @@ export async function POST(request) {
 
   let serverKey
   try {
-    serverKey = getMidtransServerKey()
+    serverKey = await getMidtransServerKey()
   } catch (error) {
     console.error(error.message)
     return NextResponse.json({ error: 'Server belum dikonfigurasi.' }, { status: 500 })
