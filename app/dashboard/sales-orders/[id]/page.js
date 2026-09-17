@@ -456,14 +456,15 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [checkingShortfall, setCheckingShortfall] = useState(false);
-  const [shortfallInfo, setShortfallInfo] = useState(null); // hasil terakhir dari tombol "Hitung Kekurangan"
+  const [shortfallInfo, setShortfallInfo] = useState(null); // hasil terakhir dari tombol "Hitung Kelebihan Kirim"
   const [deduction, setDeduction] = useState(Number(so.cashbackDeduction || 0));
   const refunded = !!so.cashbackRefunded;
   const cashbackAmount = Number(so.cashbackAmount || 0);
   const actualRefund = Math.max(0, Math.round((cashbackAmount - Number(deduction || 0)) * 100) / 100);
 
-  // Hitung kekurangan bayar SO ini HANYA saat tombol ditekan (tidak otomatis) — lihat GET
-  // /cashback-shortfall di backend. Hasilnya jadi SARAN; admin masih bisa ubah angka potongannya.
+  // Hitung kelebihan berat kirim (surplus) dari data Penerimaan Customer HANYA saat tombol ditekan
+  // (tidak otomatis) — lihat GET /cashback-shortfall di backend. Hasilnya jadi SARAN; admin masih
+  // bisa ubah angka potongannya.
   const checkShortfall = async () => {
     setCheckingShortfall(true);
     try {
@@ -523,7 +524,7 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
             <div>Tanggal transfer: <b>{so.cashbackRefundedAt || '-'}</b></div>
             {Number(so.cashbackDeduction || 0) > 0 && (
               <div className="text-amber-700">
-                Dipotong <b>{rp(so.cashbackDeduction)}</b> (kekurangan bayar invoice) — ditransfer <b>{rp(cashbackAmount - Number(so.cashbackDeduction || 0))}</b> dari total cashback {rp(cashbackAmount)}.
+                Dipotong <b>{rp(so.cashbackDeduction)}</b> (kelebihan berat kirim) — ditransfer <b>{rp(cashbackAmount - Number(so.cashbackDeduction || 0))}</b> dari total cashback {rp(cashbackAmount)}.
               </div>
             )}
             {so.cashbackRefundNote && <div>Catatan: <b>{so.cashbackRefundNote}</b></div>}
@@ -554,16 +555,16 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
 
             <div className="rounded-md border border-dashed p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <Label className="text-xs">Potongan Cashback (kekurangan bayar invoice)</Label>
+                <Label className="text-xs">Potongan Cashback (kelebihan berat kirim)</Label>
                 <Button size="sm" variant="outline" onClick={checkShortfall} disabled={checkingShortfall}>
                   {checkingShortfall ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Calculator className="w-3.5 h-3.5 mr-1" />}
-                  Hitung Kekurangan
+                  Hitung Kelebihan Kirim
                 </Button>
               </div>
               {shortfallInfo && (
                 <div className="text-xs text-muted-foreground">
-                  Total invoice saat ini {rp(shortfallInfo.totalAmount)}, sudah dibayar {rp(shortfallInfo.totalPaid)} →
-                  kekurangan <b className="text-amber-700">{rp(shortfallInfo.shortfall)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
+                  Dipesan {shortfallInfo.totalOrderedWeight.toFixed(2)} kg, diterima customer {shortfallInfo.totalReceivedWeight.toFixed(2)} kg →
+                  kelebihan <b className="text-amber-700">{shortfallInfo.surplusWeight.toFixed(2)} kg senilai {rp(shortfallInfo.surplusValue)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
                 </div>
               )}
               <Input

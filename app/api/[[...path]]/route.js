@@ -4710,9 +4710,11 @@ async function handleRoute(request, { params }) {
       return json({ data: updated, info });
     }
 
-    // GET /sales-orders/:id/cashback-shortfall — hitung ATAS PERMINTAAN (tombol "Hitung Kekurangan" di
-    // form refund, TIDAK otomatis) berapa kekurangan bayar invoice SO ini saat ini, supaya admin/akuntan
-    // bisa memutuskan berapa cashback yang dipotong sebelum submit refund.
+    // GET /sales-orders/:id/cashback-shortfall — hitung ATAS PERMINTAAN (tombol "Hitung Kelebihan
+    // Kirim" di form refund, TIDAK otomatis) berapa nilai kelebihan berat (surplus) yang sudah
+    // DITERIMA customer di atas yang dia PESAN, dari data Penerimaan Customer (so_receipts). Kasus:
+    // customer minta invoice tetap sesuai PESANAN (bukan yang diterima), tapi bersedia kelebihan
+    // beratnya dipotongkan dari cashback yang dia terima, alih-alih ditagih terpisah.
     if (route.startsWith('/sales-orders/') && path.length === 3 && path[2] === 'cashback-shortfall' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
@@ -4720,15 +4722,18 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
-      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).get();
-      const totalPaid = Number(paid?.sum || 0);
-      const totalAmount = Number(so.totalAmount || 0);
-      const shortfall = Math.max(0, totalAmount - totalPaid);
+      const receipts = db.select().from(s.salesOrderReceipts).where(eq(s.salesOrderReceipts.salesOrderId, id)).all();
+      const totalOrderedWeight = receipts.reduce((a, r) => a + Number(r.totalOrderedWeight || 0), 0);
+      const totalReceivedWeight = receipts.reduce((a, r) => a + Number(r.totalReceivedWeight || 0), 0);
+      // totalShrinkageValue per receipt: negatif = kelebihan (surplus), positif = susut (kekurangan).
+      const totalShrinkageValue = receipts.reduce((a, r) => a + Number(r.totalShrinkageValue || 0), 0);
+      const surplusWeight = Math.max(0, totalReceivedWeight - totalOrderedWeight);
+      const surplusValue = Math.max(0, -totalShrinkageValue);
       const cashbackAmount = Number(so.cashbackAmount || 0);
       // Tidak mungkin memotong lebih dari nilai cashback itu sendiri.
-      const suggestedDeduction = Math.min(shortfall, cashbackAmount);
+      const suggestedDeduction = Math.min(surplusValue, cashbackAmount);
       return json({ data: {
-        totalAmount, totalPaid, shortfall, cashbackAmount,
+        totalOrderedWeight, totalReceivedWeight, surplusWeight, surplusValue, cashbackAmount,
         suggestedDeduction,
         cashbackAfterDeduction: Math.round((cashbackAmount - suggestedDeduction) * 100) / 100,
       } });
