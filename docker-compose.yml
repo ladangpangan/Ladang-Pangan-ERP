@@ -16,6 +16,16 @@ services:
     # else on 3000) without touching the container's own port, which stays 3000 either way.
     ports:
       - "${APP_BIND_IP:-127.0.0.1}:${APP_HOST_PORT:-3000}:3000"
+    # Traefik (already running on this host for another project, network_mode: host) discovers
+    # this container via the Docker socket and routes erp.ladangpangan.id to it directly over the
+    # container's bridge IP — no shared Docker network needed since Traefik is host-networked.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ladang-pangan-erp.rule=Host(`erp.ladangpangan.id`)"
+      - "traefik.http.routers.ladang-pangan-erp.entrypoints=websecure"
+      - "traefik.http.routers.ladang-pangan-erp.tls=true"
+      - "traefik.http.routers.ladang-pangan-erp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ladang-pangan-erp.loadbalancer.server.port=3000"
     volumes:
       # Persists the SQLite DB and uploaded files (contracts, cashback proofs, etc.) across
       # container rebuilds/redeploys. `data/uploads` is used regardless of DB_PATH (see route.js).
