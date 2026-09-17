@@ -12,8 +12,10 @@ services:
     # using a second compose file: Compose CONCATENATES (not replaces) list fields like `ports`
     # across -f files, so a second file adding another ports entry here would try to bind two
     # overlapping sockets on the same port and fail with "address already in use".
+    # APP_HOST_PORT lets the HOST-side port be changed (e.g. a shared VPS already has something
+    # else on 3000) without touching the container's own port, which stays 3000 either way.
     ports:
-      - "${APP_BIND_IP:-127.0.0.1}:3000:3000"
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_HOST_PORT:-3000}:3000"
     volumes:
       # Persists the SQLite DB and uploaded files (contracts, cashback proofs, etc.) across
       # container rebuilds/redeploys. `data/uploads` is used regardless of DB_PATH (see route.js).
