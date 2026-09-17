@@ -762,6 +762,30 @@ function InfoTab({ so }) {
   const beratDipilih = sumW('allocatedWeight');
   const beratKirim = sumW('shippedWeight');
   const beratTerima = sumW('receivedWeight');
+  // Susut per tahap: CS (Dipilih -> Kirim, di gudang sebelum berangkat) dan Di Terima (Kirim ->
+  // Terima, transit ke customer). Dihitung per item lalu dijumlah, hanya saat kedua sisi > 0
+  // (belum bisa dinilai kalau salah satu tahap belum tercatat).
+  const susutCs = items.reduce((a, it) => {
+    const d = Number(it.allocatedWeight || 0), k = Number(it.shippedWeight || 0);
+    return a + (d > 0 && k > 0 ? Math.max(0, d - k) : 0);
+  }, 0);
+  const susutDiTerima = items.reduce((a, it) => {
+    const k = Number(it.shippedWeight || 0), t = Number(it.receivedWeight || 0);
+    return a + (k > 0 && t > 0 ? Math.max(0, k - t) : 0);
+  }, 0);
+  // Susut retur: di tangan customer sebelum dikirim balik (totalWeight -> weightAtPickup), dan
+  // pengembalian retur: transit balik ke gudang (weightAtPickup -> weightAtWarehouse). Keduanya
+  // hanya terisi kalau titik ukur terkait sudah diinput saat Buat Retur.
+  const returns = so.returns || [];
+  const susutRetur = returns.reduce((a, r) => {
+    const declared = Number(r.totalWeight || 0), pickup = Number(r.weightAtPickup || 0);
+    return a + (pickup > 0 ? Math.max(0, declared - pickup) : 0);
+  }, 0);
+  const susutPengembalianRetur = returns.reduce((a, r) => {
+    const pickup = Number(r.weightAtPickup || 0), wh = Number(r.weightAtWarehouse || 0);
+    return a + (pickup > 0 && wh > 0 ? Math.max(0, pickup - wh) : 0);
+  }, 0);
+  const fmtKg = (v, measured) => measured ? `${v.toFixed(1)} kg` : '- (belum diukur)';
   const rows = [
     ['Customer', so.customer?.displayName],
     ['Kode Customer', so.customer?.code],
@@ -779,6 +803,10 @@ function InfoTab({ so }) {
     ['Berat Dipilih', beratDipilih > 0 ? `${beratDipilih.toFixed(1)} kg` : '-'],
     ['Berat Kirim', beratKirim > 0 ? `${beratKirim.toFixed(1)} kg` : '-'],
     ['Berat Terima', beratTerima > 0 ? `${beratTerima.toFixed(1)} kg` : '-'],
+    ['Susut CS (Dipilih → Kirim)', fmtKg(susutCs, beratDipilih > 0 && beratKirim > 0)],
+    ['Susut di Terima (Kirim → Terima)', fmtKg(susutDiTerima, beratKirim > 0 && beratTerima > 0)],
+    ['Susut Retur', fmtKg(susutRetur, returns.some(r => Number(r.weightAtPickup || 0) > 0))],
+    ['Susut Pengembalian Retur', fmtKg(susutPengembalianRetur, returns.some(r => Number(r.weightAtPickup || 0) > 0 && Number(r.weightAtWarehouse || 0) > 0))],
   ];
   return (
     <Card><CardContent className="pt-6 space-y-4">
@@ -846,7 +874,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle className="text-base">Items SO</CardTitle>
-          {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Berat &amp; subtotal otomatis mengikuti kode simpan terpilih.</CardDescription>}
+          {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Subtotal otomatis mengikuti kode simpan terpilih — Berat Pesan tidak berubah.</CardDescription>}
         </div>
         <div className="flex items-center gap-2">
           {canEditItems && (
@@ -1057,7 +1085,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Package className="w-5 h-5" /> Pilih Kode Simpan — {item.product?.name}</DialogTitle>
-          <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Berat &amp; subtotal SO otomatis direvisi.</DialogDescription>
+          <DialogDescription>Centang kode simpan yang akan dikirim untuk item ini (bisa lebih dari satu). Subtotal SO mengikuti total berat yang dipilih — Berat Pesan tidak ikut berubah.</DialogDescription>
         </DialogHeader>
         {stocks !== null && sorted.length > 0 && (
           <Input placeholder="Cari kode simpan atau berat (kg)..." value={q} onChange={(e) => setQ(e.target.value)} className="mb-1" />
@@ -1564,7 +1592,7 @@ function GrossProfitCard({ so }) {
 
 function ReturnsTab({ so, onSaved, canOperate }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ returnDate: new Date().toISOString().slice(0,10), reason: '', resolution: 'potong_invoice', totalAmount: 0, totalWeight: 0, notes: '' });
+  const [form, setForm] = useState({ returnDate: new Date().toISOString().slice(0,10), reason: '', resolution: 'potong_invoice', totalAmount: 0, totalWeight: 0, weightAtPickup: 0, weightAtWarehouse: 0, notes: '' });
   const [saving, setSaving] = useState(false);
   const create = async () => {
     if (!form.reason) return toast.error('Alasan retur wajib');
@@ -1597,7 +1625,9 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 </F>
                 <F label="Alasan *" className="col-span-2"><Textarea rows={2} value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></F>
                 <F label="Nominal (Rp)"><CurrencyInput value={form.totalAmount} onChange={v => setForm({ ...form, totalAmount: v })} placeholder="0" /></F>
-                <F label="Berat (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
+                <F label="Berat Retur (kg)"><WeightInput value={form.totalWeight} onChange={v => setForm({ ...form, totalWeight: v })} placeholder="0" /></F>
+                <F label="Berat Saat Dikirim Customer (kg)"><WeightInput value={form.weightAtPickup} onChange={v => setForm({ ...form, weightAtPickup: v })} placeholder="Opsional" /></F>
+                <F label="Berat Saat Tiba Gudang (kg)"><WeightInput value={form.weightAtWarehouse} onChange={v => setForm({ ...form, weightAtWarehouse: v })} placeholder="Opsional" /></F>
                 <F label="Catatan" className="col-span-2"><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></F>
               </div>
               <DialogFooter><Button onClick={create} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Buat Retur</Button></DialogFooter>
@@ -1617,6 +1647,13 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 <div className="text-xs text-muted-foreground mt-1">{format(new Date(r.returnDate), 'dd MMM yyyy')}</div>
                 <div className="mt-2">{r.reason}</div>
                 <div className="mt-1 text-sm font-semibold">Rp {Number(r.totalAmount).toLocaleString('id-ID')} · {r.totalWeight} kg</div>
+                {(Number(r.weightAtPickup) > 0 || Number(r.weightAtWarehouse) > 0) && (
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {Number(r.weightAtPickup) > 0 && <>Dikirim customer: {Number(r.weightAtPickup).toFixed(1)} kg</>}
+                    {Number(r.weightAtPickup) > 0 && Number(r.weightAtWarehouse) > 0 && ' · '}
+                    {Number(r.weightAtWarehouse) > 0 && <>Tiba gudang: {Number(r.weightAtWarehouse).toFixed(1)} kg</>}
+                  </div>
+                )}
               </div>
             ))}
           </div>}

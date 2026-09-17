@@ -3377,7 +3377,13 @@ async function handleRoute(request, { params }) {
       const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
       let subtotal = 0, discountTotal = 0;
       for (const it of items) {
-        const line = Number(it.unitPrice) * Number(it.weight || it.quantity || 0);
+        // Berat Pesan (it.weight) TIDAK pernah ditimpa oleh alokasi kode simpan — keduanya berdiri
+        // sendiri. Billing di Draft mengikuti Berat Dipilih (allocatedWeight) kalau sudah ada
+        // alokasi, else fallback ke Berat Pesan.
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.soItemId, it.id)).all();
+        const allocatedWeight = allocs.reduce((a, b) => a + Number(b.weight || 0), 0);
+        const billingWeight = allocatedWeight > 0 ? allocatedWeight : Number(it.weight || it.quantity || 0);
+        const line = Number(it.unitPrice) * billingWeight;
         const disc = Number(it.discount || 0);
         const st = line - disc;
         subtotal += line;
@@ -3887,10 +3893,11 @@ async function handleRoute(request, { params }) {
         }).run();
         totW += w; totQ += q;
       }
-      // Revisi item SO mengikuti total kode simpan terpilih
+      // Subtotal mengikuti total kode simpan terpilih (Berat Dipilih), TAPI Berat Pesan
+      // (item.weight) tidak boleh ikut ditimpa — keduanya berdiri sendiri sebagai 2 tier terpisah.
       totW = Math.round(totW * 100) / 100;
       const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
-      db.update(s.salesOrderItems).set({ weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal, outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none' }).where(eq(s.salesOrderItems.id, itemId)).run();
+      db.update(s.salesOrderItems).set({ quantity: totQ, stockCodeId: stockIds[0] || null, subtotal, outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none' }).where(eq(s.salesOrderItems.id, itemId)).run();
       recalcSoTotals(soId);
       const updatedItem = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.id, itemId)).get();
       return json({ data: { item: updatedItem, allocatedWeight: totW, allocatedQty: totQ, count: stockIds.length } });
@@ -4050,10 +4057,11 @@ async function handleRoute(request, { params }) {
       }
       totW = Math.round(totW * 100) / 100;
       if (mode === 'final') {
-        // Simpan: revisi item mengikuti total lot terpilih + hitung ulang total SO
+        // Simpan: subtotal mengikuti total lot terpilih (Berat Dipilih). Berat Pesan (item.weight)
+        // tetap tidak berubah — keduanya berdiri sendiri sebagai 2 tier terpisah.
         const subtotal = Math.round(Number(item.unitPrice || 0) * totW - Number(item.discount || 0));
         db.update(s.salesOrderItems).set({
-          weight: totW, quantity: totQ, stockCodeId: stockIds[0] || null, subtotal,
+          quantity: totQ, stockCodeId: stockIds[0] || null, subtotal,
           outboundTallyStatus: stockIds.length > 0 ? 'final' : 'none',
         }).where(eq(s.salesOrderItems.id, itemId)).run();
         recalcSoTotals(soId);
@@ -4948,6 +4956,8 @@ async function handleRoute(request, { params }) {
         resolution: body.resolution || 'potong_invoice',
         totalAmount: Number(body.totalAmount || sumAmount || 0),
         totalWeight: Number(body.totalWeight || sumWeight || 0),
+        weightAtPickup: Number(body.weightAtPickup || 0),
+        weightAtWarehouse: Number(body.weightAtWarehouse || 0),
         status: 'open',
         notes: body.notes || null,
         createdBy: session.user.email,
