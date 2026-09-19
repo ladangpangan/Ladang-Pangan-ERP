@@ -18,15 +18,29 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore, FileSpreadsheet } from 'lucide-react';
+import { Plus, Search, Eye, ShoppingCart, Loader2, Trash2, Archive, ArchiveRestore, FileSpreadsheet, Printer } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { MonthYearFilter, useMonthFilter } from '@/components/month-year-filter';
 import { exportToExcel } from '@/lib/xlsx-export';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel, pkgShort } from '@/lib/constants';
+import { generatePOPDF } from '@/lib/pdf/invoice';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
+
+// Ambil detail lengkap (item + produk) lalu cetak PDF PO — dipakai dari daftar PO maupun
+// langsung setelah PO baru dibuat, supaya bisa cepat dikirim ke vendor sebagai instruksi pembelian.
+async function printPO(id, poNumber) {
+  try {
+    const res = await fetch(`/api/purchase-orders/${id}`);
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || 'Gagal memuat data PO');
+    const doc = generatePOPDF(j.data);
+    doc.save(`PO-${j.data.poNumber || poNumber}.pdf`);
+    toast.success('PDF PO siap dikirim ke vendor');
+  } catch (e) { toast.error('Gagal mencetak PO: ' + e.message); }
+}
 
 const PO_STATUSES = ['Draft', 'Menunggu Konfirmasi', 'Diproses', 'Dikirim', 'Tanda Terima', 'Selesai', 'Dibatalkan'];
 const PO_TYPES = ['Live Bird', 'Packaging', 'Bahan Baku', 'Produk Jadi', 'Operasional'];
@@ -176,6 +190,7 @@ export default function POListPage() {
                   <TableCell><Badge className={STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Link href={`/dashboard/purchase-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
+                    <Button size="icon" variant="ghost" title="Cetak PO (untuk vendor)" onClick={() => printPO(r.id, r.poNumber)}><Printer className="w-4 h-4 text-blue-600" /></Button>
                     {canCreate && (view === 'archived'
                       ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
                       : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
@@ -207,7 +222,7 @@ function CreatePODialog({ onSaved }) {
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, emptyItem()] }));
   const removeItem = (i) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
 
-  const save = async () => {
+  const save = async (thenPrint = false) => {
     if (!form.supplierId) return toast.error('Pilih supplier');
     if (form.items.length === 0 || form.items.some(it => !it.productId)) return toast.error('Isi minimal 1 item dengan produk');
     setSaving(true);
@@ -217,6 +232,7 @@ function CreatePODialog({ onSaved }) {
       if (!res.ok) throw new Error(j.error || 'Gagal');
       toast.success('PO dibuat: ' + j.data.poNumber);
       onSaved();
+      if (thenPrint) await printPO(j.data.id, j.data.poNumber);
       router.push(`/dashboard/purchase-orders/${j.data.id}`);
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
@@ -358,7 +374,10 @@ function CreatePODialog({ onSaved }) {
 
       <F label="Catatan"><Textarea rows={2} value={form.notes} onChange={e => update('notes', e.target.value)} /></F>
 
-      <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan PO</Button></DialogFooter>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => save(false)} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan PO</Button>
+        <Button onClick={() => save(true)} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}Simpan & Cetak PO</Button>
+      </DialogFooter>
     </DialogContent>
   );
 }

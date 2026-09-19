@@ -153,6 +153,7 @@ export default function PODetailPage() {
         <TabsContent value="info" className="space-y-3">
           <InfoTab po={po} onSaved={mutate} canEdit={canEdit} />
           {po.isDropship && <ShippingAddressCard po={po} onSaved={mutate} canEdit={canEdit} />}
+          <NotesCard po={po} onSaved={mutate} canEdit={canEdit} />
           <AdditionalCostCard po={po} onSaved={mutate} canEdit={canEdit} />
         </TabsContent>
         <TabsContent value="items"><ItemsTab po={po} onSaved={mutate} canEdit={canOperate} /></TabsContent>
@@ -242,8 +243,39 @@ function InfoTab({ po, onSaved, canEdit }) {
           </div>
         ))}
       </div>
-      {po.notes && <div className="pt-3 border-t"><div className="text-xs text-muted-foreground mb-1">Catatan</div><div className="text-sm whitespace-pre-wrap">{po.notes}</div></div>}
     </CardContent></Card>
+  );
+}
+
+function NotesCard({ po, onSaved, canEdit }) {
+  const [notes, setNotes] = useState(po.notes || '');
+  const [saving, setSaving] = useState(false);
+  const locked = po.pipelineStatus === 'Selesai';
+  const editable = canEdit && !locked;
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/purchase-orders/${po.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Catatan disimpan');
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4" />Catatan / Instruksi Pembelian ke Vendor</CardTitle>
+        <CardDescription>Tampil di dokumen PDF PO yang dicetak/dikirim ke vendor — pakai untuk memperjelas instruksi khusus (mis. jadwal kirim, spesifikasi, syarat penerimaan).</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} disabled={!editable} placeholder="Instruksi pembelian untuk vendor..." />
+        {editable && <div className="flex justify-end"><Button size="sm" onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Catatan</Button></div>}
+      </CardContent>
+    </Card>
   );
 }
 
