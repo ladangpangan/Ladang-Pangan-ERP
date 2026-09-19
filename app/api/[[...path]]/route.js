@@ -2703,6 +2703,7 @@ async function handleRoute(request, { params }) {
         pipelineStatus: 'Draft',
         isDropship: !!body.isDropship,
         dropshipCustomerId: body.dropshipCustomerId || null,
+        shippingAddress: body.isDropship ? (body.shippingAddress || null) : null,
         additionalCost: Number(body.additionalCost || 0),
         additionalCostBearer: ['company', 'supplier'].includes(body.additionalCostBearer) ? body.additionalCostBearer : 'company',
         additionalCostPayMethod: ['tunai', 'transfer', 'utang'].includes(body.additionalCostPayMethod) ? body.additionalCostPayMethod : 'utang',
@@ -2833,7 +2834,7 @@ async function handleRoute(request, { params }) {
       // Method lock: if PO already has method set, cannot change
       if (existing.method && body.method && body.method !== existing.method) return err(`Metode timbang terkunci sebagai "${existing.method}"`);
       const update = {};
-      const fields = ['supplierId', 'poType', 'method', 'expectedDate', 'isDropship', 'dropshipCustomerId', 'additionalCost', 'additionalCostBearer', 'additionalCostPayMethod', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate'];
+      const fields = ['supplierId', 'poType', 'method', 'expectedDate', 'isDropship', 'dropshipCustomerId', 'shippingAddress', 'additionalCost', 'additionalCostBearer', 'additionalCostPayMethod', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;
@@ -3579,10 +3580,15 @@ async function handleRoute(request, { params }) {
           const dupPo = db.select({ id: s.purchaseOrder.id }).from(s.purchaseOrder).where(eq(s.purchaseOrder.poNumber, poNum)).get();
           if (dupPo) poNum = nextPoNumber(orderDate);
           const nowP = new Date();
+          // Alamat kirim: pakai yang dikirim eksplisit di body (kalau ada), fallback ke alamat
+          // terdaftar Contact customer tujuan dropship, supaya supplier tahu kirim ke mana.
+          const dropshipCust = db.select({ address: s.contacts.address }).from(s.contacts).where(eq(s.contacts.id, body.customerId)).get();
+          const shippingAddress = body.shippingAddress || dropshipCust?.address || null;
           db.insert(s.purchaseOrder).values({
             id: poId, poNumber: poNum, supplierId: body.supplierId,
             poType: 'Produk Jadi', method: null, orderDate: orderDate, expectedDate: expectedDate,
             pipelineStatus: 'Draft', isDropship: true, dropshipCustomerId: body.customerId,
+            shippingAddress,
             salesOrderId: id,
             additionalCost: 0, dpAmount: 0, notes: `Auto dari SO Dropship ${soNumber}`,
             createdBy: session.user.email, createdAt: nowP, updatedAt: nowP,

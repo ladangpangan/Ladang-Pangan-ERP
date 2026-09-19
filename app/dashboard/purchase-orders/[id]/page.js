@@ -152,6 +152,7 @@ export default function PODetailPage() {
 
         <TabsContent value="info" className="space-y-3">
           <InfoTab po={po} onSaved={mutate} canEdit={canEdit} />
+          {po.isDropship && <ShippingAddressCard po={po} onSaved={mutate} canEdit={canEdit} />}
           <AdditionalCostCard po={po} onSaved={mutate} canEdit={canEdit} />
         </TabsContent>
         <TabsContent value="items"><ItemsTab po={po} onSaved={mutate} canEdit={canOperate} /></TabsContent>
@@ -230,6 +231,7 @@ function InfoTab({ po, onSaved, canEdit }) {
     ['Due Date', po.dueDate && format(new Date(po.dueDate), 'dd MMM yyyy')],
     ['Dropship', po.isDropship ? `Ya → ${po.dropshipCustomer?.displayName || '-'}` : 'Tidak'],
   ];
+  if (po.isDropship) rows.push(['Alamat Pengiriman', po.shippingAddress || po.dropshipCustomer?.address || '-']);
   return (
     <Card><CardContent className="pt-6 space-y-4">
       <div className="grid sm:grid-cols-2 gap-3">
@@ -242,6 +244,38 @@ function InfoTab({ po, onSaved, canEdit }) {
       </div>
       {po.notes && <div className="pt-3 border-t"><div className="text-xs text-muted-foreground mb-1">Catatan</div><div className="text-sm whitespace-pre-wrap">{po.notes}</div></div>}
     </CardContent></Card>
+  );
+}
+
+function ShippingAddressCard({ po, onSaved, canEdit }) {
+  const [address, setAddress] = useState(po.shippingAddress || po.dropshipCustomer?.address || '');
+  const [saving, setSaving] = useState(false);
+  const locked = po.pipelineStatus === 'Selesai';
+  const editable = canEdit && !locked;
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/purchase-orders/${po.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shippingAddress: address }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal');
+      toast.success('Alamat pengiriman disimpan');
+      onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Card className="border-purple-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><Truck className="w-4 h-4" />Alamat Pengiriman (Dropship)</CardTitle>
+        <CardDescription>Supplier mengirim langsung ke alamat ini (bukan ke gudang kita) — tampil di PDF PO/Invoice Supplier supaya jelas tujuan kirimnya.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Textarea rows={3} value={address} onChange={e => setAddress(e.target.value)} disabled={!editable} placeholder="Alamat lengkap customer tujuan dropship" />
+        {editable && <div className="flex justify-end"><Button size="sm" onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Alamat</Button></div>}
+      </CardContent>
+    </Card>
   );
 }
 

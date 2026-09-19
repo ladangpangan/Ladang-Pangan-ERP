@@ -50,7 +50,7 @@ const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 const emptyItem = () => ({ productId: '', quantity: 0, weight: 0, unitPrice: 0 });
 const emptyForm = {
   supplierId: '', poType: 'Live Bird', method: 'Timbang Ulang',
-  isDropship: false, dropshipCustomerId: '',
+  isDropship: false, dropshipCustomerId: '', shippingAddress: '',
   orderDate: new Date().toISOString().slice(0,10),
   expectedDate: '',
   additionalCost: 0, additionalCostBearer: 'company', additionalCostPayMethod: 'utang',
@@ -259,12 +259,21 @@ function CreatePODialog({ onSaved }) {
               </div>
             </F>
             {form.isDropship && (
-              <F label="Customer Tujuan" className="sm:col-span-2">
-                <Select value={form.dropshipCustomerId} onValueChange={v => update('dropshipCustomerId', v)}>
-                  <SelectTrigger><SelectValue placeholder="Pilih customer" /></SelectTrigger>
-                  <SelectContent>{(cust?.data || []).map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.displayName}</SelectItem>)}</SelectContent>
-                </Select>
-              </F>
+              <>
+                <F label="Customer Tujuan" className="sm:col-span-2">
+                  <Select value={form.dropshipCustomerId} onValueChange={v => {
+                    update('dropshipCustomerId', v);
+                    const c = (cust?.data || []).find(x => x.id === v);
+                    if (c?.address && !form.shippingAddress) update('shippingAddress', c.address);
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="Pilih customer" /></SelectTrigger>
+                    <SelectContent>{(cust?.data || []).map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.displayName}</SelectItem>)}</SelectContent>
+                  </Select>
+                </F>
+                <F label="Alamat Pengiriman (tujuan dropship)" className="sm:col-span-2">
+                  <Textarea rows={2} value={form.shippingAddress} onChange={e => update('shippingAddress', e.target.value)} placeholder="Alamat customer tujuan pengiriman supplier" />
+                </F>
+              </>
             )}
           </>
         )}
