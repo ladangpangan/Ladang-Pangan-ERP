@@ -36,7 +36,7 @@ async function printPO(id, poNumber) {
     const res = await fetch(`/api/purchase-orders/${id}`);
     const j = await res.json();
     if (!res.ok) throw new Error(j.error || 'Gagal memuat data PO');
-    const doc = generatePOPDF(j.data);
+    const doc = generatePOPDF(j.data, { mode: 'po' });
     doc.save(`PO-${j.data.poNumber || poNumber}.pdf`);
     toast.success('PDF PO siap dikirim ke vendor');
   } catch (e) { toast.error('Gagal mencetak PO: ' + e.message); }

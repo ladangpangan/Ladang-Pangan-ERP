@@ -90,12 +90,29 @@ export default function PODetailPage() {
             ))}
           </div>
         )}
+        {po.isDropship && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              try {
+                const doc = generatePOPDF(po, { mode: 'po' });
+                doc.save(`PO-${po.poNumber}.pdf`);
+                toast.success('PDF PO berhasil diunduh');
+              } catch (e) {
+                toast.error('Gagal membuat PDF: ' + e.message);
+              }
+            }}
+          >
+            <FileDown className="w-4 h-4 mr-1" /> Cetak PO
+          </Button>
+        )}
         <Button
           size="sm"
           variant="outline"
           onClick={() => {
             try {
-              const doc = generatePOPDF(po);
+              const doc = generatePOPDF(po, { mode: po.isDropship ? 'invoice' : 'po' });
               doc.save(`PO-${po.poNumber}.pdf`);
               toast.success('PDF berhasil diunduh');
             } catch (e) {
