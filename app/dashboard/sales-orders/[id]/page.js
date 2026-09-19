@@ -26,6 +26,7 @@ import { SO_STATUS_COLOR } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
 import DangerZoneRollback from '@/components/danger-zone-rollback';
+import { usePdfPreview } from '@/components/pdf-preview-dialog';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -51,6 +52,7 @@ export default function SODetailPage() {
   const [transitioning, setTransitioning] = useState(false);
   const [pdfBasisOpen, setPdfBasisOpen] = useState(false);
   const [pdfBasis, setPdfBasis] = useState('shipped'); // 'allocated' | 'ordered' | 'shipped' | 'received'
+  const pdfPreview = usePdfPreview();
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!so) return <div className="text-center py-20 text-muted-foreground">SO tidak ditemukan</div>;
@@ -67,8 +69,7 @@ export default function SODetailPage() {
     try {
       const opts = { weightBasis: pdfBasis, ...(so.markupEnabled && Number(so.cashbackAmount) > 0 ? { variant: 'diup' } : {}) };
       const doc = generateInvoicePDF(so, opts);
-      doc.save(`Invoice-${so.invoiceNumber || so.soNumber}.pdf`);
-      toast.success('PDF Faktur (Customer) berhasil diunduh');
+      pdfPreview.show(doc, `Invoice-${so.invoiceNumber || so.soNumber}.pdf`, `Faktur ${so.invoiceNumber || so.soNumber}`);
       setPdfBasisOpen(false);
     } catch (e) {
       console.error('PDF Invoice error:', e);
@@ -136,8 +137,7 @@ export default function SODetailPage() {
             onClick={() => {
               try {
                 const doc = generateSOPDF(so);
-                doc.save(`SO-${so.soNumber}.pdf`);
-                toast.success('PDF SO berhasil diunduh');
+                pdfPreview.show(doc, `SO-${so.soNumber}.pdf`, `SO ${so.soNumber}`);
               } catch (e) {
                 console.error('PDF SO error:', e);
                 toast.error('Gagal membuat PDF SO: ' + (e.message || 'unknown'));
@@ -163,8 +163,7 @@ export default function SODetailPage() {
               onClick={() => {
                 try {
                   const doc = generateInvoicePDF(so, { variant: 'asli' });
-                  doc.save(`Faktur-Asli-${so.invoiceNumber || so.soNumber}.pdf`);
-                  toast.success('PDF Faktur Asli/Internal berhasil diunduh');
+                  pdfPreview.show(doc, `Faktur-Asli-${so.invoiceNumber || so.soNumber}.pdf`, `Faktur Asli ${so.invoiceNumber || so.soNumber}`);
                 } catch (e) {
                   console.error('PDF Asli error:', e);
                   toast.error('Gagal membuat PDF Faktur Asli: ' + (e.message || 'unknown'));
@@ -233,13 +232,14 @@ export default function SODetailPage() {
         </TabsList>
         <TabsContent value="info"><InfoTab so={so} /></TabsContent>
         <TabsContent value="items"><ItemsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
-        <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
+        <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} pdfShow={pdfPreview.show} /></TabsContent>
         <TabsContent value="receipts"><ReceiptsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
         <TabsContent value="payments"><PaymentsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
 
       <DangerZoneRollback kind="so" id={so.id} number={so.soNumber} router={router} listPath="/dashboard/sales-orders" onRolledBack={mutate} />
+      {pdfPreview.element}
 
       {/* Konfirmasi perubahan status (menggantikan native confirm) */}
       <Dialog open={!!confirmTarget} onOpenChange={(o) => { if (!o && !transitioning) setConfirmTarget(null); }}>
@@ -1320,7 +1320,7 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
 }
 
 
-function SjTab({ so, onSaved, canOperate }) {
+function SjTab({ so, onSaved, canOperate, pdfShow }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ deliveryDate: new Date().toISOString().slice(0,10), driverName: '', vehicleNumber: '', notes: '' });
   const [saving, setSaving] = useState(false);
@@ -1425,14 +1425,8 @@ function SjTab({ so, onSaved, canOperate }) {
                   return (
                     <>
                       {canOperate && <EditSuratJalanDialog so={so} sj={sj} endCustomers={endCustomers} onSaved={onSaved} />}
-                      <Button size="sm" variant="ghost" onClick={() => {
-                        try { const url = buildDoc().output('bloburl'); window.open(url, '_blank'); }
-                        catch (e) { console.error('View SJ error:', e); toast.error('Gagal menampilkan SJ: ' + (e.message || 'unknown')); }
-                      }}>
-                        <Eye className="w-4 h-4 mr-1" /> Lihat
-                      </Button>
                       <Button size="sm" variant="outline" onClick={() => {
-                        try { buildDoc().save(`SJ-${sj.sjNumber}.pdf`); toast.success('PDF Surat Jalan berhasil diunduh'); }
+                        try { pdfShow(buildDoc(), `SJ-${sj.sjNumber}.pdf`, `Surat Jalan ${sj.sjNumber}`); }
                         catch (e) { console.error('PDF SJ error:', e); toast.error('Gagal PDF SJ: ' + (e.message || 'unknown')); }
                       }}>
                         <FileDown className="w-4 h-4 mr-1" /> PDF

@@ -24,6 +24,7 @@ import { STATUS_COLOR } from '../page';
 import { generatePOPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
 import DangerZoneRollback from '@/components/danger-zone-rollback';
+import { usePdfPreview } from '@/components/pdf-preview-dialog';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const PO_FLOW = {
@@ -45,6 +46,7 @@ export default function PODetailPage() {
   const canOperate = ['admin', 'supervisor', 'operator'].includes(role);
   const { data, mutate, isLoading } = useSWR(`/api/purchase-orders/${id}`, fetcher);
   const po = data?.data;
+  const pdfPreview = usePdfPreview();
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!po) return <div className="text-center py-20 text-muted-foreground">PO tidak ditemukan</div>;
@@ -97,8 +99,7 @@ export default function PODetailPage() {
             onClick={() => {
               try {
                 const doc = generatePOPDF(po, { mode: 'po' });
-                doc.save(`PO-${po.poNumber}.pdf`);
-                toast.success('PDF PO berhasil diunduh');
+                pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, `PO ${po.poNumber}`);
               } catch (e) {
                 toast.error('Gagal membuat PDF: ' + e.message);
               }
@@ -113,8 +114,7 @@ export default function PODetailPage() {
           onClick={() => {
             try {
               const doc = generatePOPDF(po, { mode: po.isDropship ? 'invoice' : 'po' });
-              doc.save(`PO-${po.poNumber}.pdf`);
-              toast.success('PDF berhasil diunduh');
+              pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, po.isDropship ? `Invoice Supplier ${po.invoiceNumber || po.poNumber}` : `PO ${po.poNumber}`);
             } catch (e) {
               toast.error('Gagal membuat PDF: ' + e.message);
             }
@@ -123,6 +123,7 @@ export default function PODetailPage() {
           <FileDown className="w-4 h-4 mr-1" /> {po.isDropship ? 'PDF Invoice' : 'PDF PO'}
         </Button>
       </div>
+      {pdfPreview.element}
 
       {/* Pipeline visualization */}
       <Card><CardContent className="pt-6">

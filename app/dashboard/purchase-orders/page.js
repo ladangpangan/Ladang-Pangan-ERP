@@ -26,19 +26,20 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel, pkgShort } from '@/lib/constants';
 import { generatePOPDF } from '@/lib/pdf/invoice';
+import { usePdfPreview } from '@/components/pdf-preview-dialog';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
-// Ambil detail lengkap (item + produk) lalu cetak PDF PO — dipakai dari daftar PO maupun
-// langsung setelah PO baru dibuat, supaya bisa cepat dikirim ke vendor sebagai instruksi pembelian.
-async function printPO(id, poNumber) {
+// Ambil detail lengkap (item + produk) lalu tampilkan preview PDF PO — dipakai dari daftar PO
+// maupun langsung setelah PO baru dibuat, supaya bisa cepat dicetak/dikirim ke vendor sebagai
+// instruksi pembelian. `show` datang dari usePdfPreview() di komponen pemanggil.
+async function printPO(id, poNumber, show) {
   try {
     const res = await fetch(`/api/purchase-orders/${id}`);
     const j = await res.json();
     if (!res.ok) throw new Error(j.error || 'Gagal memuat data PO');
     const doc = generatePOPDF(j.data, { mode: 'po' });
-    doc.save(`PO-${j.data.poNumber || poNumber}.pdf`);
-    toast.success('PDF PO siap dikirim ke vendor');
+    show(doc, `PO-${j.data.poNumber || poNumber}.pdf`, `PO ${j.data.poNumber || poNumber}`);
   } catch (e) { toast.error('Gagal mencetak PO: ' + e.message); }
 }
 
@@ -84,6 +85,7 @@ export default function POListPage() {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('active');
   const sort = useSort();
+  const pdfPreview = usePdfPreview();
 
   const params = new URLSearchParams();
   if (statusTab !== 'all') params.set('status', statusTab);
@@ -125,7 +127,7 @@ export default function POListPage() {
           {canCreate && (
             <Dialog open={open} onOpenChange={setOpen}>
               <DialogTrigger asChild><Button><Plus className="w-4 h-4 mr-2" />PO Baru</Button></DialogTrigger>
-              <CreatePODialog onSaved={() => { setOpen(false); mutate(); }} />
+              <CreatePODialog onSaved={() => { setOpen(false); mutate(); }} pdfShow={pdfPreview.show} />
             </Dialog>
           )}
         </div>
@@ -190,7 +192,7 @@ export default function POListPage() {
                   <TableCell><Badge className={STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Link href={`/dashboard/purchase-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
-                    <Button size="icon" variant="ghost" title="Cetak PO (untuk vendor)" onClick={() => printPO(r.id, r.poNumber)}><Printer className="w-4 h-4 text-blue-600" /></Button>
+                    <Button size="icon" variant="ghost" title="Cetak PO (untuk vendor)" onClick={() => printPO(r.id, r.poNumber, pdfPreview.show)}><Printer className="w-4 h-4 text-blue-600" /></Button>
                     {canCreate && (view === 'archived'
                       ? <Button size="icon" variant="ghost" title="Pulihkan" onClick={() => doArchive(r)}><ArchiveRestore className="w-4 h-4 text-emerald-600" /></Button>
                       : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
@@ -201,11 +203,12 @@ export default function POListPage() {
           </Table>
         </CardContent>
       </Card>
+      {pdfPreview.element}
     </div>
   );
 }
 
-function CreatePODialog({ onSaved }) {
+function CreatePODialog({ onSaved, pdfShow }) {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const router = useRouter();
@@ -232,8 +235,13 @@ function CreatePODialog({ onSaved }) {
       if (!res.ok) throw new Error(j.error || 'Gagal');
       toast.success('PO dibuat: ' + j.data.poNumber);
       onSaved();
-      if (thenPrint) await printPO(j.data.id, j.data.poNumber);
-      router.push(`/dashboard/purchase-orders/${j.data.id}`);
+      if (thenPrint) {
+        // Preview-nya dirender di halaman daftar (parent), jadi jangan pindah halaman dulu —
+        // navigasi akan membongkar dialog preview sebelum sempat dilihat/dicetak/diunduh.
+        await printPO(j.data.id, j.data.poNumber, pdfShow);
+      } else {
+        router.push(`/dashboard/purchase-orders/${j.data.id}`);
+      }
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   };

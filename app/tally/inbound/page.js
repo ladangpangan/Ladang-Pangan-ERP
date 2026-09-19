@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { PACKAGING_TYPES, pkgLabel, pkgShort } from '@/lib/constants';
 import { generateTallyInboundPDF } from '@/lib/pdf/invoice';
+import { usePdfPreview } from '@/components/pdf-preview-dialog';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 
@@ -38,6 +39,7 @@ export default function TallyInboundPage() {
   const router = useRouter();
   const [online, setOnline] = useState(true);
   const [step, setStep] = useState(1); // 1 = Lokasi & Referensi, 2 = Input Item
+  const pdfPreview = usePdfPreview();
 
   useEffect(() => {
     const update = () => setOnline(navigator.onLine);
@@ -442,8 +444,7 @@ export default function TallyInboundPage() {
     if (!lastSaved) return;
     try {
       const doc = generateTallyInboundPDF(lastSaved);
-      doc.save(`TallyInbound_${format(lastSaved.time, 'yyyyMMdd_HHmm')}.pdf`);
-      toast.success('Laporan PDF diunduh');
+      pdfPreview.show(doc, `TallyInbound_${format(lastSaved.time, 'yyyyMMdd_HHmm')}.pdf`, 'Laporan Tally Inbound');
     } catch (e) {
       toast.error('Gagal membuat PDF: ' + e.message);
     }
@@ -928,6 +929,7 @@ export default function TallyInboundPage() {
           )}
         </DialogContent>
       </Dialog>
+      {pdfPreview.element}
     </div>
   );
 }
