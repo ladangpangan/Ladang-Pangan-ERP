@@ -1388,7 +1388,7 @@ async function handleRoute(request, { params }) {
         // agar SO yang belum/kurang dibayar tidak ikut menggelembung.
         const overpay = Math.max(0, paid - total);
         const out = Math.round(total - paid + Math.min(refunded, overpay));
-        return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
+        return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, orderDate: o.orderDate, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
       });
       // Dokumen PO yang sudah masuk Rekap Tagihan (1 PO hanya boleh di 1 rekap).
       const recapNo = {}; for (const r of db.select().from(s.billRecaps).all()) recapNo[r.id] = r.recapNumber;
@@ -1396,10 +1396,10 @@ async function handleRoute(request, { params }) {
       for (const it of db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(eq(s.billRecapItems.docType, 'PO')).all()) {
         if (recapNo[it.recapId]) poRecap[it.docId] = { recapId: it.recapId, recapNumber: recapNo[it.recapId] };
       }
-      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
+      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
-      const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
-      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, orderDate: (r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, orderDate: o.orderDate, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
     }
 

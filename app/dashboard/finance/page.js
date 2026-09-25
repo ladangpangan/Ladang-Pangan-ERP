@@ -21,10 +21,12 @@ import { RECAP_STATUS_LABEL } from '@/lib/finance/recap-fields';
 import {
   Wallet, Loader2, Search, ReceiptText, FileText, HandCoins, Gift,
   ArrowDownCircle, ArrowUpCircle, CalendarRange, X, FileStack, Settings2, FolderOpen,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const tgl = (d) => { if (!d) return '-'; const t = new Date(d); return isNaN(t.getTime()) ? '-' : t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }); };
 
 // Nomor dokumen yang bisa diklik menuju halaman detail (SO/PO).
 function DocLink({ href, children }) {
@@ -71,14 +73,48 @@ function SummaryCard({ icon: Icon, label, value, sub, tone = 'default' }) {
   );
 }
 
-function useFilter(rows, keys) {
+// Pencarian + urutan per kolom. Default: tanggal order terbaru di atas.
+const SORT_DATE_KEYS = ['orderDate'];
+function useFilter(rows, keys, defaultSort = { key: 'orderDate', dir: 'desc' }) {
   const [q, setQ] = useState('');
+  const [sort, setSort] = useState(defaultSort);
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    if (!term) return rows;
-    return rows.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(term)));
-  }, [rows, q, keys]);
-  return { q, setQ, filtered };
+    const base = term ? rows.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(term))) : rows;
+    const { key, dir } = sort;
+    const val = (r) => {
+      const v = r[key];
+      if (SORT_DATE_KEYS.includes(key)) { const t = v ? new Date(v).getTime() : NaN; return isNaN(t) ? null : t; }
+      return v;
+    };
+    const sorted = [...base].sort((a, b) => {
+      const va = val(a); const vb = val(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1; // kosong selalu di bawah
+      if (vb == null) return -1;
+      const c = (typeof va === 'number' && typeof vb === 'number') ? va - vb : String(va).localeCompare(String(vb), 'id', { numeric: true, sensitivity: 'base' });
+      return dir === 'asc' ? c : -c;
+    });
+    return sorted;
+  }, [rows, q, keys, sort]);
+  const toggleSort = (key) => setSort(s => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: SORT_DATE_KEYS.includes(key) ? 'desc' : 'asc' }));
+  return { q, setQ, filtered, sort, toggleSort };
+}
+
+// Judul kolom yang bisa diklik untuk mengurutkan (klik lagi = balik arah).
+function SortHead({ f, k, children, className = '' }) {
+  const active = f.sort.key === k;
+  const Icon = !active ? ArrowUpDown : f.sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  const right = className.includes('text-right');
+  const center = className.includes('text-center');
+  return (
+    <TableHead className={className} aria-sort={active ? (f.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" onClick={() => f.toggleSort(k)}
+        className={`inline-flex items-center gap-1 hover:text-foreground ${active ? 'text-foreground font-semibold' : ''} ${right ? 'flex-row-reverse' : ''} ${center ? 'justify-center w-full' : ''}`}>
+        {children}<Icon className={`w-3.5 h-3.5 shrink-0 ${active ? '' : 'opacity-40'}`} />
+      </button>
+    </TableHead>
+  );
 }
 
 function SearchBar({ q, setQ, placeholder }) {
@@ -338,15 +374,16 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. Invoice</TableHead><TableHead>No. SO</TableHead><TableHead>Customer</TableHead>
-                      <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Dibayar</TableHead>
-                      <TableHead className="text-right">Sisa</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={soF} k="orderDate">Tgl Order</SortHead><SortHead f={soF} k="number">No. Invoice</SortHead><SortHead f={soF} k="soNumber">No. SO</SortHead><SortHead f={soF} k="party">Customer</SortHead>
+                      <SortHead f={soF} k="total" className="text-right">Total</SortHead><SortHead f={soF} k="paid" className="text-right">Dibayar</SortHead>
+                      <SortHead f={soF} k="outstanding" className="text-right">Sisa</SortHead><SortHead f={soF} k="status" className="text-center">Status</SortHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {soF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {soF.filtered.length === 0 && (<TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {soF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.number}</DocLink></TableCell>
                         <TableCell><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
@@ -411,13 +448,13 @@ export default function FinancePage() {
                           />
                         </TableHead>
                       )}
-                      <TableHead>No. Invoice</TableHead><TableHead>No. PO</TableHead><TableHead>Supplier</TableHead>
-                      <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Dibayar</TableHead>
-                      <TableHead className="text-right">Sisa</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={poF} k="orderDate">Tgl Order</SortHead><SortHead f={poF} k="number">No. Invoice</SortHead><SortHead f={poF} k="poNumber">No. PO</SortHead><SortHead f={poF} k="party">Supplier</SortHead>
+                      <SortHead f={poF} k="total" className="text-right">Total</SortHead><SortHead f={poF} k="paid" className="text-right">Dibayar</SortHead>
+                      <SortHead f={poF} k="outstanding" className="text-right">Sisa</SortHead><SortHead f={poF} k="status" className="text-center">Status</SortHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={isRecapAdmin ? 8 : 7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={isRecapAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {poF.filtered.map(r => (
                       <TableRow key={r.id} className={selectedPO.includes(r.id) ? 'bg-emerald-50/60' : ''}>
                         {isRecapAdmin && (
@@ -431,6 +468,7 @@ export default function FinancePage() {
                             />
                           </TableCell>
                         )}
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium">
                           <DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink>
                           {r.recap && (
@@ -467,15 +505,16 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. SO</TableHead><TableHead>Penerima (Dropshipper)</TableHead>
-                      <TableHead className="text-right">Nilai Komisi</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={komF} k="orderDate">Tgl Order</SortHead><SortHead f={komF} k="soNumber">No. SO</SortHead><SortHead f={komF} k="party">Penerima (Dropshipper)</SortHead>
+                      <SortHead f={komF} k="amount" className="text-right">Nilai Komisi</SortHead><SortHead f={komF} k="status" className="text-center">Status</SortHead>
                       <TableHead className="text-right">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {komF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {komF.filtered.length === 0 && (<TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {komF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={r.salesOrderId ? `/dashboard/sales-orders/${r.salesOrderId}` : null}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
@@ -505,15 +544,16 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. SO</TableHead><TableHead>Penerima</TableHead>
-                      <TableHead className="text-right">Nilai Cashback</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={cbF} k="orderDate">Tgl Order</SortHead><SortHead f={cbF} k="soNumber">No. SO</SortHead><SortHead f={cbF} k="party">Penerima</SortHead>
+                      <SortHead f={cbF} k="amount" className="text-right">Nilai Cashback</SortHead><SortHead f={cbF} k="status" className="text-center">Status</SortHead>
                       <TableHead className="text-right">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {cbF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {cbF.filtered.length === 0 && (<TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {cbF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
