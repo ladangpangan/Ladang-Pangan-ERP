@@ -29,6 +29,24 @@ Awalnya dibangun di platform Emergent, sedang dipindah ke hosting sendiri.
   **Testing**: backend diuji menyeluruh lewat HTTP asli ke dev server (scoping per-role, blokir transisi ke Deal langsung, wajib lostReason utk Gagal, blokir setelah status final, archive khusus role manajemen) — semua lolos. Frontend HANYA bisa dites sampai "redirect ke /login dengan benar, tidak crash" karena sandbox ini tidak ada akses Mongo (dibutuhkan Better Auth utk sesi login) — **belum ada verifikasi visual asli, harus dicoba user di Railway staging**.
 - **Railway staging** — source branch service `erp-staging` sempat ketinggalan (masih nunjuk ke branch lama `claude/audit-hostinger-vps-deploy-vpmqyi`, jadi kerjaan sesi ini belum ke-deploy). Sudah dialihkan ke `claude/serene-brahmagupta-wxd66w` (lewat Railway MCP tools) — sekarang **tidak auto-deploy dari webhook GitHub secara andal** (harus dipicu manual lewat `connect-service-source` Railway MCP tool ulang tiap ada push baru — sudah dilakukan berkali-kali sesi ini, cek `mcp__Railway__list-deployments` kalau ragu kode terbaru sudah live atau belum). **Perlu diingat**: kalau ganti strategi branching nanti (mis. setelah PR ke `main`), source Railway ini perlu dialihkan lagi.
 
+## V3 — Rekap Tagihan (Keuangan → Invoice PO)
+Pengganti rekap Excel "TAGIHAN <SUPPLIER>" yang dikirim tim ke finance. Branch `claude/compassionate-keller-xjdkfq`.
+Keputusan user: tampilan ringkas tetap; tim centang invoice → **Generate Rekap**; rekap tersimpan dibuka dari dropdown
+**Rekap Tersimpan**; kolom diatur lewat **Template Rekap** (disimpan, dipakai bersama, ada default); angka rekap
+**dikunci** (snapshot), koreksi data sesudahnya + status bayar tampil di kolom **Keterangan** (plus baris "Total setelah
+koreksi"); 1 invoice hanya boleh di 1 rekap; satu rekap boleh multi-supplier (judul "TAGIHAN <SUPPLIER>" per bagian +
+grand total); generate/hapus rekap & kelola template = admin (akuntan ikut, aturan `requireRole` yang sudah ada).
+- **Fase 1 — SELESAI** (belum dicoba user di staging): tabel `bill_recap_templates`/`bill_recaps`/`bill_recap_items`
+  (Mongo-authoritative "Phase 12", `lib/db/recap-mongo.js`, path `finance`), logika `lib/finance/bill-recap.js`,
+  field/format `lib/finance/recap-fields.js`, tata letak bersama layar/PDF/Excel `lib/finance/recap-layout.js` +
+  `lib/finance/recap-export.js`, UI `components/bill-recap-*.jsx` + `app/dashboard/finance/recaps/[id]/page.js`.
+  Endpoint: `GET/POST /finance/recap-templates`, `PUT/DELETE /finance/recap-templates/:id`, `GET/POST /finance/recaps`
+  (`preview:true` = pratinjau), `GET/DELETE /finance/recaps/:id` (hapus = status `dihapus`, nomor REK tidak dipakai ulang).
+- **Fase 2 — BELUM**: status Draft → Diajukan ke Finance (admin) → Dibayar; tombol "Bayar Rekap" (akuntan & direktur)
+  yang mencatat pembayaran per PO lewat `POST /purchase-orders/:id/payments` (dipisah per supplier). Kolom
+  `submitted_*`/`paid_*` sudah ada di `bill_recaps`.
+- **Fase 3 — BELUM**: rekap yang sama untuk Invoice SO (struktur sudah pakai `doc_type`).
+
 ## Koreksi arsitektur penting (session ini menemukan info yang salah di versi handoff sebelumnya)
 - **Purchase Order BUKAN SQLite-only** seperti dugaan sebelumnya — PO (+items, GRN, payments, returns), **komisi** (`commission_records`/`commission_payments`), dan SO-extras (surat_jalan, sales_returns, sales_order_receipts+items) semuanya MongoDB-authoritative lewat `lib/db/potx-mongo.js` ("Phase 5" — bukan `purchase-order-mongo.js`, makanya kelewat sebelumnya). Ditemukan & diverifikasi langsung baca kodenya, bukan cuma dari laporan riset.
 - Sinkronisasi ke Mongo untuk PO/SO-extra/komisi (potx-mongo), inventory_stock (inventory-mongo), inventory_transaction (tally-tx-mongo), approvals (wo-approval-mongo), notifications (misc-mongo) semuanya **otomatis** lewat mekanisme `captureSnapshot`/`persistSnapshotDiff` terpusat di `route.js`, asal `path[0]` request ada di *_PATHS Set yang relevan (`SALES_PATHS`, `INVENTORY_PATHS`, `POTX_PATHS`, dst. — lihat `route.js` baris ~240-315). **Sudah ditambahkan**: `'purchase-orders'` ke `INVENTORY_PATHS` (sebelumnya tidak ada, padahal endpoint rollback PO baru bisa mengubah `inventory_stock`).

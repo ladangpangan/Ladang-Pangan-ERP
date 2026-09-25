@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useSession } from '@/lib/auth/auth-client';
 import useSWR from 'swr';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -13,9 +15,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { GenerateRecapDialog, RecapTemplateDialog } from '@/components/bill-recap-dialogs';
+import { RECAP_STATUS_LABEL } from '@/lib/finance/recap-fields';
 import {
   Wallet, Loader2, Search, ReceiptText, FileText, HandCoins, Gift,
-  ArrowDownCircle, ArrowUpCircle, CalendarRange, X,
+  ArrowDownCircle, ArrowUpCircle, CalendarRange, X, FileStack, Settings2, FolderOpen,
 } from 'lucide-react';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
@@ -208,6 +213,19 @@ function RefundCashbackDialog({ row, accounts, onDone }) {
 }
 
 export default function FinancePage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  // Sama dengan requireRole() di server: akuntan setara admin (generate rekap & atur template).
+  const isRecapAdmin = ['admin', 'akuntan'].includes(session?.user?.role);
+  const [tab, setTab] = useState('invoiceSO');
+  useEffect(() => {
+    try { const t = new URLSearchParams(window.location.search).get('tab'); if (t) setTab(t); } catch { /* ignore */ }
+  }, []);
+  const [selectedPO, setSelectedPO] = useState([]);
+  const [genOpen, setGenOpen] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const { data: recapList, mutate: mutateRecaps } = useSWR('/api/finance/recaps?docType=PO', fetcher, { revalidateOnFocus: false });
+  const recaps = recapList?.data || [];
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const qs = new URLSearchParams();
@@ -215,6 +233,8 @@ export default function FinancePage() {
   if (to) qs.set('to', to);
   const key = `/api/finance/overview${qs.toString() ? '?' + qs.toString() : ''}`;
   const { data, isLoading, mutate } = useSWR(key, fetcher, { revalidateOnFocus: false });
+  // Ganti periode -> kosongkan pilihan agar invoice yang tidak lagi tampil tidak ikut terekap.
+  useEffect(() => { setSelectedPO([]); }, [key]);
   const [accounts, setAccounts] = useState([]);
   useEffect(() => {
     fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
@@ -228,6 +248,9 @@ export default function FinancePage() {
 
   const soF = useFilter(invoiceSO, ['number', 'soNumber', 'party', 'status']);
   const poF = useFilter(invoicePO, ['number', 'poNumber', 'party', 'status']);
+  const canRecapPO = (r) => !r.recap && !['Draft', 'Dibatalkan'].includes(r.pipelineStatus);
+  const selectablePO = poF.filtered.filter(canRecapPO);
+  const selectedPORows = invoicePO.filter(r => selectedPO.includes(r.id));
   const komF = useFilter(komisi, ['soNumber', 'party', 'status']);
   const cbF = useFilter(cashback, ['soNumber', 'party', 'status']);
 
@@ -294,7 +317,7 @@ export default function FinancePage() {
       ) : data?.error ? (
         <div className="py-24 text-center text-muted-foreground">Anda tidak memiliki akses ke halaman ini.</div>
       ) : (
-      <Tabs defaultValue="invoiceSO">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="grid w-full grid-cols-2 md:grid-cols-4">
           <TabsTrigger value="invoiceSO"><ReceiptText className="w-4 h-4 mr-1" />Invoice SO</TabsTrigger>
           <TabsTrigger value="invoicePO"><FileText className="w-4 h-4 mr-1" />Invoice PO</TabsTrigger>
@@ -356,21 +379,66 @@ export default function FinancePage() {
               <CardDescription>Daftar invoice Purchase Order beserta status pembayaran.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <SearchBar q={poF.q} setQ={poF.setQ} placeholder="Cari no. invoice / PO / supplier..." />
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <SearchBar q={poF.q} setQ={poF.setQ} placeholder="Cari no. invoice / PO / supplier..." />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value="" onValueChange={(v) => router.push(`/dashboard/finance/recaps/${v}`)}>
+                    <SelectTrigger className="w-[260px]"><FolderOpen className="w-4 h-4 mr-1 text-muted-foreground" /><SelectValue placeholder={`Rekap Tersimpan (${recaps.length})`} /></SelectTrigger>
+                    <SelectContent>
+                      {recaps.length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">Belum ada rekap</div>}
+                      {recaps.map(r => (
+                        <SelectItem key={r.id} value={r.id}>
+                          <span className="font-mono text-xs mr-1">{r.recapNumber}</span> {r.title}{r.subtitle ? ` · ${r.subtitle}` : ''} — {rp(r.totalAmount)} ({RECAP_STATUS_LABEL[r.status] || r.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {isRecapAdmin && <Button variant="outline" onClick={() => setTplOpen(true)}><Settings2 className="w-4 h-4 mr-1" />Template Rekap</Button>}
+                  {isRecapAdmin && <Button onClick={() => setGenOpen(true)} disabled={!selectedPO.length}><FileStack className="w-4 h-4 mr-1" />Generate Rekap{selectedPO.length ? ` (${selectedPO.length})` : ''}</Button>}
+                </div>
+              </div>
+              {isRecapAdmin && <p className="text-[11px] text-muted-foreground">Centang invoice yang akan dijadikan satu rekap. Invoice yang sudah masuk rekap tidak bisa dipilih lagi.</p>}
               <div className="rounded-lg border overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      {isRecapAdmin && (
+                        <TableHead className="w-10">
+                          <Checkbox
+                            checked={selectablePO.length > 0 && selectablePO.every(r => selectedPO.includes(r.id))}
+                            onCheckedChange={(v) => setSelectedPO(v ? [...new Set([...selectedPO, ...selectablePO.map(r => r.id)])] : selectedPO.filter(id => !selectablePO.some(r => r.id === id)))}
+                            aria-label="Pilih semua"
+                          />
+                        </TableHead>
+                      )}
                       <TableHead>No. Invoice</TableHead><TableHead>No. PO</TableHead><TableHead>Supplier</TableHead>
                       <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Dibayar</TableHead>
                       <TableHead className="text-right">Sisa</TableHead><TableHead className="text-center">Status</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={isRecapAdmin ? 8 : 7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {poF.filtered.map(r => (
-                      <TableRow key={r.id}>
-                        <TableCell className="font-medium"><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink></TableCell>
+                      <TableRow key={r.id} className={selectedPO.includes(r.id) ? 'bg-emerald-50/60' : ''}>
+                        {isRecapAdmin && (
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedPO.includes(r.id)}
+                              disabled={!canRecapPO(r)}
+                              title={r.recap ? `Sudah masuk rekap ${r.recap.recapNumber}` : !canRecapPO(r) ? `PO ${r.pipelineStatus}` : ''}
+                              onCheckedChange={(v) => setSelectedPO(v ? [...selectedPO, r.id] : selectedPO.filter(id => id !== r.id))}
+                              aria-label={`Pilih ${r.number}`}
+                            />
+                          </TableCell>
+                        )}
+                        <TableCell className="font-medium">
+                          <DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink>
+                          {r.recap && (
+                            <Link href={`/dashboard/finance/recaps/${r.recap.recapId}`} className="ml-2">
+                              <Badge variant="outline" className="text-[10px] bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100">{r.recap.recapNumber}</Badge>
+                            </Link>
+                          )}
+                        </TableCell>
                         <TableCell><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.poNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
@@ -462,6 +530,18 @@ export default function FinancePage() {
           </Card>
         </TabsContent>
       </Tabs>
+      )}
+      {isRecapAdmin && (
+        <>
+          <GenerateRecapDialog
+            open={genOpen}
+            onOpenChange={setGenOpen}
+            docIds={selectedPO}
+            selectedRows={selectedPORows}
+            onCreated={(r) => { setGenOpen(false); setSelectedPO([]); mutate(); mutateRecaps(); router.push(`/dashboard/finance/recaps/${r.id}`); }}
+          />
+          <RecapTemplateDialog open={tplOpen} onOpenChange={setTplOpen} />
+        </>
       )}
     </div>
   );

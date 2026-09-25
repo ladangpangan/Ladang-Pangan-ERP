@@ -24,10 +24,13 @@ import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import * as miscMongo from '@/lib/db/misc-mongo';
 import * as crmMongo from '@/lib/db/crm-mongo';
+import * as recapMongo from '@/lib/db/recap-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 import { recordLedger } from '@/lib/inventory/ledger';
 import * as soPoRollback from '@/lib/ops/so-po-rollback';
+import * as billRecap from '@/lib/finance/bill-recap';
+import { DEFAULT_TEMPLATE as RECAP_DEFAULT_TEMPLATE, sanitizeColumns as sanitizeRecapColumns } from '@/lib/finance/recap-fields';
 // -----------------------
 // Helpers
 // -----------------------
@@ -291,6 +294,10 @@ const MISC_PATHS = new Set([
 // Phase 11: path[0] prefixes that READ or WRITE leads / lead_tasks (CRM pipeline & follow-up).
 const CRM_PATHS = new Set(['leads', 'lead-tasks']);
 
+// Phase 12: path[0] prefixes that READ or WRITE bill_recap_templates / bill_recaps / bill_recap_items
+// (Rekap Tagihan di modul Keuangan).
+const RECAP_PATHS = new Set(['finance']);
+
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
   const route = '/' + path.join('/');
@@ -404,6 +411,10 @@ async function handleRoute(request, { params }) {
     if (want('crm', CRM_PATHS.has(p0))) {
       if (stale('crm')) tasks.push((async () => { try { await crmMongo.ensureReady(raw); g.crm = Date.now(); } catch { /* best-effort */ } })());
       if (isMut) snappers.push(() => crmMongo.captureSnapshot(request, raw));
+    }
+    if (want('recap', RECAP_PATHS.has(p0))) {
+      if (stale('recap')) tasks.push((async () => { try { await recapMongo.ensureReady(raw); g.recap = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => recapMongo.captureSnapshot(request, raw));
     }
     if (tasks.length) { try { await Promise.all(tasks); } catch { /* best-effort */ } }
     for (const fn of snappers) { try { fn(); } catch { /* best-effort */ } }
@@ -1379,11 +1390,188 @@ async function handleRoute(request, { params }) {
         const out = Math.round(total - paid + Math.min(refunded, overpay));
         return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
       });
-      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      // Dokumen PO yang sudah masuk Rekap Tagihan (1 PO hanya boleh di 1 rekap).
+      const recapNo = {}; for (const r of db.select().from(s.billRecaps).all()) recapNo[r.id] = r.recapNumber;
+      const poRecap = {};
+      for (const it of db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(eq(s.billRecapItems.docType, 'PO')).all()) {
+        if (recapNo[it.recapId]) poRecap[it.docId] = { recapId: it.recapId, recapNumber: recapNo[it.recapId] };
+      }
+      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
       const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
       const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
+    }
+
+    // ---------- REKAP TAGIHAN (Keuangan → Invoice PO) ----------
+    // Tim memilih beberapa invoice PO -> Generate Rekap (angka dikunci sbg snapshot). Rekap tersimpan
+    // dibuka lewat dropdown; koreksi data sesudahnya tampil di kolom Keterangan, tidak mengubah angka.
+    // Template kolom disimpan & dipakai bersama. Generate/hapus rekap & kelola template: admin.
+    const RECAP_VIEW_ROLES = ['admin', 'supervisor', 'direktur', 'akuntan'];
+    const RECAP_ADMIN_ROLES = ['admin'];
+    const recapDocType = (v) => (v === 'SO' ? 'SO' : 'PO');
+    const parseJson = (v, fb) => { try { return v ? JSON.parse(v) : fb; } catch { return fb; } };
+    const templateOut = (t) => ({ ...t, columns: parseJson(t.columns, []), options: parseJson(t.options, {}) });
+    const listRecapTemplates = (docType) => {
+      const rows = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, docType)).orderBy(s.billRecapTemplates.name).all().map(templateOut);
+      if (!rows.length && RECAP_DEFAULT_TEMPLATE[docType]) return [RECAP_DEFAULT_TEMPLATE[docType]];
+      return rows;
+    };
+    const nextRecapNumber = () => {
+      const now = new Date();
+      const prefix = `REK/${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}/`;
+      const rows = db.select({ n: s.billRecaps.recapNumber }).from(s.billRecaps).where(like(s.billRecaps.recapNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+    };
+    const templateBody = (body, docType) => {
+      const name = String(body.name || '').trim();
+      if (!name) return { error: 'Nama template wajib diisi' };
+      const columns = sanitizeRecapColumns(body.columns, docType);
+      const options = { subtotalByDate: !!body.options?.subtotalByDate };
+      return { name, columns, options };
+    };
+    const clearOtherDefaults = (docType, keepId) => {
+      db.update(s.billRecapTemplates).set({ isDefault: false }).where(and(eq(s.billRecapTemplates.docType, docType), ne(s.billRecapTemplates.id, keepId))).run();
+    };
+
+    // GET /finance/recap-templates?docType=PO
+    if (route === '/finance/recap-templates' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const docType = recapDocType(new URL(request.url).searchParams.get('docType'));
+      return json({ data: listRecapTemplates(docType) });
+    }
+    // POST /finance/recap-templates  { docType, name, columns[], options{subtotalByDate}, isDefault }
+    if (route === '/finance/recap-templates' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const body = await request.json();
+      const docType = recapDocType(body.docType);
+      const v = templateBody(body, docType); if (v.error) return err(v.error);
+      const firstOne = !db.select({ id: s.billRecapTemplates.id }).from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, docType)).get();
+      const now = new Date();
+      const row = { id: uuidv4(), docType, name: v.name, columns: JSON.stringify(v.columns), options: JSON.stringify(v.options), isDefault: firstOne || !!body.isDefault, createdBy: session.user.email, createdAt: now, updatedAt: now };
+      db.insert(s.billRecapTemplates).values(row).run();
+      if (row.isDefault) clearOtherDefaults(docType, row.id);
+      return json({ data: templateOut(row) }, { status: 201 });
+    }
+    // PUT /finance/recap-templates/:id
+    if (route.startsWith('/finance/recap-templates/') && path.length === 3 && method === 'PUT') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const t = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, path[2])).get();
+      if (!t) return err('Template tidak ditemukan', 404);
+      const body = await request.json();
+      const v = templateBody(body, t.docType); if (v.error) return err(v.error);
+      const isDefault = body.isDefault === undefined ? !!t.isDefault : !!body.isDefault;
+      db.update(s.billRecapTemplates).set({ name: v.name, columns: JSON.stringify(v.columns), options: JSON.stringify(v.options), isDefault, updatedAt: new Date() }).where(eq(s.billRecapTemplates.id, t.id)).run();
+      if (isDefault) clearOtherDefaults(t.docType, t.id);
+      return json({ data: templateOut(db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, t.id)).get()) });
+    }
+    // DELETE /finance/recap-templates/:id  (rekap yang sudah dibuat tidak terpengaruh — kolomnya disalin)
+    if (route.startsWith('/finance/recap-templates/') && path.length === 3 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const t = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, path[2])).get();
+      if (!t) return err('Template tidak ditemukan', 404);
+      db.delete(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, t.id)).run();
+      if (t.isDefault) {
+        const next = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, t.docType)).orderBy(s.billRecapTemplates.name).get();
+        if (next) db.update(s.billRecapTemplates).set({ isDefault: true }).where(eq(s.billRecapTemplates.id, next.id)).run();
+      }
+      return json({ ok: true });
+    }
+
+    // GET /finance/recaps?docType=PO — daftar rekap tersimpan (utk dropdown)
+    if (route === '/finance/recaps' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const docType = recapDocType(new URL(request.url).searchParams.get('docType'));
+      const recaps = db.select().from(s.billRecaps).where(and(eq(s.billRecaps.docType, docType), ne(s.billRecaps.status, 'dihapus'))).orderBy(desc(s.billRecaps.recapNumber)).all();
+      const items = recaps.length ? db.select({ recapId: s.billRecapItems.recapId, docId: s.billRecapItems.docId, snapshot: s.billRecapItems.snapshot }).from(s.billRecapItems).where(inArray(s.billRecapItems.recapId, recaps.map(r => r.id))).all() : [];
+      const agg = {};
+      for (const it of items) {
+        const a = (agg[it.recapId] ||= { docs: new Set(), suppliers: new Set() });
+        a.docs.add(it.docId);
+        const snap = parseJson(it.snapshot, {});
+        if (snap.supplierName) a.suppliers.add(snap.supplierName);
+      }
+      return json({ data: recaps.map(r => ({ id: r.id, recapNumber: r.recapNumber, title: r.title, subtitle: r.subtitle, status: r.status, totalAmount: r.totalAmount, createdAt: r.createdAt, createdBy: r.createdBy, docCount: agg[r.id]?.docs.size || 0, suppliers: [...(agg[r.id]?.suppliers || [])] })) });
+    }
+    // POST /finance/recaps  { docType, docIds[], title?, subtitle?, templateId?, notes?, preview? }
+    // preview=true -> hanya hitung baris (tanpa simpan) utk pratinjau di dialog Generate.
+    if (route === '/finance/recaps' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json();
+      const preview = !!body.preview;
+      if (!requireRole(session, preview ? RECAP_VIEW_ROLES : RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa membuat rekap', 403);
+      const docType = recapDocType(body.docType);
+      if (docType !== 'PO') return err('Rekap Invoice SO belum tersedia', 400);
+      const docIds = [...new Set((Array.isArray(body.docIds) ? body.docIds : []).filter(Boolean).map(String))];
+      if (!docIds.length) return err('Pilih minimal satu invoice');
+      const pos = db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all();
+      const poById = {}; for (const p of pos) poById[p.id] = p;
+      for (const id of docIds) { const b = billRecap.poRecapBlocker(poById[id]); if (b) return err(b); }
+      // 1 invoice hanya boleh masuk 1 rekap.
+      const taken = db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(and(eq(s.billRecapItems.docType, 'PO'), inArray(s.billRecapItems.docId, docIds))).all();
+      if (taken.length) {
+        const rec = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, taken[0].recapId)).get();
+        return err(`${poById[taken[0].docId]?.poNumber || 'Invoice'} sudah masuk rekap ${rec?.recapNumber || ''}`.trim(), 409);
+      }
+      const templates = listRecapTemplates(docType);
+      const tpl = (body.templateId && templates.find(t => t.id === body.templateId)) || templates.find(t => t.isDefault) || templates[0] || RECAP_DEFAULT_TEMPLATE[docType];
+      const columns = sanitizeRecapColumns(Array.isArray(body.columns) ? body.columns : tpl.columns, docType);
+      const options = body.options ? { subtotalByDate: !!body.options.subtotalByDate } : (tpl.options || {});
+      const lines = billRecap.buildPoLines(db, docIds);
+      if (!lines.length) return err('Invoice yang dipilih tidak punya item');
+      const totalAmount = Math.round(lines.reduce((a, l) => a + Number(l.total || 0), 0) * 100) / 100;
+      const suppliers = [...new Set(lines.map(l => l.supplierName))];
+      const title = String(body.title || '').trim() || (suppliers.length === 1 ? `TAGIHAN ${suppliers[0].toUpperCase()}` : 'REKAP TAGIHAN SUPPLIER');
+      const subtitle = String(body.subtitle || '').trim() || null;
+      if (preview) {
+        const fakeItems = lines.map((l, i) => ({ recapId: 'preview', docId: l.docId, lineKey: l.lineKey, sortOrder: i, snapshot: JSON.stringify(l), amount: l.total }));
+        return json({ data: { recap: { recapNumber: '(pratinjau)', title, subtitle, columns, options, status: 'draft', totalAmount, templateName: tpl.name }, view: billRecap.buildRecapView(db, { columns }, fakeItems) } });
+      }
+      const now = new Date();
+      const recap = {
+        id: uuidv4(), recapNumber: nextRecapNumber(), docType, title, subtitle, templateName: tpl.name || null,
+        columns: JSON.stringify(columns), options: JSON.stringify(options), status: 'draft', totalAmount,
+        notes: String(body.notes || '').trim() || null, createdBy: session.user.email, createdAt: now, updatedAt: now,
+      };
+      db.transaction((tx) => {
+        tx.insert(s.billRecaps).values(recap).run();
+        lines.forEach((l, i) => {
+          tx.insert(s.billRecapItems).values({ id: uuidv4(), recapId: recap.id, docType, docId: l.docId, lineKey: l.lineKey, sortOrder: i, snapshot: JSON.stringify(l), amount: Number(l.total || 0) }).run();
+        });
+      });
+      return json({ data: { id: recap.id, recapNumber: recap.recapNumber } }, { status: 201 });
+    }
+    // GET /finance/recaps/:id — rekap + tampilan (snapshot + keterangan koreksi/status bayar terkini)
+    if (route.startsWith('/finance/recaps/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      const items = db.select().from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).all();
+      const view = billRecap.buildRecapView(db, recap, items);
+      return json({ data: { recap: { ...recap, columns: parseJson(recap.columns, []), options: parseJson(recap.options, {}) }, view } });
+    }
+    // DELETE /finance/recaps/:id — invoice di dalamnya bisa direkap ulang. Rekap berstatus Dibayar tidak bisa dihapus.
+    // Header rekap tetap disimpan (status 'dihapus', tersembunyi) supaya nomor REK tidak pernah dipakai ulang.
+    if (route.startsWith('/finance/recaps/') && path.length === 3 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa menghapus rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap) return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'dibayar') return err('Rekap yang sudah dibayar tidak bisa dihapus');
+      db.transaction((tx) => {
+        tx.delete(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).run();
+        tx.update(s.billRecaps).set({ status: 'dihapus', updatedAt: new Date() }).where(eq(s.billRecaps.id, recap.id)).run();
+      });
+      return json({ ok: true });
     }
 
     // POST /finance/commissions/pay — catat pembayaran komisi dropshipper dari dashboard Keuangan.
@@ -7327,6 +7515,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await miscMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 11: diff-persist any leads / lead_tasks rows this request changed (concurrency-safe).
       try { await crmMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 12: diff-persist any rekap tagihan (template/rekap/baris) rows this request changed.
+      try { await recapMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;
