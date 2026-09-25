@@ -14,6 +14,14 @@ import { format } from 'date-fns';
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
 
+const SHIPPING_LABEL = { internal: 'Kurir Internal', gosend: 'GoSend', grabexpress: 'GrabExpress', lainnya: 'Lainnya' };
+const SHIPPING_COLOR = {
+  internal: 'bg-slate-100 text-slate-700',
+  gosend: 'bg-emerald-100 text-emerald-700',
+  grabexpress: 'bg-green-100 text-green-700',
+  lainnya: 'bg-blue-100 text-blue-700',
+};
+
 export default function MarketplaceOrdersPage() {
   const { data: session } = useSession();
   const role = session?.user?.role || 'operator';
@@ -72,6 +80,7 @@ export default function MarketplaceOrdersPage() {
                 <TableHead>Order ID</TableHead>
                 <TableHead>Customer</TableHead>
                 <TableHead>Item</TableHead>
+                <TableHead>Pengiriman</TableHead>
                 <TableHead className="text-right">Total</TableHead>
                 <TableHead>Diterima</TableHead>
                 <TableHead>Status</TableHead>
@@ -80,10 +89,10 @@ export default function MarketplaceOrdersPage() {
             </TableHeader>
             <TableBody>
               {isLoading && (
-                <TableRow><TableCell colSpan={7} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>
               )}
               {!isLoading && rows.length === 0 && (
-                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Belum ada order dari landing page.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Belum ada order dari landing page.</TableCell></TableRow>
               )}
               {rows.map((r) => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
@@ -96,6 +105,14 @@ export default function MarketplaceOrdersPage() {
                     {r.items.map((it, i) => (
                       <div key={i} className="whitespace-nowrap">{it.qty}x {it.name}</div>
                     ))}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className={SHIPPING_COLOR[r.shippingMethod] || SHIPPING_COLOR.internal}>
+                      {SHIPPING_LABEL[r.shippingMethod] || 'Kurir Internal'}
+                    </Badge>
+                    {r.shippingMethod === 'lainnya' && r.shippingNote && (
+                      <div className="text-xs text-muted-foreground mt-1">{r.shippingNote}</div>
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-medium">Rp {Number(r.grossAmount).toLocaleString('id-ID')}</TableCell>
                   <TableCell className="text-sm">{r.receivedAt && format(new Date(r.receivedAt), 'dd MMM yyyy HH:mm')}</TableCell>

@@ -81,10 +81,13 @@ export async function POST(request) {
   let body;
   try { body = await request.json(); } catch { return err('Body tidak valid.'); }
 
-  const { orderId, customer, items, grossAmount } = body || {};
+  const { orderId, customer, items, shipping, grossAmount } = body || {};
   if (!orderId || !customer?.name || !customer?.phone || !Array.isArray(items) || items.length === 0) {
     return err('orderId, customer{name,phone}, dan items wajib diisi.');
   }
+  const SHIPPING_METHODS = ['internal', 'gosend', 'grabexpress', 'lainnya'];
+  const shippingMethod = SHIPPING_METHODS.includes(shipping?.method) ? shipping.method : 'internal';
+  const shippingNote = shipping?.note ? String(shipping.note).slice(0, 200) : null;
 
   const db = getDb();
 
@@ -133,6 +136,8 @@ export async function POST(request) {
     customerName: String(customer.name).slice(0, 100),
     customerPhone: phoneDigits || String(customer.phone),
     customerAddress: customer.address || null,
+    shippingMethod,
+    shippingNote,
     contactId: contact.id,
     items: JSON.stringify(items),
     grossAmount: Number(grossAmount || 0),
@@ -141,9 +146,11 @@ export async function POST(request) {
     receivedAt: now,
   }).run();
 
+  const SHIPPING_LABEL = { internal: 'Kurir Internal', gosend: 'GoSend', grabexpress: 'GrabExpress', lainnya: 'Lainnya' };
+  const shippingNoteSuffix = shippingMethod === 'lainnya' && shippingNote ? ` — ${shippingNote}` : '';
   notifyStaff(db, {
     title: `Order Baru dari Landing Page · ${orderId}`,
-    message: `${contact.displayName} — Rp ${Number(grossAmount || 0).toLocaleString('id-ID')}. Buka Market Place Order untuk proses SO.`,
+    message: `${contact.displayName} — Rp ${Number(grossAmount || 0).toLocaleString('id-ID')} · Pengiriman: ${SHIPPING_LABEL[shippingMethod]}${shippingNoteSuffix}. Buka Market Place Order untuk proses SO.`,
     entityId: id,
   });
 

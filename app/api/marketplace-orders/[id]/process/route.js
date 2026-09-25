@@ -86,11 +86,14 @@ export async function POST(request, { params }) {
   const now = new Date();
   const soId = uuidv4();
   const soNumber = nextSoNumber(db, now);
+  const SHIPPING_LABEL = { internal: 'Kurir Internal', gosend: 'GoSend', grabexpress: 'GrabExpress', lainnya: 'Lainnya' };
+  const shippingLabel = SHIPPING_LABEL[order.shippingMethod] || 'Kurir Internal';
+  const shippingSuffix = order.shippingMethod === 'lainnya' && order.shippingNote ? ` (${order.shippingNote})` : '';
   try {
     db.insert(s.salesOrder).values({
       id: soId, soNumber, customerId: order.contactId,
       orderDate: now, pipelineStatus: 'Draft', fulfillmentType: 'stock',
-      notes: `Order dari ladangpangan.id — ${order.orderId}`,
+      notes: `Order dari ladangpangan.id — ${order.orderId} · Pengiriman: ${shippingLabel}${shippingSuffix}`,
       createdBy: session.user.email, createdAt: now, updatedAt: now,
     }).run();
     let totalAmount = 0;
