@@ -1,0 +1,47 @@
+# Deploy otomatis ke VPS Hostinger setiap ada perubahan di branch main.
+# GitHub masuk ke VPS lewat SSH, mengambil kode terbaru, lalu build & restart container ERP.
+#
+# Perlu 3 GitHub Secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST     IP VPS (148.230.102.34)
+#   VPS_USER     user SSH (root)
+#   VPS_SSH_KEY  private key SSH khusus deploy (lihat deploy/AUTO_DEPLOY.md)
+#
+# Folder data/ dan file .env di VPS tidak pernah disentuh (tidak ada di GitHub).
+name: Deploy ke VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # bisa juga dijalankan manual dari tab Actions
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false # jangan potong deploy yang sedang berjalan
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Update ERP di VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 35m
+          script: |
+            set -e
+            cd /docker/ladang-pangan-erp
+            # Pertama kali: folder dibuat Hostinger Docker Manager tanpa git — hubungkan ke repo.
+            if [ ! -d .git ]; then
+              cp -a data "/root/erp-data-backup-$(date +%F-%H%M)"
+              git init -q
+              git remote add origin https://github.com/ladangpangan/Ladang-Pangan-ERP.git
+            fi
+            git fetch --depth 1 origin main
+            git checkout -q -f -B main origin/main
+            echo "Deploy commit: $(git log -1 --format='%h %s')"
+            docker compose up -d --build
+            docker image prune -f
+            docker compose ps
