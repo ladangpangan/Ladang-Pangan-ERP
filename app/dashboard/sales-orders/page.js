@@ -47,6 +47,7 @@ const emptyForm = {
   orderDate: new Date().toISOString().slice(0,10),
   expectedDate: '',
   dpAmount: 0, paymentTerm: 'TOP 14',
+  salesContactId: '',
   items: [emptyItem()],
   notes: '',
 };
@@ -178,6 +179,8 @@ function CreateSODialog({ onSaved }) {
   const isDsRole = (c) => !!(c?.isDropshipper || hasCat(c, 'Dropshipper'));
   const buyers = allContacts.filter(c => hasCat(c, 'Customer') || isAgentRole(c));
   const dropshippers = allContacts.filter(c => isDsRole(c) && c.id !== form.customerId);
+  // Sales = kontak berkategori Karyawan atau Mitra (kodenya dipakai sebagai "kode sales" di Productivity App).
+  const salesPeople = allContacts.filter(c => hasCat(c, 'Karyawan') || hasCat(c, 'Mitra'));
   const { data: stockData, isLoading: stockLoading } = useSWR('/api/inventory/stocks?status=active&sort=FEFO', fetcher);
   const { data: prods } = useSWR('/api/products', fetcher);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -373,6 +376,16 @@ function CreateSODialog({ onSaved }) {
           </Select>
         </F>
         <F label="Down Payment (Rp)"><CurrencyInput value={form.dpAmount} onChange={v => upd('dpAmount', v)} placeholder="0" /></F>
+        <F label="Sales">
+          <Select value={form.salesContactId || 'none'} onValueChange={v => upd('salesContactId', v === 'none' ? '' : v)}>
+            <SelectTrigger data-testid="so-sales-select"><SelectValue placeholder="Pilih sales" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">— Belum dipilih —</SelectItem>
+              {salesPeople.map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.displayName}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground mt-1">Dari kontak kategori Karyawan / Mitra. Dipakai untuk target penjualan per orang.</p>
+        </F>
       </div>
 
       <div className="space-y-2">

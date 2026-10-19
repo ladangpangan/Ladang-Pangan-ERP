@@ -230,7 +230,7 @@ export default function SODetailPage() {
           <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payment</TabsTrigger>
           <TabsTrigger value="returns"><RotateCcw className="w-4 h-4 mr-1" />Retur</TabsTrigger>
         </TabsList>
-        <TabsContent value="info"><InfoTab so={so} /></TabsContent>
+        <TabsContent value="info"><InfoTab so={so} canEdit={canEdit} onSaved={mutate} /></TabsContent>
         <TabsContent value="items"><ItemsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} pdfShow={pdfPreview.show} /></TabsContent>
         <TabsContent value="receipts"><ReceiptsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
@@ -816,7 +816,7 @@ function CommissionCard({ so, canEdit, onSaved }) {
   );
 }
 
-function InfoTab({ so }) {
+function InfoTab({ so, canEdit, onSaved }) {
   const items = so.items || [];
   const sumW = (k) => items.reduce((a, it) => a + Number(it[k] || 0), 0);
   const beratPesan = sumW('weight');
@@ -850,6 +850,7 @@ function InfoTab({ so }) {
   const rows = [
     ['Customer', so.customer?.displayName],
     ['Kode Customer', so.customer?.code],
+    ['Sales', <SalesField key="sales" so={so} canEdit={canEdit} onSaved={onSaved} />],
     ['Subscriber', so.customer?.isSubscriber ? 'Ya' : 'Tidak'],
     ['Prepaid Balance', so.customer?.isSubscriber ? `Rp ${Number(so.customer?.prepaidBalance || 0).toLocaleString('id-ID')}` : '-'],
     ['Credit Limit', `Rp ${Number(so.customer?.creditLimit || 0).toLocaleString('id-ID')}`],
@@ -881,6 +882,46 @@ function InfoTab({ so }) {
       </div>
       {so.notes && <div className="pt-3 border-t"><div className="text-xs text-muted-foreground mb-1">Catatan</div><div className="text-sm whitespace-pre-wrap">{so.notes}</div></div>}
     </CardContent></Card>
+  );
+}
+
+// Sales penanggung jawab SO (kontak Karyawan/Mitra). Bisa dikoreksi kapan saja kecuali SO batal; kodenya
+// dikirim ke Productivity App sebagai "kode sales" untuk realisasi target per orang.
+function SalesField({ so, canEdit, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(so.salesContactId || 'none');
+  const [saving, setSaving] = useState(false);
+  const { data: cData } = useSWR(editing ? '/api/contacts' : null, fetcher);
+  const cats = (c) => (Array.isArray(c?.categories) && c.categories.length) ? c.categories : (c?.contactType ? [c.contactType] : []);
+  const people = (cData?.data || []).filter(c => cats(c).includes('Karyawan') || cats(c).includes('Mitra'));
+  const label = so.salesContact ? `${so.salesContact.code} - ${so.salesContact.displayName}` : null;
+  const editable = canEdit && so.pipelineStatus !== 'Cancelled';
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/sales-orders/${so.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ salesContactId: val === 'none' ? null : val }) });
+      const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Gagal menyimpan sales');
+      toast.success('Sales disimpan'); setEditing(false); onSaved && onSaved();
+    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+  };
+  if (!editing) return (
+    <span className="inline-flex items-center gap-2">
+      {label || <span className="text-amber-700">Belum dipilih</span>}
+      {editable && <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => { setVal(so.salesContactId || 'none'); setEditing(true); }} data-testid="so-sales-edit"><Pencil className="w-3 h-3" /></Button>}
+    </span>
+  );
+  return (
+    <span className="flex items-center gap-2">
+      <Select value={val} onValueChange={setVal}>
+        <SelectTrigger className="h-8 w-56"><SelectValue placeholder="Pilih sales" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">— Belum dipilih —</SelectItem>
+          {people.map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.displayName}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Simpan'}</Button>
+      <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Batal</Button>
+    </span>
   );
 }
 

@@ -76,6 +76,21 @@ grand total); generate/hapus rekap & kelola template = admin (akuntan ikut, atur
     ```
     Jalankan ini dari mesin/sesi yang punya akses push ke `main` (bukan dari sesi Claude Code seperti ini).
 
+## Integrasi Productivity App (19 Okt 2026) — branch `claude/integrasi-productivity-app`
+Pengirim kabar ERP → Productivity App (repo terpisah di laptop owner, VPS sama, produktifitas.ladangpangan.id).
+Panduan pasang & daftar kabar: `deploy/INTEGRASI_PRODUCTIVITY.md`. Kontrak data milik Productivity App (V3 §10.4).
+- **Pemindai** `lib/integrasi/pemindai.js` (pure): tiap ±60 dtk membaca cermin SQLite, membandingkan dengan state
+  (Mongo `integrasi_state`) → kabar `penjualan/pengiriman/pelanggan/pembayaran/pembelian/rekap/tagihan/ringkasan`.
+  Tidak menyentuh handler route.js. Perubahan mundur (batal/Draft/hilang) baru dikabarkan setelah 3 pindai berturut-turut.
+  Hanya data sejak `mulai` (Mongo `integrasi_meta`, bawaan awal bulan saat pertama aktif / `INTEGRASI_MULAI`).
+- **Outbox** Mongo `integrasi_outbox` (seq urut), pengirim `lib/integrasi/pengirim.js` (HMAC, urutan dijaga, ulang 1/5/15/60 mnt, 24 jam → gagal).
+  Penggerak `lib/integrasi/jalan.js`, dimulai dari `lib/db/boot.js` 2 menit setelah boot, kunci lease Mongo (aman multi-pod).
+- Endpoint: `GET /api/integrasi/peristiwa?sejak=` (Bearer `INTEGRASI_TOKEN`, untuk tarik), `GET /api/integrasi/status` (login admin/direktur/akuntan).
+- **Kolom Sales di SO** (`sales_order.sales_contact_id`, kontak Karyawan/Mitra): form Buat SO + detail SO tab Info (bisa dikoreksi kapan saja kecuali SO batal; PATCH hanya-sales tidak menghitung ulang total).
+- Keputusan owner: penjualan dihitung sejak **SO Dikonfirmasi**; jenis pelanggan = kategori ERP apa adanya (dipetakan manual di Productivity); PO/rekap/jatuh tempo ikut sekarang.
+- docker-compose: bergabung ke jaringan eksternal `lpi-internal` (alias `erp`). **Wajib `docker network create lpi-internal` di VPS sebelum merge**, kalau tidak deploy gagal (ERP lama tetap jalan).
+- Uji: `node --test tests/integrasi/integrasi.test.mjs` (13 uji; set `PRODUKTIVITAS_APP_DIR=<folder app productivity>` untuk uji ujung-ke-ujung ke penerima asli — lolos).
+
 ## Yang BELUM dikerjakan
 
 ### Keamanan (sebelum go-live produksi asli)

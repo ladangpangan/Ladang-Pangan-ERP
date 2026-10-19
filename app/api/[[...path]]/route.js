@@ -3902,6 +3902,8 @@ async function handleRoute(request, { params }) {
         dpAmount: Number(body.dpAmount || 0),
         paymentTerm: body.paymentTerm || null,
         notes: body.notes || null,
+        // Sales (Karyawan/Mitra) penanggung jawab penjualan — dikirim ke Productivity App sebagai kode sales (integrasi).
+        salesContactId: body.salesContactId || null,
         createdBy: session.user.email,
         createdAt: now, updatedAt: now,
       };
@@ -4101,6 +4103,7 @@ async function handleRoute(request, { params }) {
         cogsTotal = Number(poRow?.total || enrichedItems.reduce((a, it) => a + Number(it.cogs || 0), 0));
       }
       const customer = db.select().from(s.contacts).where(eq(s.contacts.id, so.customerId)).get();
+      const salesContact = so.salesContactId ? db.select({ id: s.contacts.id, code: s.contacts.code, displayName: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, so.salesContactId)).get() : null;
       const sjRows = db.select().from(s.suratJalan).where(eq(s.suratJalan.salesOrderId, id)).orderBy(desc(s.suratJalan.deliveryDate)).all();
       const payments = db.select().from(s.salesPayments).where(eq(s.salesPayments.salesOrderId, id)).orderBy(desc(s.salesPayments.paymentDate)).all();
       const returns = db.select().from(s.salesReturns).where(eq(s.salesReturns.salesOrderId, id)).orderBy(desc(s.salesReturns.returnDate)).all();
@@ -4157,7 +4160,7 @@ async function handleRoute(request, { params }) {
           .from(s.contacts).where(eq(s.contacts.id, r.dropshipperId)).get();
         return { ...r, dropshipper: dsc || null };
       });
-      return json({ data: { ...so, items: enrichedItems, customer, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
+      return json({ data: { ...so, items: enrichedItems, customer, salesContact: salesContact || null, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
     // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
@@ -4440,20 +4443,28 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const existing = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!existing) return err('Not found', 404);
-      if (['Invoiced', 'Cancelled'].includes(existing.pipelineStatus)) return err('SO tidak dapat diubah pada status ini');
       const body = await request.json();
+      // Sales boleh dikoreksi kapan saja selama SO tidak batal (sering baru dilengkapi setelah faktur) — hanya kolom itu.
+      const onlySales = Object.keys(body || {}).length === 1 && body.salesContactId !== undefined;
+      if (existing.pipelineStatus === 'Cancelled' || (existing.pipelineStatus === 'Invoiced' && !onlySales)) return err('SO tidak dapat diubah pada status ini');
+      if (body.salesContactId) {
+        const sc = db.select({ id: s.contacts.id }).from(s.contacts).where(eq(s.contacts.id, body.salesContactId)).get();
+        if (!sc) return err('Kontak sales tidak ditemukan', 400);
+      }
       const update = {};
-      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer', 'shippingPayMethod', 'shippingAccountCode'];
+      const fields = ['customerId', 'expectedDate', 'dpAmount', 'paymentTerm', 'notes', 'invoiceNumber', 'invoiceDate', 'dueDate', 'shippingCost', 'shippingBearer', 'shippingPayMethod', 'shippingAccountCode', 'salesContactId'];
       for (const f of fields) {
         if (body[f] !== undefined) {
           if (['expectedDate', 'invoiceDate', 'dueDate'].includes(f)) update[f] = body[f] ? new Date(body[f]) : null;
           else if (f === 'shippingCost') update[f] = Number(body[f] || 0);
+          else if (f === 'salesContactId') update[f] = body[f] || null;
           else update[f] = body[f];
         }
       }
       if (body.orderDate) update.orderDate = new Date(body.orderDate);
       update.updatedAt = new Date();
       db.update(s.salesOrder).set(update).where(eq(s.salesOrder.id, id)).run();
+      if (onlySales) return json({ data: db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get() }); // tanpa hitung ulang total
       if (Array.isArray(body.items)) {
         // Prevent items edit after Draft (stock already deducted on Confirm)
         if (existing.pipelineStatus !== 'Draft') return err('Items hanya dapat diubah saat status Draft');
