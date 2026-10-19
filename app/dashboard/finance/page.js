@@ -38,14 +38,20 @@ function DocLink({ href, children }) {
   );
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, note }) {
   const paid = status === 'Lunas' || status === 'Dikembalikan';
+  const cancelled = status === 'Dibatalkan';
   return (
-    <Badge variant="outline" className={paid
-      ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-      : 'bg-amber-100 text-amber-700 border-amber-200'}>
-      {status}
-    </Badge>
+    <span className="inline-flex flex-col items-center gap-0.5">
+      <Badge variant="outline" className={cancelled
+        ? 'bg-red-100 text-red-700 border-red-200'
+        : paid
+          ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+          : 'bg-amber-100 text-amber-700 border-amber-200'}>
+        {status}
+      </Badge>
+      {note && <span className="text-[10px] leading-tight text-red-600 max-w-[140px]">{note}</span>}
+    </span>
   );
 }
 
@@ -291,10 +297,12 @@ export default function FinancePage() {
   const cbF = useFilter(cashback, ['soNumber', 'party', 'status']);
 
   const sum = (arr, k) => arr.reduce((a, b) => a + Number(b[k] || 0), 0);
-  const piutangSO = sum(invoiceSO.filter(r => r.status !== 'Lunas'), 'outstanding');
-  const utangPO = sum(invoicePO.filter(r => r.status !== 'Lunas'), 'outstanding');
-  const komisiBelum = sum(komisi.filter(r => r.status !== 'Lunas'), 'amount');
-  const cashbackBelum = sum(cashback.filter(r => r.status !== 'Dikembalikan'), 'amount');
+  // Dokumen dibatalkan (cancelled) tetap tampil bila sudah ada uang bergerak, tapi TIDAK dihitung di ringkasan.
+  const openRows = (arr, done) => arr.filter(r => !r.cancelled && r.status !== done);
+  const piutangSO = sum(openRows(invoiceSO, 'Lunas'), 'outstanding');
+  const utangPO = sum(openRows(invoicePO, 'Lunas'), 'outstanding');
+  const komisiBelum = sum(openRows(komisi, 'Lunas'), 'amount');
+  const cashbackBelum = sum(openRows(cashback, 'Dikembalikan'), 'amount');
 
   const setThisMonth = () => {
     const now = new Date();
@@ -340,10 +348,10 @@ export default function FinancePage() {
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <SummaryCard icon={ArrowDownCircle} tone="blue" label="Piutang SO (Belum Lunas)" value={rp(piutangSO)} sub={`${invoiceSO.filter(r => r.status !== 'Lunas').length} invoice belum lunas`} />
-        <SummaryCard icon={ArrowUpCircle} tone="red" label="Utang PO (Belum Lunas)" value={rp(utangPO)} sub={`${invoicePO.filter(r => r.status !== 'Lunas').length} invoice belum lunas`} />
-        <SummaryCard icon={HandCoins} tone="amber" label="Komisi Belum Dibayar" value={rp(komisiBelum)} sub={`${komisi.filter(r => r.status !== 'Lunas').length} dari ${komisi.length} komisi`} />
-        <SummaryCard icon={Gift} tone="green" label="Cashback Belum Dikembalikan" value={rp(cashbackBelum)} sub={`${cashback.filter(r => r.status !== 'Dikembalikan').length} dari ${cashback.length} cashback`} />
+        <SummaryCard icon={ArrowDownCircle} tone="blue" label="Piutang SO (Belum Lunas)" value={rp(piutangSO)} sub={`${openRows(invoiceSO, 'Lunas').length} invoice belum lunas`} />
+        <SummaryCard icon={ArrowUpCircle} tone="red" label="Utang PO (Belum Lunas)" value={rp(utangPO)} sub={`${openRows(invoicePO, 'Lunas').length} invoice belum lunas`} />
+        <SummaryCard icon={HandCoins} tone="amber" label="Komisi Belum Dibayar" value={rp(komisiBelum)} sub={`${openRows(komisi, 'Lunas').length} dari ${komisi.filter(r => !r.cancelled).length} komisi`} />
+        <SummaryCard icon={Gift} tone="green" label="Cashback Belum Dikembalikan" value={rp(cashbackBelum)} sub={`${openRows(cashback, 'Dikembalikan').length} dari ${cashback.filter(r => !r.cancelled).length} cashback`} />
       </div>
 
       {isLoading ? (
@@ -398,7 +406,7 @@ export default function FinancePage() {
                             <span className="text-muted-foreground">Rp 0</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? `SO batal — sudah dibayar ${rp(r.paid)}, perlu refund/klarifikasi` : null} /></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -482,7 +490,7 @@ export default function FinancePage() {
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
                         <TableCell className="text-right text-emerald-700">{rp(r.paid)}</TableCell>
                         <TableCell className="text-right text-red-600 font-semibold">{rp(r.outstanding)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? `PO batal — sudah dibayar ${rp(r.paid)}, perlu klarifikasi ke supplier` : null} /></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -518,9 +526,9 @@ export default function FinancePage() {
                         <TableCell className="font-medium"><DocLink href={r.salesOrderId ? `/dashboard/sales-orders/${r.salesOrderId}` : null}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? 'SO batal — komisi sudah terlanjur dibayar' : null} /></TableCell>
                         <TableCell className="text-right">
-                          {r.status !== 'Lunas' ? <PayCommissionDialog rec={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
+                          {r.status !== 'Lunas' && !r.cancelled ? <PayCommissionDialog rec={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -557,9 +565,9 @@ export default function FinancePage() {
                         <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? 'SO batal — cashback sudah terlanjur dikembalikan' : null} /></TableCell>
                         <TableCell className="text-right">
-                          {r.status !== 'Dikembalikan' ? <RefundCashbackDialog row={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
+                          {r.status !== 'Dikembalikan' && !r.cancelled ? <RefundCashbackDialog row={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
                         </TableCell>
                       </TableRow>
                     ))}

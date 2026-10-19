@@ -1377,7 +1377,11 @@ async function handleRoute(request, { params }) {
       // Peta id SO -> tanggal ORDER (tanggal operasi). Filter periode memakai tanggal order agar konsisten
       // dengan bulan pada nomor dokumen (SO/202608 = operasi Agustus), bukan tanggal invoice/record dibuat.
       const soDate = {}; for (const o of sos) soDate[o.id] = o.orderDate;
-      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.orderDate)).map(o => {
+      // SO/PO yang dibatalkan: disembunyikan, KECUALI sudah ada uang bergerak (DP/pembayaran, komisi sudah
+      // dibayar, cashback sudah dikembalikan) — tetap tampil dgn status 'Dibatalkan' (cancelled=true) supaya
+      // finance bisa menindaklanjuti (refund/klarifikasi), tapi tidak dihitung di ringkasan & tidak bisa dibayar.
+      const soCancelled = {}; for (const o of sos) if (o.pipelineStatus === 'Cancelled') soCancelled[o.id] = true;
+      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.orderDate) && (!soCancelled[o.id] || Number(o.paidAmount || 0) > 0)).map(o => {
         const total = Number(o.totalAmount || 0);
         const paid = Number(o.paidAmount || 0);
         const cb = (o.markupEnabled && Number(o.cashbackAmount || 0) > 0) ? Number(o.cashbackAmount || 0) : 0;
@@ -1388,6 +1392,7 @@ async function handleRoute(request, { params }) {
         // agar SO yang belum/kurang dibayar tidak ikut menggelembung.
         const overpay = Math.max(0, paid - total);
         const out = Math.round(total - paid + Math.min(refunded, overpay));
+        if (soCancelled[o.id]) return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, orderDate: o.orderDate, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: 0, status: 'Dibatalkan', cancelled: true };
         return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, orderDate: o.orderDate, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
       });
       // Dokumen PO yang sudah masuk Rekap Tagihan (1 PO hanya boleh di 1 rekap).
@@ -1396,10 +1401,12 @@ async function handleRoute(request, { params }) {
       for (const it of db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(eq(s.billRecapItems.docType, 'PO')).all()) {
         if (recapNo[it.recapId]) poRecap[it.docId] = { recapId: it.recapId, recapNumber: recapNo[it.recapId] };
       }
-      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
+      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate) && (o.pipelineStatus !== 'Dibatalkan' || Number(o.paidAmount || 0) > 0)).map(o => {
+        if (o.pipelineStatus === 'Dibatalkan') return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: 0, status: 'Dibatalkan', cancelled: true, pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null };
+        const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
-      const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, orderDate: (r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
-      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, orderDate: o.orderDate, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt) && (!soCancelled[r.salesOrderId] || r.status === 'paid')).map(r => soCancelled[r.salesOrderId] ? ({ id: r.id, salesOrderId: r.salesOrderId, soNumber: somap[r.salesOrderId] || r.soNumber, orderDate: soDate[r.salesOrderId], party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: 'Dibatalkan', cancelled: true }) : ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, orderDate: (r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate) && (!soCancelled[o.id] || o.cashbackRefunded)).map(o => ({ id: o.id, soNumber: o.soNumber, orderDate: o.orderDate, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: soCancelled[o.id] ? 'Dibatalkan' : o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan', ...(soCancelled[o.id] ? { cancelled: true } : {}) }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
     }
 
@@ -1586,6 +1593,7 @@ async function handleRoute(request, { params }) {
       const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, body.commissionRecordId)).get();
       if (!rec) return err('Record komisi tidak ditemukan', 404);
       if (rec.status === 'paid') return err('Komisi ini sudah dibayar', 400);
+      if (rec.salesOrderId && db.select({ st: s.salesOrder.pipelineStatus }).from(s.salesOrder).where(eq(s.salesOrder.id, rec.salesOrderId)).get()?.st === 'Cancelled') return err('SO untuk komisi ini sudah dibatalkan — komisi tidak bisa dibayar', 400);
       // Validasi akun kas/bank yang dipilih (harus akun 1-11xx yang dapat diposting)
       let accountCode = body.accountCode ? String(body.accountCode) : null;
       if (accountCode) {
@@ -2429,6 +2437,10 @@ async function handleRoute(request, { params }) {
         // Lunasi semua yang unpaid (per total saldo)
         targets = db.select().from(s.commissionRecords).where(and(eq(s.commissionRecords.dropshipperId, id), eq(s.commissionRecords.status, 'unpaid'))).all();
       }
+      // Komisi dari SO yang dibatalkan tidak boleh dibayar (dilewati saat "Lunasi Semua").
+      const cancelledSo = new Set(db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.pipelineStatus, 'Cancelled')).all().map(r => r.id));
+      if (body.commissionRecordId && targets[0]?.salesOrderId && cancelledSo.has(targets[0].salesOrderId)) return err('SO untuk komisi ini sudah dibatalkan — komisi tidak bisa dibayar');
+      targets = targets.filter(t => !t.salesOrderId || !cancelledSo.has(t.salesOrderId));
       if (targets.length === 0) return err('Tidak ada komisi yang perlu dibayar');
       const totalAmount = targets.reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
       const now = new Date();
@@ -3320,6 +3332,7 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
+      if (po.pipelineStatus === 'Dibatalkan') return err('PO sudah dibatalkan — tidak bisa dibayar');
       const body = await request.json();
       if (!body.amount || Number(body.amount) <= 0) return err('amount > 0 required');
       const p = {
@@ -4994,6 +5007,7 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      if (so.pipelineStatus === 'Cancelled') return err('SO sudah dibatalkan — cashback tidak bisa dikembalikan', 400);
       let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
       const file = form.get('file');
       const note = form.get('note') ? String(form.get('note')).slice(0, 500) : null;
