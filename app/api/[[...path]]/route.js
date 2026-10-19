@@ -24,10 +24,13 @@ import * as woApprovalMongo from '@/lib/db/wo-approval-mongo';
 import * as tallyTxMongo from '@/lib/db/tally-tx-mongo';
 import * as miscMongo from '@/lib/db/misc-mongo';
 import * as crmMongo from '@/lib/db/crm-mongo';
+import * as recapMongo from '@/lib/db/recap-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 import { recordLedger } from '@/lib/inventory/ledger';
 import * as soPoRollback from '@/lib/ops/so-po-rollback';
+import * as billRecap from '@/lib/finance/bill-recap';
+import { DEFAULT_TEMPLATE as RECAP_DEFAULT_TEMPLATE, sanitizeColumns as sanitizeRecapColumns } from '@/lib/finance/recap-fields';
 // -----------------------
 // Helpers
 // -----------------------
@@ -286,10 +289,15 @@ const MISC_PATHS = new Set([
   'notifications', 'contacts', 'settings',
   'purchase-orders', 'sales-orders', 'tally-outbound', 'tally-sessions',
   'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
+  'finance', // notifikasi Rekap Tagihan (Ajukan ke Finance / Dibayar)
 ]);
 
 // Phase 11: path[0] prefixes that READ or WRITE leads / lead_tasks (CRM pipeline & follow-up).
 const CRM_PATHS = new Set(['leads', 'lead-tasks']);
+
+// Phase 12: path[0] prefixes that READ or WRITE bill_recap_templates / bill_recaps / bill_recap_items
+// (Rekap Tagihan di modul Keuangan).
+const RECAP_PATHS = new Set(['finance']);
 
 async function handleRoute(request, { params }) {
   const { path = [] } = await params;
@@ -404,6 +412,10 @@ async function handleRoute(request, { params }) {
     if (want('crm', CRM_PATHS.has(p0))) {
       if (stale('crm')) tasks.push((async () => { try { await crmMongo.ensureReady(raw); g.crm = Date.now(); } catch { /* best-effort */ } })());
       if (isMut) snappers.push(() => crmMongo.captureSnapshot(request, raw));
+    }
+    if (want('recap', RECAP_PATHS.has(p0))) {
+      if (stale('recap')) tasks.push((async () => { try { await recapMongo.ensureReady(raw); g.recap = Date.now(); } catch { /* best-effort */ } })());
+      if (isMut) snappers.push(() => recapMongo.captureSnapshot(request, raw));
     }
     if (tasks.length) { try { await Promise.all(tasks); } catch { /* best-effort */ } }
     for (const fn of snappers) { try { fn(); } catch { /* best-effort */ } }
@@ -1366,7 +1378,13 @@ async function handleRoute(request, { params }) {
       // Peta id SO -> tanggal ORDER (tanggal operasi). Filter periode memakai tanggal order agar konsisten
       // dengan bulan pada nomor dokumen (SO/202608 = operasi Agustus), bukan tanggal invoice/record dibuat.
       const soDate = {}; for (const o of sos) soDate[o.id] = o.orderDate;
-      const invoiceSO = sos.filter(o => o.invoiceNumber && inRange(o.orderDate)).map(o => {
+      // SO/PO yang dibatalkan: disembunyikan, KECUALI sudah ada uang bergerak (DP/pembayaran, komisi sudah
+      // dibayar, cashback sudah dikembalikan) — tetap tampil dgn status 'Dibatalkan' (cancelled=true) supaya
+      // finance bisa menindaklanjuti (refund/klarifikasi), tapi tidak dihitung di ringkasan & tidak bisa dibayar.
+      const soCancelled = {}; for (const o of sos) if (o.pipelineStatus === 'Cancelled') soCancelled[o.id] = true;
+      // SO/PO yang diarsipkan tidak ditampilkan sama sekali (termasuk komisi & cashback-nya).
+      const soArchived = {}; for (const o of sos) if (o.archivedAt) soArchived[o.id] = true;
+      const invoiceSO = sos.filter(o => !soArchived[o.id] && o.invoiceNumber && inRange(o.orderDate) && (!soCancelled[o.id] || Number(o.paidAmount || 0) > 0)).map(o => {
         const total = Number(o.totalAmount || 0);
         const paid = Number(o.paidAmount || 0);
         const cb = (o.markupEnabled && Number(o.cashbackAmount || 0) > 0) ? Number(o.cashbackAmount || 0) : 0;
@@ -1377,13 +1395,368 @@ async function handleRoute(request, { params }) {
         // agar SO yang belum/kurang dibayar tidak ikut menggelembung.
         const overpay = Math.max(0, paid - total);
         const out = Math.round(total - paid + Math.min(refunded, overpay));
-        return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
+        if (soCancelled[o.id]) return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, orderDate: o.orderDate, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: 0, status: 'Dibatalkan', cancelled: true };
+        return { id: o.id, number: o.invoiceNumber, soNumber: o.soNumber, orderDate: o.orderDate, party: cmap[o.customerId] || '-', total, paid, cashback: cb, cashbackRefunded: !!(cb > 0 && o.cashbackRefunded), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' };
       });
-      const invoicePO = pos.filter(o => (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate)).map(o => { const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas' }; });
+      // Dokumen PO yang sudah masuk Rekap Tagihan (1 PO hanya boleh di 1 rekap).
+      const recapNo = {}; for (const r of db.select().from(s.billRecaps).all()) recapNo[r.id] = r.recapNumber;
+      const poRecap = {};
+      for (const it of db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(eq(s.billRecapItems.docType, 'PO')).all()) {
+        if (recapNo[it.recapId]) poRecap[it.docId] = { recapId: it.recapId, recapNumber: recapNo[it.recapId] };
+      }
+      const invoicePO = pos.filter(o => !o.archivedAt && (o.invoiceNumber || Number(o.totalAmount || 0) > 0) && inRange(o.orderDate) && (o.pipelineStatus !== 'Dibatalkan' || Number(o.paidAmount || 0) > 0)).map(o => {
+        if (o.pipelineStatus === 'Dibatalkan') return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: 0, status: 'Dibatalkan', cancelled: true, pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null };
+        const out = Math.round(Number(o.totalAmount || 0) - Number(o.paidAmount || 0)); return { id: o.id, number: o.invoiceNumber || o.poNumber, poNumber: o.poNumber, orderDate: o.orderDate, party: cmap[o.supplierId] || '-', total: Number(o.totalAmount || 0), paid: Number(o.paidAmount || 0), outstanding: out, status: out <= 0 ? 'Lunas' : 'Belum Lunas', pipelineStatus: o.pipelineStatus, recap: poRecap[o.id] || null }; });
       const cr = db.select().from(s.commissionRecords).orderBy(desc(s.commissionRecords.createdAt)).all();
-      const komisi = cr.filter(r => Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt)).map(r => ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
-      const cashback = sos.filter(o => o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate)).map(o => ({ id: o.id, soNumber: o.soNumber, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan' }));
+      const komisi = cr.filter(r => !soArchived[r.salesOrderId] && Number(r.commissionAmount || 0) > 0 && inRange((r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt) && (!soCancelled[r.salesOrderId] || r.status === 'paid')).map(r => soCancelled[r.salesOrderId] ? ({ id: r.id, salesOrderId: r.salesOrderId, soNumber: somap[r.salesOrderId] || r.soNumber, orderDate: soDate[r.salesOrderId], party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: 'Dibatalkan', cancelled: true }) : ({ id: r.id, salesOrderId: r.salesOrderId || null, soNumber: (r.salesOrderId && somap[r.salesOrderId]) || r.soNumber, orderDate: (r.salesOrderId && soDate[r.salesOrderId]) || r.createdAt, party: cmap[r.dropshipperId] || '-', amount: Number(r.commissionAmount || 0), status: r.status === 'paid' ? 'Lunas' : 'Belum Lunas' }));
+      const cashback = sos.filter(o => !soArchived[o.id] && o.markupEnabled && Number(o.cashbackAmount || 0) > 0 && inRange(o.orderDate) && (!soCancelled[o.id] || o.cashbackRefunded)).map(o => ({ id: o.id, soNumber: o.soNumber, orderDate: o.orderDate, party: o.cashbackRecipient || cmap[o.customerId] || '-', amount: Number(o.cashbackAmount || 0), status: soCancelled[o.id] ? 'Dibatalkan' : o.cashbackRefunded ? 'Dikembalikan' : 'Belum Dikembalikan', ...(soCancelled[o.id] ? { cancelled: true } : {}) }));
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
+    }
+
+    // Catat 1 pembayaran PO + perbarui paid_amount/payment_status (dipakai POST /purchase-orders/:id/payments
+    // dan "Bayar Rekap"). Jurnal pembayaran dibuat otomatis oleh engine akuntansi dari purchase_payments.
+    const recordPoPayment = (po, body, email) => {
+      const p = {
+        id: uuidv4(),
+        purchaseOrderId: po.id,
+        paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
+        amount: Number(body.amount),
+        method: body.method || 'Transfer',
+        accountCode: body.accountCode || null,
+        reference: body.reference || null,
+        isDp: !!body.isDp,
+        notes: body.notes || null,
+        createdBy: email,
+        createdAt: new Date(),
+      };
+      db.insert(s.purchasePayments).values(p).run();
+      // Update paid_amount + payment_status
+      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, po.id)).get();
+      const totalPaid = Number(paid?.sum || 0);
+      const totalReturnsRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+      const totalReturns = Number(totalReturnsRow?.sum || 0);
+      const netTotal = Number(po.totalAmount) - totalReturns;
+      let ps = 'unpaid';
+      if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
+      else if (totalPaid > 0) ps = 'partial';
+      const upd = { paidAmount: totalPaid, paymentStatus: ps, updatedAt: new Date() };
+      // If fully paid AND status is Tanda Terima, auto move to Selesai
+      if (ps === 'paid' && po.pipelineStatus === 'Tanda Terima') upd.pipelineStatus = 'Selesai';
+      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, po.id)).run();
+      return p;
+    };
+    // Sisa tagihan PO terkini = total - dibayar - retur (dibulatkan ke rupiah).
+    const poOutstanding = (po) => {
+      const ret = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+      return Math.max(0, Math.round(Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - Number(ret?.sum || 0)));
+    };
+
+    // ---------- REKAP TAGIHAN (Keuangan → Invoice PO) ----------
+    // Tim memilih beberapa invoice PO -> Generate Rekap (angka dikunci sbg snapshot). Rekap tersimpan
+    // dibuka lewat dropdown; koreksi data sesudahnya tampil di kolom Keterangan, tidak mengubah angka.
+    // Template kolom disimpan & dipakai bersama. Generate/hapus rekap & kelola template: admin.
+    const RECAP_VIEW_ROLES = ['admin', 'supervisor', 'direktur', 'akuntan'];
+    const RECAP_ADMIN_ROLES = ['admin'];
+    const recapDocType = (v) => (v === 'SO' ? 'SO' : 'PO');
+    const parseJson = (v, fb) => { try { return v ? JSON.parse(v) : fb; } catch { return fb; } };
+    const templateOut = (t) => ({ ...t, columns: parseJson(t.columns, []), options: parseJson(t.options, {}) });
+    const listRecapTemplates = (docType) => {
+      const rows = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, docType)).orderBy(s.billRecapTemplates.name).all().map(templateOut);
+      if (!rows.length && RECAP_DEFAULT_TEMPLATE[docType]) return [RECAP_DEFAULT_TEMPLATE[docType]];
+      return rows;
+    };
+    const nextRecapNumber = () => {
+      const now = new Date();
+      const prefix = `REK/${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}/`;
+      const rows = db.select({ n: s.billRecaps.recapNumber }).from(s.billRecaps).where(like(s.billRecaps.recapNumber, `${prefix}%`)).all();
+      let max = 0;
+      for (const r of rows) { const suf = parseInt(String(r.n).slice(prefix.length), 10); if (!isNaN(suf) && suf > max) max = suf; }
+      return `${prefix}${String(max + 1).padStart(4, '0')}`;
+    };
+    const templateBody = (body, docType) => {
+      const name = String(body.name || '').trim();
+      if (!name) return { error: 'Nama template wajib diisi' };
+      const columns = sanitizeRecapColumns(body.columns, docType);
+      const options = { subtotalByDate: !!body.options?.subtotalByDate };
+      return { name, columns, options };
+    };
+    const clearOtherDefaults = (docType, keepId) => {
+      db.update(s.billRecapTemplates).set({ isDefault: false }).where(and(eq(s.billRecapTemplates.docType, docType), ne(s.billRecapTemplates.id, keepId))).run();
+    };
+
+    const RECAP_PAY_ROLES = ['akuntan', 'direktur'];
+    // Per supplier di rekap: rekening tujuan + sisa tagihan TERKINI (dari PO, bukan snapshot) + riwayat bayar.
+    const recapPaymentInfo = (recap, items) => {
+      const docIds = [...new Set(items.map(i => i.docId))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all() : [];
+      const bySup = {};
+      for (const po of pos) {
+        const sup = (bySup[po.supplierId] ||= { supplierId: po.supplierId, pos: [], outstanding: 0 });
+        if (po.pipelineStatus === 'Dibatalkan') continue;
+        const out = poOutstanding(po);
+        sup.pos.push({ id: po.id, poNumber: po.poNumber, invoiceNumber: po.invoiceNumber, outstanding: out });
+        sup.outstanding += out;
+      }
+      const payments = db.select().from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).orderBy(s.billRecapPayments.createdAt).all()
+        .map(p => ({ ...p, poPaymentIds: parseJson(p.poPaymentIds, []), proofUrl: p.proofKey ? `/api/finance/recaps/${recap.id}/payments/${p.id}/proof` : null, proofKey: undefined }));
+      const suppliers = Object.values(bySup).map(x => {
+        const c = db.select().from(s.contacts).where(eq(s.contacts.id, x.supplierId)).get();
+        return { ...x, name: c?.displayName || c?.companyName || '-', bankName: c?.bankName || null, bankAccount: c?.bankAccount || null, bankHolder: c?.bankHolder || null, paidViaRecap: payments.filter(p => p.supplierId === x.supplierId).reduce((a, p) => a + Number(p.amount || 0), 0) };
+      });
+      return { payments, suppliers };
+    };
+    // Status rekap otomatis 'dibayar' bila semua PO (yang tidak batal) di dalamnya sudah tidak bersisa.
+    const refreshRecapPaidStatus = (recapId, email) => {
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, recapId)).get();
+      if (!recap || recap.status !== 'diajukan') return recap?.status;
+      const docIds = [...new Set(db.select({ d: s.billRecapItems.docId }).from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recapId)).all().map(r => r.d))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all() : [];
+      const done = pos.every(po => po.pipelineStatus === 'Dibatalkan' || poOutstanding(po) <= 0);
+      if (!done) return recap.status;
+      db.update(s.billRecaps).set({ status: 'dibayar', paidAt: new Date(), paidBy: email, updatedAt: new Date() }).where(eq(s.billRecaps.id, recapId)).run();
+      createNotification({ roles: ['admin'], type: 'success', category: 'finance', title: `Rekap ${recap.recapNumber} sudah dibayar`, message: recap.title, entityType: 'REKAP', entityId: recapId, entityNumber: recap.recapNumber, linkPath: `/dashboard/finance/recaps/${recapId}` });
+      return 'dibayar';
+    };
+
+    // GET /finance/recap-templates?docType=PO
+    if (route === '/finance/recap-templates' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const docType = recapDocType(new URL(request.url).searchParams.get('docType'));
+      return json({ data: listRecapTemplates(docType) });
+    }
+    // POST /finance/recap-templates  { docType, name, columns[], options{subtotalByDate}, isDefault }
+    if (route === '/finance/recap-templates' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const body = await request.json();
+      const docType = recapDocType(body.docType);
+      const v = templateBody(body, docType); if (v.error) return err(v.error);
+      const firstOne = !db.select({ id: s.billRecapTemplates.id }).from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, docType)).get();
+      const now = new Date();
+      const row = { id: uuidv4(), docType, name: v.name, columns: JSON.stringify(v.columns), options: JSON.stringify(v.options), isDefault: firstOne || !!body.isDefault, createdBy: session.user.email, createdAt: now, updatedAt: now };
+      db.insert(s.billRecapTemplates).values(row).run();
+      if (row.isDefault) clearOtherDefaults(docType, row.id);
+      return json({ data: templateOut(row) }, { status: 201 });
+    }
+    // PUT /finance/recap-templates/:id
+    if (route.startsWith('/finance/recap-templates/') && path.length === 3 && method === 'PUT') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const t = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, path[2])).get();
+      if (!t) return err('Template tidak ditemukan', 404);
+      const body = await request.json();
+      const v = templateBody(body, t.docType); if (v.error) return err(v.error);
+      const isDefault = body.isDefault === undefined ? !!t.isDefault : !!body.isDefault;
+      db.update(s.billRecapTemplates).set({ name: v.name, columns: JSON.stringify(v.columns), options: JSON.stringify(v.options), isDefault, updatedAt: new Date() }).where(eq(s.billRecapTemplates.id, t.id)).run();
+      if (isDefault) clearOtherDefaults(t.docType, t.id);
+      return json({ data: templateOut(db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, t.id)).get()) });
+    }
+    // DELETE /finance/recap-templates/:id  (rekap yang sudah dibuat tidak terpengaruh — kolomnya disalin)
+    if (route.startsWith('/finance/recap-templates/') && path.length === 3 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengatur template rekap', 403);
+      const t = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, path[2])).get();
+      if (!t) return err('Template tidak ditemukan', 404);
+      db.delete(s.billRecapTemplates).where(eq(s.billRecapTemplates.id, t.id)).run();
+      if (t.isDefault) {
+        const next = db.select().from(s.billRecapTemplates).where(eq(s.billRecapTemplates.docType, t.docType)).orderBy(s.billRecapTemplates.name).get();
+        if (next) db.update(s.billRecapTemplates).set({ isDefault: true }).where(eq(s.billRecapTemplates.id, next.id)).run();
+      }
+      return json({ ok: true });
+    }
+
+    // GET /finance/recaps?docType=PO — daftar rekap tersimpan (utk dropdown)
+    if (route === '/finance/recaps' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const docType = recapDocType(new URL(request.url).searchParams.get('docType'));
+      const recaps = db.select().from(s.billRecaps).where(and(eq(s.billRecaps.docType, docType), ne(s.billRecaps.status, 'dihapus'))).orderBy(desc(s.billRecaps.recapNumber)).all();
+      const items = recaps.length ? db.select({ recapId: s.billRecapItems.recapId, docId: s.billRecapItems.docId, snapshot: s.billRecapItems.snapshot }).from(s.billRecapItems).where(inArray(s.billRecapItems.recapId, recaps.map(r => r.id))).all() : [];
+      const agg = {};
+      for (const it of items) {
+        const a = (agg[it.recapId] ||= { docs: new Set(), suppliers: new Set() });
+        a.docs.add(it.docId);
+        const snap = parseJson(it.snapshot, {});
+        if (snap.supplierName) a.suppliers.add(snap.supplierName);
+      }
+      return json({ data: recaps.map(r => ({ id: r.id, recapNumber: r.recapNumber, title: r.title, subtitle: r.subtitle, status: r.status, totalAmount: r.totalAmount, createdAt: r.createdAt, createdBy: r.createdBy, docCount: agg[r.id]?.docs.size || 0, suppliers: [...(agg[r.id]?.suppliers || [])] })) });
+    }
+    // POST /finance/recaps  { docType, docIds[], title?, subtitle?, templateId?, notes?, preview? }
+    // preview=true -> hanya hitung baris (tanpa simpan) utk pratinjau di dialog Generate.
+    if (route === '/finance/recaps' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const body = await request.json();
+      const preview = !!body.preview;
+      if (!requireRole(session, preview ? RECAP_VIEW_ROLES : RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa membuat rekap', 403);
+      const docType = recapDocType(body.docType);
+      if (docType !== 'PO') return err('Rekap Invoice SO belum tersedia', 400);
+      const docIds = [...new Set((Array.isArray(body.docIds) ? body.docIds : []).filter(Boolean).map(String))];
+      if (!docIds.length) return err('Pilih minimal satu invoice');
+      const pos = db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all();
+      const poById = {}; for (const p of pos) poById[p.id] = p;
+      for (const id of docIds) { const b = billRecap.poRecapBlocker(poById[id]); if (b) return err(b); }
+      // 1 invoice hanya boleh masuk 1 rekap.
+      const taken = db.select({ docId: s.billRecapItems.docId, recapId: s.billRecapItems.recapId }).from(s.billRecapItems).where(and(eq(s.billRecapItems.docType, 'PO'), inArray(s.billRecapItems.docId, docIds))).all();
+      if (taken.length) {
+        const rec = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, taken[0].recapId)).get();
+        return err(`${poById[taken[0].docId]?.poNumber || 'Invoice'} sudah masuk rekap ${rec?.recapNumber || ''}`.trim(), 409);
+      }
+      const templates = listRecapTemplates(docType);
+      const tpl = (body.templateId && templates.find(t => t.id === body.templateId)) || templates.find(t => t.isDefault) || templates[0] || RECAP_DEFAULT_TEMPLATE[docType];
+      const columns = sanitizeRecapColumns(Array.isArray(body.columns) ? body.columns : tpl.columns, docType);
+      const options = body.options ? { subtotalByDate: !!body.options.subtotalByDate } : (tpl.options || {});
+      const lines = billRecap.buildPoLines(db, docIds);
+      if (!lines.length) return err('Invoice yang dipilih tidak punya item');
+      const totalAmount = Math.round(lines.reduce((a, l) => a + Number(l.total || 0), 0) * 100) / 100;
+      const suppliers = [...new Set(lines.map(l => l.supplierName))];
+      const title = String(body.title || '').trim() || (suppliers.length === 1 ? `TAGIHAN ${suppliers[0].toUpperCase()}` : 'REKAP TAGIHAN SUPPLIER');
+      const subtitle = String(body.subtitle || '').trim() || null;
+      if (preview) {
+        const fakeItems = lines.map((l, i) => ({ recapId: 'preview', docId: l.docId, lineKey: l.lineKey, sortOrder: i, snapshot: JSON.stringify(l), amount: l.total }));
+        return json({ data: { recap: { recapNumber: '(pratinjau)', title, subtitle, columns, options, status: 'draft', totalAmount, templateName: tpl.name }, view: billRecap.buildRecapView(db, { columns }, fakeItems) } });
+      }
+      const now = new Date();
+      const recap = {
+        id: uuidv4(), recapNumber: nextRecapNumber(), docType, title, subtitle, templateName: tpl.name || null,
+        columns: JSON.stringify(columns), options: JSON.stringify(options), status: 'draft', totalAmount,
+        notes: String(body.notes || '').trim() || null, createdBy: session.user.email, createdAt: now, updatedAt: now,
+      };
+      db.transaction((tx) => {
+        tx.insert(s.billRecaps).values(recap).run();
+        lines.forEach((l, i) => {
+          tx.insert(s.billRecapItems).values({ id: uuidv4(), recapId: recap.id, docType, docId: l.docId, lineKey: l.lineKey, sortOrder: i, snapshot: JSON.stringify(l), amount: Number(l.total || 0) }).run();
+        });
+      });
+      return json({ data: { id: recap.id, recapNumber: recap.recapNumber } }, { status: 201 });
+    }
+    // GET /finance/recaps/:id — rekap + tampilan (snapshot + keterangan koreksi/status bayar terkini)
+    if (route.startsWith('/finance/recaps/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      const items = db.select().from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).all();
+      const view = billRecap.buildRecapView(db, recap, items);
+      return json({ data: { recap: { ...recap, columns: parseJson(recap.columns, []), options: parseJson(recap.options, {}) }, view, ...recapPaymentInfo(recap, items) } });
+    }
+    // ---- Fase 2: Ajukan ke Finance → Bayar Rekap (per supplier) ----
+    // POST /finance/recaps/:id/submit — Ajukan ke Finance (admin). Notifikasi ke akuntan & direktur.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'submit' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengajukan rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status !== 'draft') return err('Rekap ini sudah diajukan');
+      const now = new Date();
+      db.update(s.billRecaps).set({ status: 'diajukan', submittedAt: now, submittedBy: session.user.email, updatedAt: now }).where(eq(s.billRecaps.id, recap.id)).run();
+      createNotification({ roles: RECAP_PAY_ROLES, type: 'info', category: 'finance', priority: 'high', title: `Rekap tagihan ${recap.recapNumber} menunggu dibayar`, message: `${recap.title} — Rp ${Math.round(Number(recap.totalAmount || 0)).toLocaleString('id-ID')}`, entityType: 'REKAP', entityId: recap.id, entityNumber: recap.recapNumber, linkPath: `/dashboard/finance/recaps/${recap.id}` });
+      return json({ ok: true, status: 'diajukan' });
+    }
+    // POST /finance/recaps/:id/unsubmit — Batalkan pengajuan (admin), hanya bila belum ada pembayaran.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'unsubmit' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa membatalkan pengajuan', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status !== 'diajukan') return err('Rekap ini tidak sedang diajukan');
+      if (db.select({ id: s.billRecapPayments.id }).from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).get()) return err('Sudah ada pembayaran untuk rekap ini — pengajuan tidak bisa dibatalkan');
+      db.update(s.billRecaps).set({ status: 'draft', submittedAt: null, submittedBy: null, updatedAt: new Date() }).where(eq(s.billRecaps.id, recap.id)).run();
+      return json({ ok: true, status: 'draft' });
+    }
+    // POST /finance/recaps/:id/pay (multipart) — Bayar Rekap untuk SATU supplier (akuntan/direktur).
+    // Field: supplierId, paymentDate, accountCode, method, reference, notes, file (bukti, opsional).
+    // Melunasi sisa TERKINI tiap PO supplier tsb lewat recordPoPayment() -> jurnal otomatis.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'pay' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_PAY_ROLES)) return err('Hanya akuntan & direktur yang bisa membayar rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'draft') return err('Rekap belum diajukan ke finance');
+      if (recap.status === 'dibayar') return err('Rekap ini sudah lunas');
+      let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
+      const supplierId = String(form.get('supplierId') || '');
+      if (!supplierId) return err('Pilih supplier yang dibayar');
+      const accountCode = form.get('accountCode') ? String(form.get('accountCode')) : null;
+      if (!accountCode) return err('Pilih rekening Kas/Bank sumber pembayaran');
+      try {
+        const all = await coaMongo.coaList({ includeArchived: false });
+        const ok = (all || []).some(a => a.code === accountCode && String(a.code || '').startsWith('1-11'));
+        if (!ok) return err('Akun kas/bank tidak valid', 400);
+      } catch { /* best-effort: terima apa adanya bila COA gagal dibaca */ }
+      const items = db.select().from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).all();
+      const docIds = [...new Set(items.map(i => i.docId))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(and(inArray(s.purchaseOrder.id, docIds), eq(s.purchaseOrder.supplierId, supplierId))).all() : [];
+      if (!pos.length) return err('Supplier ini tidak ada di rekap');
+      const targets = pos.filter(po => po.pipelineStatus !== 'Dibatalkan').map(po => ({ po, amount: poOutstanding(po) })).filter(t => t.amount > 0);
+      if (!targets.length) return err('Tagihan supplier ini sudah lunas');
+      const paymentDate = form.get('paymentDate') ? String(form.get('paymentDate')).slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const method = String(form.get('method') || 'Transfer').slice(0, 20);
+      const reference = form.get('reference') ? String(form.get('reference')).slice(0, 200) : null;
+      const notes = form.get('notes') ? String(form.get('notes')).slice(0, 500) : null;
+      // Bukti transfer (opsional) — validasi dulu sebelum ada mutasi apa pun.
+      const file = form.get('file');
+      let proof = null;
+      if (file && typeof file.arrayBuffer === 'function' && file.size > 0) {
+        const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+        if (!ALLOWED.includes(file.type)) return err('Bukti hanya PDF, JPG, PNG, atau WEBP', 400);
+        if (file.size > 10 * 1024 * 1024) return err('Ukuran bukti maksimal 10MB', 400);
+        const bytes = Buffer.from(new Uint8Array(await file.arrayBuffer()));
+        const safeName = String(file.name || 'bukti-transfer').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 150);
+        const relDir = `recap/${recap.id}`;
+        const uploadRoot = nodePath.join(process.cwd(), 'data', 'uploads');
+        fs.mkdirSync(nodePath.join(uploadRoot, relDir), { recursive: true });
+        const storageKey = `${relDir}/${uuidv4()}_${safeName}`;
+        fs.writeFileSync(nodePath.join(uploadRoot, storageKey), bytes);
+        proof = { proofKey: storageKey, proofName: safeName, proofType: file.type };
+      }
+      const poPayments = [];
+      const refText = `${recap.recapNumber}${reference ? ' · ' + reference : ''}`;
+      for (const t of targets) {
+        const p = recordPoPayment(t.po, { amount: t.amount, paymentDate, method, accountCode, reference: refText, notes: notes || `Bayar Rekap ${recap.recapNumber}` }, session.user.email);
+        poPayments.push({ poId: t.po.id, poNumber: t.po.poNumber, paymentId: p.id, amount: t.amount });
+      }
+      const total = poPayments.reduce((a, p) => a + p.amount, 0);
+      const row = {
+        id: uuidv4(), recapId: recap.id, supplierId, amount: total, paymentDate: new Date(paymentDate), method, accountCode, reference, notes,
+        ...(proof || {}), poPaymentIds: JSON.stringify(poPayments), createdBy: session.user.email, createdAt: new Date(),
+      };
+      db.insert(s.billRecapPayments).values(row).run();
+      const status = refreshRecapPaidStatus(recap.id, session.user.email);
+      return json({ data: { id: row.id, amount: total, poCount: poPayments.length, status } }, { status: 201 });
+    }
+    // GET /finance/recaps/:id/payments/:pid/proof — file bukti transfer Bayar Rekap.
+    if (route.startsWith('/finance/recaps/') && path.length === 6 && path[3] === 'payments' && path[5] === 'proof' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const pay = db.select().from(s.billRecapPayments).where(and(eq(s.billRecapPayments.id, path[4]), eq(s.billRecapPayments.recapId, path[2]))).get();
+      if (!pay || !pay.proofKey) return err('Bukti tidak ditemukan', 404);
+      const abs = nodePath.join(process.cwd(), 'data', 'uploads', pay.proofKey);
+      if (!fs.existsSync(abs)) return err('File bukti tidak ditemukan di storage', 404);
+      const buf = fs.readFileSync(abs);
+      const ct = pay.proofType || 'application/octet-stream';
+      return new NextResponse(buf, { status: 200, headers: {
+        'Content-Type': ct, 'Content-Length': String(buf.length),
+        'Content-Disposition': `${(ct === 'application/pdf' || ct.startsWith('image/')) ? 'inline' : 'attachment'}; filename="${String(pay.proofName || 'bukti-transfer').replace(/"/g, '')}"`,
+        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      } });
+    }
+
+    // DELETE /finance/recaps/:id — invoice di dalamnya bisa direkap ulang. Rekap berstatus Dibayar tidak bisa dihapus.
+    // Header rekap tetap disimpan (status 'dihapus', tersembunyi) supaya nomor REK tidak pernah dipakai ulang.
+    if (route.startsWith('/finance/recaps/') && path.length === 3 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa menghapus rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap) return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'dibayar') return err('Rekap yang sudah dibayar tidak bisa dihapus');
+      if (db.select({ id: s.billRecapPayments.id }).from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).get()) return err('Rekap ini sudah ada pembayaran — tidak bisa dihapus');
+      db.transaction((tx) => {
+        tx.delete(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).run();
+        tx.update(s.billRecaps).set({ status: 'dihapus', updatedAt: new Date() }).where(eq(s.billRecaps.id, recap.id)).run();
+      });
+      return json({ ok: true });
     }
 
     // POST /finance/commissions/pay — catat pembayaran komisi dropshipper dari dashboard Keuangan.
@@ -1398,6 +1771,7 @@ async function handleRoute(request, { params }) {
       const rec = db.select().from(s.commissionRecords).where(eq(s.commissionRecords.id, body.commissionRecordId)).get();
       if (!rec) return err('Record komisi tidak ditemukan', 404);
       if (rec.status === 'paid') return err('Komisi ini sudah dibayar', 400);
+      if (rec.salesOrderId && db.select({ st: s.salesOrder.pipelineStatus }).from(s.salesOrder).where(eq(s.salesOrder.id, rec.salesOrderId)).get()?.st === 'Cancelled') return err('SO untuk komisi ini sudah dibatalkan — komisi tidak bisa dibayar', 400);
       // Validasi akun kas/bank yang dipilih (harus akun 1-11xx yang dapat diposting)
       let accountCode = body.accountCode ? String(body.accountCode) : null;
       if (accountCode) {
@@ -2241,6 +2615,10 @@ async function handleRoute(request, { params }) {
         // Lunasi semua yang unpaid (per total saldo)
         targets = db.select().from(s.commissionRecords).where(and(eq(s.commissionRecords.dropshipperId, id), eq(s.commissionRecords.status, 'unpaid'))).all();
       }
+      // Komisi dari SO yang dibatalkan tidak boleh dibayar (dilewati saat "Lunasi Semua").
+      const cancelledSo = new Set(db.select({ id: s.salesOrder.id }).from(s.salesOrder).where(eq(s.salesOrder.pipelineStatus, 'Cancelled')).all().map(r => r.id));
+      if (body.commissionRecordId && targets[0]?.salesOrderId && cancelledSo.has(targets[0].salesOrderId)) return err('SO untuk komisi ini sudah dibatalkan — komisi tidak bisa dibayar');
+      targets = targets.filter(t => !t.salesOrderId || !cancelledSo.has(t.salesOrderId));
       if (targets.length === 0) return err('Tidak ada komisi yang perlu dibayar');
       const totalAmount = targets.reduce((a, b) => a + Number(b.commissionAmount || 0), 0);
       const now = new Date();
@@ -3132,35 +3510,10 @@ async function handleRoute(request, { params }) {
       const id = path[1];
       const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
       if (!po) return err('Not found', 404);
+      if (po.pipelineStatus === 'Dibatalkan') return err('PO sudah dibatalkan — tidak bisa dibayar');
       const body = await request.json();
       if (!body.amount || Number(body.amount) <= 0) return err('amount > 0 required');
-      const p = {
-        id: uuidv4(),
-        purchaseOrderId: id,
-        paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
-        amount: Number(body.amount),
-        method: body.method || 'Transfer',
-        accountCode: body.accountCode || null,
-        reference: body.reference || null,
-        isDp: !!body.isDp,
-        notes: body.notes || null,
-        createdBy: session.user.email,
-        createdAt: new Date(),
-      };
-      db.insert(s.purchasePayments).values(p).run();
-      // Update paid_amount + payment_status
-      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, id)).get();
-      const totalPaid = Number(paid?.sum || 0);
-      const totalReturnsRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, id)).get();
-      const totalReturns = Number(totalReturnsRow?.sum || 0);
-      const netTotal = Number(po.totalAmount) - totalReturns;
-      let ps = 'unpaid';
-      if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
-      else if (totalPaid > 0) ps = 'partial';
-      const upd = { paidAmount: totalPaid, paymentStatus: ps, updatedAt: new Date() };
-      // If fully paid AND status is Tanda Terima, auto move to Selesai
-      if (ps === 'paid' && po.pipelineStatus === 'Tanda Terima') upd.pipelineStatus = 'Selesai';
-      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, id)).run();
+      const p = recordPoPayment(po, body, session.user.email);
       return json({ data: p }, { status: 201 });
     }
 
@@ -4806,6 +5159,7 @@ async function handleRoute(request, { params }) {
       const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
       if (!so) return err('Not found', 404);
       if (!so.markupEnabled || !(Number(so.cashbackAmount) > 0)) return err('SO ini tidak punya cashback (Faktur di-up)', 400);
+      if (so.pipelineStatus === 'Cancelled') return err('SO sudah dibatalkan — cashback tidak bisa dikembalikan', 400);
       let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
       const file = form.get('file');
       const note = form.get('note') ? String(form.get('note')).slice(0, 500) : null;
@@ -7327,6 +7681,8 @@ async function handleRouteWithBackup(request, ctx) {
       try { await miscMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
       // Phase 11: diff-persist any leads / lead_tasks rows this request changed (concurrency-safe).
       try { await crmMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
+      // Phase 12: diff-persist any rekap tagihan (template/rekap/baris) rows this request changed.
+      try { await recapMongo.persistSnapshotDiff(request, getRawSqlite()); } catch { /* best-effort */ }
     }
   } catch { /* never let post-write hooks break the response */ }
   return res;

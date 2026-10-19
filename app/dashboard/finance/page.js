@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useSession } from '@/lib/auth/auth-client';
 import useSWR from 'swr';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -13,13 +15,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { GenerateRecapDialog, RecapTemplateDialog } from '@/components/bill-recap-dialogs';
+import { RECAP_STATUS_LABEL } from '@/lib/finance/recap-fields';
 import {
   Wallet, Loader2, Search, ReceiptText, FileText, HandCoins, Gift,
-  ArrowDownCircle, ArrowUpCircle, CalendarRange, X,
+  ArrowDownCircle, ArrowUpCircle, CalendarRange, X, FileStack, Settings2, FolderOpen,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const tgl = (d) => { if (!d) return '-'; const t = new Date(d); return isNaN(t.getTime()) ? '-' : t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }); };
 
 // Nomor dokumen yang bisa diklik menuju halaman detail (SO/PO).
 function DocLink({ href, children }) {
@@ -31,14 +38,20 @@ function DocLink({ href, children }) {
   );
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, note }) {
   const paid = status === 'Lunas' || status === 'Dikembalikan';
+  const cancelled = status === 'Dibatalkan';
   return (
-    <Badge variant="outline" className={paid
-      ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-      : 'bg-amber-100 text-amber-700 border-amber-200'}>
-      {status}
-    </Badge>
+    <span className="inline-flex flex-col items-center gap-0.5">
+      <Badge variant="outline" className={cancelled
+        ? 'bg-red-100 text-red-700 border-red-200'
+        : paid
+          ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+          : 'bg-amber-100 text-amber-700 border-amber-200'}>
+        {status}
+      </Badge>
+      {note && <span className="text-[10px] leading-tight text-red-600 max-w-[140px]">{note}</span>}
+    </span>
   );
 }
 
@@ -66,14 +79,48 @@ function SummaryCard({ icon: Icon, label, value, sub, tone = 'default' }) {
   );
 }
 
-function useFilter(rows, keys) {
+// Pencarian + urutan per kolom. Default: tanggal order terbaru di atas.
+const SORT_DATE_KEYS = ['orderDate'];
+function useFilter(rows, keys, defaultSort = { key: 'orderDate', dir: 'desc' }) {
   const [q, setQ] = useState('');
+  const [sort, setSort] = useState(defaultSort);
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    if (!term) return rows;
-    return rows.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(term)));
-  }, [rows, q, keys]);
-  return { q, setQ, filtered };
+    const base = term ? rows.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(term))) : rows;
+    const { key, dir } = sort;
+    const val = (r) => {
+      const v = r[key];
+      if (SORT_DATE_KEYS.includes(key)) { const t = v ? new Date(v).getTime() : NaN; return isNaN(t) ? null : t; }
+      return v;
+    };
+    const sorted = [...base].sort((a, b) => {
+      const va = val(a); const vb = val(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1; // kosong selalu di bawah
+      if (vb == null) return -1;
+      const c = (typeof va === 'number' && typeof vb === 'number') ? va - vb : String(va).localeCompare(String(vb), 'id', { numeric: true, sensitivity: 'base' });
+      return dir === 'asc' ? c : -c;
+    });
+    return sorted;
+  }, [rows, q, keys, sort]);
+  const toggleSort = (key) => setSort(s => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: SORT_DATE_KEYS.includes(key) ? 'desc' : 'asc' }));
+  return { q, setQ, filtered, sort, toggleSort };
+}
+
+// Judul kolom yang bisa diklik untuk mengurutkan (klik lagi = balik arah).
+function SortHead({ f, k, children, className = '' }) {
+  const active = f.sort.key === k;
+  const Icon = !active ? ArrowUpDown : f.sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  const right = className.includes('text-right');
+  const center = className.includes('text-center');
+  return (
+    <TableHead className={className} aria-sort={active ? (f.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" onClick={() => f.toggleSort(k)}
+        className={`inline-flex items-center gap-1 hover:text-foreground ${active ? 'text-foreground font-semibold' : ''} ${right ? 'flex-row-reverse' : ''} ${center ? 'justify-center w-full' : ''}`}>
+        {children}<Icon className={`w-3.5 h-3.5 shrink-0 ${active ? '' : 'opacity-40'}`} />
+      </button>
+    </TableHead>
+  );
 }
 
 function SearchBar({ q, setQ, placeholder }) {
@@ -208,6 +255,19 @@ function RefundCashbackDialog({ row, accounts, onDone }) {
 }
 
 export default function FinancePage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  // Sama dengan requireRole() di server: akuntan setara admin (generate rekap & atur template).
+  const isRecapAdmin = ['admin', 'akuntan'].includes(session?.user?.role);
+  const [tab, setTab] = useState('invoiceSO');
+  useEffect(() => {
+    try { const t = new URLSearchParams(window.location.search).get('tab'); if (t) setTab(t); } catch { /* ignore */ }
+  }, []);
+  const [selectedPO, setSelectedPO] = useState([]);
+  const [genOpen, setGenOpen] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const { data: recapList, mutate: mutateRecaps } = useSWR('/api/finance/recaps?docType=PO', fetcher, { revalidateOnFocus: false });
+  const recaps = recapList?.data || [];
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const qs = new URLSearchParams();
@@ -215,6 +275,8 @@ export default function FinancePage() {
   if (to) qs.set('to', to);
   const key = `/api/finance/overview${qs.toString() ? '?' + qs.toString() : ''}`;
   const { data, isLoading, mutate } = useSWR(key, fetcher, { revalidateOnFocus: false });
+  // Ganti periode -> kosongkan pilihan agar invoice yang tidak lagi tampil tidak ikut terekap.
+  useEffect(() => { setSelectedPO([]); }, [key]);
   const [accounts, setAccounts] = useState([]);
   useEffect(() => {
     fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
@@ -228,14 +290,19 @@ export default function FinancePage() {
 
   const soF = useFilter(invoiceSO, ['number', 'soNumber', 'party', 'status']);
   const poF = useFilter(invoicePO, ['number', 'poNumber', 'party', 'status']);
+  const canRecapPO = (r) => !r.recap && !['Draft', 'Dibatalkan'].includes(r.pipelineStatus);
+  const selectablePO = poF.filtered.filter(canRecapPO);
+  const selectedPORows = invoicePO.filter(r => selectedPO.includes(r.id));
   const komF = useFilter(komisi, ['soNumber', 'party', 'status']);
   const cbF = useFilter(cashback, ['soNumber', 'party', 'status']);
 
   const sum = (arr, k) => arr.reduce((a, b) => a + Number(b[k] || 0), 0);
-  const piutangSO = sum(invoiceSO.filter(r => r.status !== 'Lunas'), 'outstanding');
-  const utangPO = sum(invoicePO.filter(r => r.status !== 'Lunas'), 'outstanding');
-  const komisiBelum = sum(komisi.filter(r => r.status !== 'Lunas'), 'amount');
-  const cashbackBelum = sum(cashback.filter(r => r.status !== 'Dikembalikan'), 'amount');
+  // Dokumen dibatalkan (cancelled) tetap tampil bila sudah ada uang bergerak, tapi TIDAK dihitung di ringkasan.
+  const openRows = (arr, done) => arr.filter(r => !r.cancelled && r.status !== done);
+  const piutangSO = sum(openRows(invoiceSO, 'Lunas'), 'outstanding');
+  const utangPO = sum(openRows(invoicePO, 'Lunas'), 'outstanding');
+  const komisiBelum = sum(openRows(komisi, 'Lunas'), 'amount');
+  const cashbackBelum = sum(openRows(cashback, 'Dikembalikan'), 'amount');
 
   const setThisMonth = () => {
     const now = new Date();
@@ -281,10 +348,10 @@ export default function FinancePage() {
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <SummaryCard icon={ArrowDownCircle} tone="blue" label="Piutang SO (Belum Lunas)" value={rp(piutangSO)} sub={`${invoiceSO.filter(r => r.status !== 'Lunas').length} invoice belum lunas`} />
-        <SummaryCard icon={ArrowUpCircle} tone="red" label="Utang PO (Belum Lunas)" value={rp(utangPO)} sub={`${invoicePO.filter(r => r.status !== 'Lunas').length} invoice belum lunas`} />
-        <SummaryCard icon={HandCoins} tone="amber" label="Komisi Belum Dibayar" value={rp(komisiBelum)} sub={`${komisi.filter(r => r.status !== 'Lunas').length} dari ${komisi.length} komisi`} />
-        <SummaryCard icon={Gift} tone="green" label="Cashback Belum Dikembalikan" value={rp(cashbackBelum)} sub={`${cashback.filter(r => r.status !== 'Dikembalikan').length} dari ${cashback.length} cashback`} />
+        <SummaryCard icon={ArrowDownCircle} tone="blue" label="Piutang SO (Belum Lunas)" value={rp(piutangSO)} sub={`${openRows(invoiceSO, 'Lunas').length} invoice belum lunas`} />
+        <SummaryCard icon={ArrowUpCircle} tone="red" label="Utang PO (Belum Lunas)" value={rp(utangPO)} sub={`${openRows(invoicePO, 'Lunas').length} invoice belum lunas`} />
+        <SummaryCard icon={HandCoins} tone="amber" label="Komisi Belum Dibayar" value={rp(komisiBelum)} sub={`${openRows(komisi, 'Lunas').length} dari ${komisi.filter(r => !r.cancelled).length} komisi`} />
+        <SummaryCard icon={Gift} tone="green" label="Cashback Belum Dikembalikan" value={rp(cashbackBelum)} sub={`${openRows(cashback, 'Dikembalikan').length} dari ${cashback.filter(r => !r.cancelled).length} cashback`} />
       </div>
 
       {isLoading ? (
@@ -294,7 +361,7 @@ export default function FinancePage() {
       ) : data?.error ? (
         <div className="py-24 text-center text-muted-foreground">Anda tidak memiliki akses ke halaman ini.</div>
       ) : (
-      <Tabs defaultValue="invoiceSO">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="grid w-full grid-cols-2 md:grid-cols-4">
           <TabsTrigger value="invoiceSO"><ReceiptText className="w-4 h-4 mr-1" />Invoice SO</TabsTrigger>
           <TabsTrigger value="invoicePO"><FileText className="w-4 h-4 mr-1" />Invoice PO</TabsTrigger>
@@ -315,15 +382,16 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. Invoice</TableHead><TableHead>No. SO</TableHead><TableHead>Customer</TableHead>
-                      <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Dibayar</TableHead>
-                      <TableHead className="text-right">Sisa</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={soF} k="orderDate">Tgl Order</SortHead><SortHead f={soF} k="number">No. Invoice</SortHead><SortHead f={soF} k="soNumber">No. SO</SortHead><SortHead f={soF} k="party">Customer</SortHead>
+                      <SortHead f={soF} k="total" className="text-right">Total</SortHead><SortHead f={soF} k="paid" className="text-right">Dibayar</SortHead>
+                      <SortHead f={soF} k="outstanding" className="text-right">Sisa</SortHead><SortHead f={soF} k="status" className="text-center">Status</SortHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {soF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {soF.filtered.length === 0 && (<TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {soF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.number}</DocLink></TableCell>
                         <TableCell><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
@@ -338,7 +406,7 @@ export default function FinancePage() {
                             <span className="text-muted-foreground">Rp 0</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? `SO batal — sudah dibayar ${rp(r.paid)}, perlu refund/klarifikasi` : null} /></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -356,27 +424,73 @@ export default function FinancePage() {
               <CardDescription>Daftar invoice Purchase Order beserta status pembayaran.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <SearchBar q={poF.q} setQ={poF.setQ} placeholder="Cari no. invoice / PO / supplier..." />
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <SearchBar q={poF.q} setQ={poF.setQ} placeholder="Cari no. invoice / PO / supplier..." />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value="" onValueChange={(v) => router.push(`/dashboard/finance/recaps/${v}`)}>
+                    <SelectTrigger className="w-[260px]"><FolderOpen className="w-4 h-4 mr-1 text-muted-foreground" /><SelectValue placeholder={`Rekap Tersimpan (${recaps.length})`} /></SelectTrigger>
+                    <SelectContent>
+                      {recaps.length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">Belum ada rekap</div>}
+                      {recaps.map(r => (
+                        <SelectItem key={r.id} value={r.id}>
+                          <span className="font-mono text-xs mr-1">{r.recapNumber}</span> {r.title}{r.subtitle ? ` · ${r.subtitle}` : ''} — {rp(r.totalAmount)} ({RECAP_STATUS_LABEL[r.status] || r.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {isRecapAdmin && <Button variant="outline" onClick={() => setTplOpen(true)}><Settings2 className="w-4 h-4 mr-1" />Template Rekap</Button>}
+                  {isRecapAdmin && <Button onClick={() => setGenOpen(true)} disabled={!selectedPO.length}><FileStack className="w-4 h-4 mr-1" />Generate Rekap{selectedPO.length ? ` (${selectedPO.length})` : ''}</Button>}
+                </div>
+              </div>
+              {isRecapAdmin && <p className="text-[11px] text-muted-foreground">Centang invoice yang akan dijadikan satu rekap. Invoice yang sudah masuk rekap tidak bisa dipilih lagi.</p>}
               <div className="rounded-lg border overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. Invoice</TableHead><TableHead>No. PO</TableHead><TableHead>Supplier</TableHead>
-                      <TableHead className="text-right">Total</TableHead><TableHead className="text-right">Dibayar</TableHead>
-                      <TableHead className="text-right">Sisa</TableHead><TableHead className="text-center">Status</TableHead>
+                      {isRecapAdmin && (
+                        <TableHead className="w-10">
+                          <Checkbox
+                            checked={selectablePO.length > 0 && selectablePO.every(r => selectedPO.includes(r.id))}
+                            onCheckedChange={(v) => setSelectedPO(v ? [...new Set([...selectedPO, ...selectablePO.map(r => r.id)])] : selectedPO.filter(id => !selectablePO.some(r => r.id === id)))}
+                            aria-label="Pilih semua"
+                          />
+                        </TableHead>
+                      )}
+                      <SortHead f={poF} k="orderDate">Tgl Order</SortHead><SortHead f={poF} k="number">No. Invoice</SortHead><SortHead f={poF} k="poNumber">No. PO</SortHead><SortHead f={poF} k="party">Supplier</SortHead>
+                      <SortHead f={poF} k="total" className="text-right">Total</SortHead><SortHead f={poF} k="paid" className="text-right">Dibayar</SortHead>
+                      <SortHead f={poF} k="outstanding" className="text-right">Sisa</SortHead><SortHead f={poF} k="status" className="text-center">Status</SortHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {poF.filtered.length === 0 && (<TableRow><TableCell colSpan={isRecapAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {poF.filtered.map(r => (
-                      <TableRow key={r.id}>
-                        <TableCell className="font-medium"><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink></TableCell>
+                      <TableRow key={r.id} className={selectedPO.includes(r.id) ? 'bg-emerald-50/60' : ''}>
+                        {isRecapAdmin && (
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedPO.includes(r.id)}
+                              disabled={!canRecapPO(r)}
+                              title={r.recap ? `Sudah masuk rekap ${r.recap.recapNumber}` : !canRecapPO(r) ? `PO ${r.pipelineStatus}` : ''}
+                              onCheckedChange={(v) => setSelectedPO(v ? [...selectedPO, r.id] : selectedPO.filter(id => id !== r.id))}
+                              aria-label={`Pilih ${r.number}`}
+                            />
+                          </TableCell>
+                        )}
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
+                        <TableCell className="font-medium">
+                          <DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.number}</DocLink>
+                          {r.recap && (
+                            <Link href={`/dashboard/finance/recaps/${r.recap.recapId}`} className="ml-2">
+                              <Badge variant="outline" className="text-[10px] bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100">{r.recap.recapNumber}</Badge>
+                            </Link>
+                          )}
+                        </TableCell>
                         <TableCell><DocLink href={`/dashboard/purchase-orders/${r.id}`}>{r.poNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right">{rp(r.total)}</TableCell>
                         <TableCell className="text-right text-emerald-700">{rp(r.paid)}</TableCell>
                         <TableCell className="text-right text-red-600 font-semibold">{rp(r.outstanding)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? `PO batal — sudah dibayar ${rp(r.paid)}, perlu klarifikasi ke supplier` : null} /></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -399,21 +513,22 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. SO</TableHead><TableHead>Penerima (Dropshipper)</TableHead>
-                      <TableHead className="text-right">Nilai Komisi</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={komF} k="orderDate">Tgl Order</SortHead><SortHead f={komF} k="soNumber">No. SO</SortHead><SortHead f={komF} k="party">Penerima (Dropshipper)</SortHead>
+                      <SortHead f={komF} k="amount" className="text-right">Nilai Komisi</SortHead><SortHead f={komF} k="status" className="text-center">Status</SortHead>
                       <TableHead className="text-right">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {komF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {komF.filtered.length === 0 && (<TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {komF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={r.salesOrderId ? `/dashboard/sales-orders/${r.salesOrderId}` : null}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? 'SO batal — komisi sudah terlanjur dibayar' : null} /></TableCell>
                         <TableCell className="text-right">
-                          {r.status !== 'Lunas' ? <PayCommissionDialog rec={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
+                          {r.status !== 'Lunas' && !r.cancelled ? <PayCommissionDialog rec={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -437,21 +552,22 @@ export default function FinancePage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>No. SO</TableHead><TableHead>Penerima</TableHead>
-                      <TableHead className="text-right">Nilai Cashback</TableHead><TableHead className="text-center">Status</TableHead>
+                      <SortHead f={cbF} k="orderDate">Tgl Order</SortHead><SortHead f={cbF} k="soNumber">No. SO</SortHead><SortHead f={cbF} k="party">Penerima</SortHead>
+                      <SortHead f={cbF} k="amount" className="text-right">Nilai Cashback</SortHead><SortHead f={cbF} k="status" className="text-center">Status</SortHead>
                       <TableHead className="text-right">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {cbF.filtered.length === 0 && (<TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
+                    {cbF.filtered.length === 0 && (<TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">Tidak ada data</TableCell></TableRow>)}
                     {cbF.filtered.map(r => (
                       <TableRow key={r.id}>
+                        <TableCell className="whitespace-nowrap text-sm">{tgl(r.orderDate)}</TableCell>
                         <TableCell className="font-medium"><DocLink href={`/dashboard/sales-orders/${r.id}`}>{r.soNumber}</DocLink></TableCell>
                         <TableCell>{r.party}</TableCell>
                         <TableCell className="text-right font-semibold">{rp(r.amount)}</TableCell>
-                        <TableCell className="text-center"><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-center"><StatusBadge status={r.status} note={r.cancelled ? 'SO batal — cashback sudah terlanjur dikembalikan' : null} /></TableCell>
                         <TableCell className="text-right">
-                          {r.status !== 'Dikembalikan' ? <RefundCashbackDialog row={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
+                          {r.status !== 'Dikembalikan' && !r.cancelled ? <RefundCashbackDialog row={r} accounts={accounts} onDone={mutate} /> : <span className="text-xs text-muted-foreground">—</span>}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -462,6 +578,18 @@ export default function FinancePage() {
           </Card>
         </TabsContent>
       </Tabs>
+      )}
+      {isRecapAdmin && (
+        <>
+          <GenerateRecapDialog
+            open={genOpen}
+            onOpenChange={setGenOpen}
+            docIds={selectedPO}
+            selectedRows={selectedPORows}
+            onCreated={(r) => { setGenOpen(false); setSelectedPO([]); mutate(); mutateRecaps(); router.push(`/dashboard/finance/recaps/${r.id}`); }}
+          />
+          <RecapTemplateDialog open={tplOpen} onOpenChange={setTplOpen} />
+        </>
       )}
     </div>
   );

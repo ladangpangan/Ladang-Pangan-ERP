@@ -73,6 +73,8 @@ agenthub/agents/youtube/db
 # JSON backups auto-written before a Rollback/Hapus SO-PO action (lib/ops/so-po-rollback.js) —
 # contain real customer/transaction data, must never be committed.
 /data/backups/
+# Uploaded files (bukti transfer, dokumen GRN, dll) — data riil, jangan di-commit.
+/data/uploads/
 
 # Archive files and large assets
 **/*.zip
