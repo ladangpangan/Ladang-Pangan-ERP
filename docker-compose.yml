@@ -30,6 +30,15 @@ services:
       # Persists the SQLite DB and uploaded files (contracts, cashback proofs, etc.) across
       # container rebuilds/redeploys. `data/uploads` is used regardless of DB_PATH (see route.js).
       - ./data:/app/data
+    # Jaringan: "default" (seperti sebelumnya) + "lpi-internal" = jalur DALAM SERVER ke Productivity App
+    # (produktifitas.ladangpangan.id) untuk integrasi, tanpa lewat internet. Di jaringan itu ERP dikenal
+    # dengan nama "erp" (Productivity App menarik dari http://erp:3000/api/integrasi/peristiwa) dan
+    # Productivity App dengan nama "produktivitas" (ERP mengirim ke http://produktivitas:3000/api/integrasi/erp).
+    # SEKALI SAJA sebelum deploy pertama, di VPS:  docker network create lpi-internal   (lihat deploy/INTEGRASI_PRODUCTIVITY.md)
+    networks:
+      default: {}
+      lpi-internal:
+        aliases: [erp]
     healthcheck:
       # No dedicated /api/health route exists in this app; the root page is a safe proxy for
       # "server is up and responding".
@@ -38,3 +47,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+networks:
+  lpi-internal:
+    external: true
