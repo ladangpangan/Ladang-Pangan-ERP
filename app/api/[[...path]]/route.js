@@ -289,6 +289,7 @@ const MISC_PATHS = new Set([
   'notifications', 'contacts', 'settings',
   'purchase-orders', 'sales-orders', 'tally-outbound', 'tally-sessions',
   'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
+  'finance', // notifikasi Rekap Tagihan (Ajukan ke Finance / Dibayar)
 ]);
 
 // Phase 11: path[0] prefixes that READ or WRITE leads / lead_tasks (CRM pipeline & follow-up).
@@ -1412,6 +1413,44 @@ async function handleRoute(request, { params }) {
       return json({ data: { invoiceSO, invoicePO, komisi, cashback } });
     }
 
+    // Catat 1 pembayaran PO + perbarui paid_amount/payment_status (dipakai POST /purchase-orders/:id/payments
+    // dan "Bayar Rekap"). Jurnal pembayaran dibuat otomatis oleh engine akuntansi dari purchase_payments.
+    const recordPoPayment = (po, body, email) => {
+      const p = {
+        id: uuidv4(),
+        purchaseOrderId: po.id,
+        paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
+        amount: Number(body.amount),
+        method: body.method || 'Transfer',
+        accountCode: body.accountCode || null,
+        reference: body.reference || null,
+        isDp: !!body.isDp,
+        notes: body.notes || null,
+        createdBy: email,
+        createdAt: new Date(),
+      };
+      db.insert(s.purchasePayments).values(p).run();
+      // Update paid_amount + payment_status
+      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, po.id)).get();
+      const totalPaid = Number(paid?.sum || 0);
+      const totalReturnsRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+      const totalReturns = Number(totalReturnsRow?.sum || 0);
+      const netTotal = Number(po.totalAmount) - totalReturns;
+      let ps = 'unpaid';
+      if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
+      else if (totalPaid > 0) ps = 'partial';
+      const upd = { paidAmount: totalPaid, paymentStatus: ps, updatedAt: new Date() };
+      // If fully paid AND status is Tanda Terima, auto move to Selesai
+      if (ps === 'paid' && po.pipelineStatus === 'Tanda Terima') upd.pipelineStatus = 'Selesai';
+      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, po.id)).run();
+      return p;
+    };
+    // Sisa tagihan PO terkini = total - dibayar - retur (dibulatkan ke rupiah).
+    const poOutstanding = (po) => {
+      const ret = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
+      return Math.max(0, Math.round(Number(po.totalAmount || 0) - Number(po.paidAmount || 0) - Number(ret?.sum || 0)));
+    };
+
     // ---------- REKAP TAGIHAN (Keuangan → Invoice PO) ----------
     // Tim memilih beberapa invoice PO -> Generate Rekap (angka dikunci sbg snapshot). Rekap tersimpan
     // dibuka lewat dropdown; koreksi data sesudahnya tampil di kolom Keterangan, tidak mengubah angka.
@@ -1443,6 +1482,40 @@ async function handleRoute(request, { params }) {
     };
     const clearOtherDefaults = (docType, keepId) => {
       db.update(s.billRecapTemplates).set({ isDefault: false }).where(and(eq(s.billRecapTemplates.docType, docType), ne(s.billRecapTemplates.id, keepId))).run();
+    };
+
+    const RECAP_PAY_ROLES = ['akuntan', 'direktur'];
+    // Per supplier di rekap: rekening tujuan + sisa tagihan TERKINI (dari PO, bukan snapshot) + riwayat bayar.
+    const recapPaymentInfo = (recap, items) => {
+      const docIds = [...new Set(items.map(i => i.docId))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all() : [];
+      const bySup = {};
+      for (const po of pos) {
+        const sup = (bySup[po.supplierId] ||= { supplierId: po.supplierId, pos: [], outstanding: 0 });
+        if (po.pipelineStatus === 'Dibatalkan') continue;
+        const out = poOutstanding(po);
+        sup.pos.push({ id: po.id, poNumber: po.poNumber, invoiceNumber: po.invoiceNumber, outstanding: out });
+        sup.outstanding += out;
+      }
+      const payments = db.select().from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).orderBy(s.billRecapPayments.createdAt).all()
+        .map(p => ({ ...p, poPaymentIds: parseJson(p.poPaymentIds, []), proofUrl: p.proofKey ? `/api/finance/recaps/${recap.id}/payments/${p.id}/proof` : null, proofKey: undefined }));
+      const suppliers = Object.values(bySup).map(x => {
+        const c = db.select().from(s.contacts).where(eq(s.contacts.id, x.supplierId)).get();
+        return { ...x, name: c?.displayName || c?.companyName || '-', bankName: c?.bankName || null, bankAccount: c?.bankAccount || null, bankHolder: c?.bankHolder || null, paidViaRecap: payments.filter(p => p.supplierId === x.supplierId).reduce((a, p) => a + Number(p.amount || 0), 0) };
+      });
+      return { payments, suppliers };
+    };
+    // Status rekap otomatis 'dibayar' bila semua PO (yang tidak batal) di dalamnya sudah tidak bersisa.
+    const refreshRecapPaidStatus = (recapId, email) => {
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, recapId)).get();
+      if (!recap || recap.status !== 'diajukan') return recap?.status;
+      const docIds = [...new Set(db.select({ d: s.billRecapItems.docId }).from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recapId)).all().map(r => r.d))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(inArray(s.purchaseOrder.id, docIds)).all() : [];
+      const done = pos.every(po => po.pipelineStatus === 'Dibatalkan' || poOutstanding(po) <= 0);
+      if (!done) return recap.status;
+      db.update(s.billRecaps).set({ status: 'dibayar', paidAt: new Date(), paidBy: email, updatedAt: new Date() }).where(eq(s.billRecaps.id, recapId)).run();
+      createNotification({ roles: ['admin'], type: 'success', category: 'finance', title: `Rekap ${recap.recapNumber} sudah dibayar`, message: recap.title, entityType: 'REKAP', entityId: recapId, entityNumber: recap.recapNumber, linkPath: `/dashboard/finance/recaps/${recapId}` });
+      return 'dibayar';
     };
 
     // GET /finance/recap-templates?docType=PO
@@ -1565,8 +1638,110 @@ async function handleRoute(request, { params }) {
       if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
       const items = db.select().from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).all();
       const view = billRecap.buildRecapView(db, recap, items);
-      return json({ data: { recap: { ...recap, columns: parseJson(recap.columns, []), options: parseJson(recap.options, {}) }, view } });
+      return json({ data: { recap: { ...recap, columns: parseJson(recap.columns, []), options: parseJson(recap.options, {}) }, view, ...recapPaymentInfo(recap, items) } });
     }
+    // ---- Fase 2: Ajukan ke Finance → Bayar Rekap (per supplier) ----
+    // POST /finance/recaps/:id/submit — Ajukan ke Finance (admin). Notifikasi ke akuntan & direktur.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'submit' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa mengajukan rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status !== 'draft') return err('Rekap ini sudah diajukan');
+      const now = new Date();
+      db.update(s.billRecaps).set({ status: 'diajukan', submittedAt: now, submittedBy: session.user.email, updatedAt: now }).where(eq(s.billRecaps.id, recap.id)).run();
+      createNotification({ roles: RECAP_PAY_ROLES, type: 'info', category: 'finance', priority: 'high', title: `Rekap tagihan ${recap.recapNumber} menunggu dibayar`, message: `${recap.title} — Rp ${Math.round(Number(recap.totalAmount || 0)).toLocaleString('id-ID')}`, entityType: 'REKAP', entityId: recap.id, entityNumber: recap.recapNumber, linkPath: `/dashboard/finance/recaps/${recap.id}` });
+      return json({ ok: true, status: 'diajukan' });
+    }
+    // POST /finance/recaps/:id/unsubmit — Batalkan pengajuan (admin), hanya bila belum ada pembayaran.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'unsubmit' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_ADMIN_ROLES)) return err('Hanya admin yang bisa membatalkan pengajuan', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status !== 'diajukan') return err('Rekap ini tidak sedang diajukan');
+      if (db.select({ id: s.billRecapPayments.id }).from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).get()) return err('Sudah ada pembayaran untuk rekap ini — pengajuan tidak bisa dibatalkan');
+      db.update(s.billRecaps).set({ status: 'draft', submittedAt: null, submittedBy: null, updatedAt: new Date() }).where(eq(s.billRecaps.id, recap.id)).run();
+      return json({ ok: true, status: 'draft' });
+    }
+    // POST /finance/recaps/:id/pay (multipart) — Bayar Rekap untuk SATU supplier (akuntan/direktur).
+    // Field: supplierId, paymentDate, accountCode, method, reference, notes, file (bukti, opsional).
+    // Melunasi sisa TERKINI tiap PO supplier tsb lewat recordPoPayment() -> jurnal otomatis.
+    if (route.startsWith('/finance/recaps/') && path.length === 4 && path[3] === 'pay' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_PAY_ROLES)) return err('Hanya akuntan & direktur yang bisa membayar rekap', 403);
+      const recap = db.select().from(s.billRecaps).where(eq(s.billRecaps.id, path[2])).get();
+      if (!recap || recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
+      if (recap.status === 'draft') return err('Rekap belum diajukan ke finance');
+      if (recap.status === 'dibayar') return err('Rekap ini sudah lunas');
+      let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
+      const supplierId = String(form.get('supplierId') || '');
+      if (!supplierId) return err('Pilih supplier yang dibayar');
+      const accountCode = form.get('accountCode') ? String(form.get('accountCode')) : null;
+      if (!accountCode) return err('Pilih rekening Kas/Bank sumber pembayaran');
+      try {
+        const all = await coaMongo.coaList({ includeArchived: false });
+        const ok = (all || []).some(a => a.code === accountCode && String(a.code || '').startsWith('1-11'));
+        if (!ok) return err('Akun kas/bank tidak valid', 400);
+      } catch { /* best-effort: terima apa adanya bila COA gagal dibaca */ }
+      const items = db.select().from(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).all();
+      const docIds = [...new Set(items.map(i => i.docId))];
+      const pos = docIds.length ? db.select().from(s.purchaseOrder).where(and(inArray(s.purchaseOrder.id, docIds), eq(s.purchaseOrder.supplierId, supplierId))).all() : [];
+      if (!pos.length) return err('Supplier ini tidak ada di rekap');
+      const targets = pos.filter(po => po.pipelineStatus !== 'Dibatalkan').map(po => ({ po, amount: poOutstanding(po) })).filter(t => t.amount > 0);
+      if (!targets.length) return err('Tagihan supplier ini sudah lunas');
+      const paymentDate = form.get('paymentDate') ? String(form.get('paymentDate')).slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const method = String(form.get('method') || 'Transfer').slice(0, 20);
+      const reference = form.get('reference') ? String(form.get('reference')).slice(0, 200) : null;
+      const notes = form.get('notes') ? String(form.get('notes')).slice(0, 500) : null;
+      // Bukti transfer (opsional) — validasi dulu sebelum ada mutasi apa pun.
+      const file = form.get('file');
+      let proof = null;
+      if (file && typeof file.arrayBuffer === 'function' && file.size > 0) {
+        const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+        if (!ALLOWED.includes(file.type)) return err('Bukti hanya PDF, JPG, PNG, atau WEBP', 400);
+        if (file.size > 10 * 1024 * 1024) return err('Ukuran bukti maksimal 10MB', 400);
+        const bytes = Buffer.from(new Uint8Array(await file.arrayBuffer()));
+        const safeName = String(file.name || 'bukti-transfer').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 150);
+        const relDir = `recap/${recap.id}`;
+        const uploadRoot = nodePath.join(process.cwd(), 'data', 'uploads');
+        fs.mkdirSync(nodePath.join(uploadRoot, relDir), { recursive: true });
+        const storageKey = `${relDir}/${uuidv4()}_${safeName}`;
+        fs.writeFileSync(nodePath.join(uploadRoot, storageKey), bytes);
+        proof = { proofKey: storageKey, proofName: safeName, proofType: file.type };
+      }
+      const poPayments = [];
+      const refText = `${recap.recapNumber}${reference ? ' · ' + reference : ''}`;
+      for (const t of targets) {
+        const p = recordPoPayment(t.po, { amount: t.amount, paymentDate, method, accountCode, reference: refText, notes: notes || `Bayar Rekap ${recap.recapNumber}` }, session.user.email);
+        poPayments.push({ poId: t.po.id, poNumber: t.po.poNumber, paymentId: p.id, amount: t.amount });
+      }
+      const total = poPayments.reduce((a, p) => a + p.amount, 0);
+      const row = {
+        id: uuidv4(), recapId: recap.id, supplierId, amount: total, paymentDate: new Date(paymentDate), method, accountCode, reference, notes,
+        ...(proof || {}), poPaymentIds: JSON.stringify(poPayments), createdBy: session.user.email, createdAt: new Date(),
+      };
+      db.insert(s.billRecapPayments).values(row).run();
+      const status = refreshRecapPaidStatus(recap.id, session.user.email);
+      return json({ data: { id: row.id, amount: total, poCount: poPayments.length, status } }, { status: 201 });
+    }
+    // GET /finance/recaps/:id/payments/:pid/proof — file bukti transfer Bayar Rekap.
+    if (route.startsWith('/finance/recaps/') && path.length === 6 && path[3] === 'payments' && path[5] === 'proof' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, RECAP_VIEW_ROLES)) return err('Forbidden', 403);
+      const pay = db.select().from(s.billRecapPayments).where(and(eq(s.billRecapPayments.id, path[4]), eq(s.billRecapPayments.recapId, path[2]))).get();
+      if (!pay || !pay.proofKey) return err('Bukti tidak ditemukan', 404);
+      const abs = nodePath.join(process.cwd(), 'data', 'uploads', pay.proofKey);
+      if (!fs.existsSync(abs)) return err('File bukti tidak ditemukan di storage', 404);
+      const buf = fs.readFileSync(abs);
+      const ct = pay.proofType || 'application/octet-stream';
+      return new NextResponse(buf, { status: 200, headers: {
+        'Content-Type': ct, 'Content-Length': String(buf.length),
+        'Content-Disposition': `${(ct === 'application/pdf' || ct.startsWith('image/')) ? 'inline' : 'attachment'}; filename="${String(pay.proofName || 'bukti-transfer').replace(/"/g, '')}"`,
+        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      } });
+    }
+
     // DELETE /finance/recaps/:id — invoice di dalamnya bisa direkap ulang. Rekap berstatus Dibayar tidak bisa dihapus.
     // Header rekap tetap disimpan (status 'dihapus', tersembunyi) supaya nomor REK tidak pernah dipakai ulang.
     if (route.startsWith('/finance/recaps/') && path.length === 3 && method === 'DELETE') {
@@ -1576,6 +1751,7 @@ async function handleRoute(request, { params }) {
       if (!recap) return err('Rekap tidak ditemukan', 404);
       if (recap.status === 'dihapus') return err('Rekap tidak ditemukan', 404);
       if (recap.status === 'dibayar') return err('Rekap yang sudah dibayar tidak bisa dihapus');
+      if (db.select({ id: s.billRecapPayments.id }).from(s.billRecapPayments).where(eq(s.billRecapPayments.recapId, recap.id)).get()) return err('Rekap ini sudah ada pembayaran — tidak bisa dihapus');
       db.transaction((tx) => {
         tx.delete(s.billRecapItems).where(eq(s.billRecapItems.recapId, recap.id)).run();
         tx.update(s.billRecaps).set({ status: 'dihapus', updatedAt: new Date() }).where(eq(s.billRecaps.id, recap.id)).run();
@@ -3337,33 +3513,7 @@ async function handleRoute(request, { params }) {
       if (po.pipelineStatus === 'Dibatalkan') return err('PO sudah dibatalkan — tidak bisa dibayar');
       const body = await request.json();
       if (!body.amount || Number(body.amount) <= 0) return err('amount > 0 required');
-      const p = {
-        id: uuidv4(),
-        purchaseOrderId: id,
-        paymentDate: body.paymentDate ? new Date(body.paymentDate) : new Date(),
-        amount: Number(body.amount),
-        method: body.method || 'Transfer',
-        accountCode: body.accountCode || null,
-        reference: body.reference || null,
-        isDp: !!body.isDp,
-        notes: body.notes || null,
-        createdBy: session.user.email,
-        createdAt: new Date(),
-      };
-      db.insert(s.purchasePayments).values(p).run();
-      // Update paid_amount + payment_status
-      const paid = db.select({ sum: sql`coalesce(sum(amount),0)` }).from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, id)).get();
-      const totalPaid = Number(paid?.sum || 0);
-      const totalReturnsRow = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, id)).get();
-      const totalReturns = Number(totalReturnsRow?.sum || 0);
-      const netTotal = Number(po.totalAmount) - totalReturns;
-      let ps = 'unpaid';
-      if (totalPaid >= netTotal && netTotal > 0) ps = 'paid';
-      else if (totalPaid > 0) ps = 'partial';
-      const upd = { paidAmount: totalPaid, paymentStatus: ps, updatedAt: new Date() };
-      // If fully paid AND status is Tanda Terima, auto move to Selesai
-      if (ps === 'paid' && po.pipelineStatus === 'Tanda Terima') upd.pipelineStatus = 'Selesai';
-      db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, id)).run();
+      const p = recordPoPayment(po, body, session.user.email);
       return json({ data: p }, { status: 201 });
     }
 

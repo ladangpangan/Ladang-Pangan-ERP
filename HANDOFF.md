@@ -42,9 +42,15 @@ grand total); generate/hapus rekap & kelola template = admin (akuntan ikut, atur
   `lib/finance/recap-export.js`, UI `components/bill-recap-*.jsx` + `app/dashboard/finance/recaps/[id]/page.js`.
   Endpoint: `GET/POST /finance/recap-templates`, `PUT/DELETE /finance/recap-templates/:id`, `GET/POST /finance/recaps`
   (`preview:true` = pratinjau), `GET/DELETE /finance/recaps/:id` (hapus = status `dihapus`, nomor REK tidak dipakai ulang).
-- **Fase 2 — BELUM**: status Draft → Diajukan ke Finance (admin) → Dibayar; tombol "Bayar Rekap" (akuntan & direktur)
-  yang mencatat pembayaran per PO lewat `POST /purchase-orders/:id/payments` (dipisah per supplier). Kolom
-  `submitted_*`/`paid_*` sudah ada di `bill_recaps`.
+- **Fase 2 — SELESAI** (belum dicoba user di staging): Draft → **Ajukan ke Finance** (admin; notifikasi ke akuntan &
+  direktur) → **Bayar** per supplier (akuntan & direktur; rekening tujuan dari data Kontak, akun Kas/Bank wajib, bukti
+  transfer opsional di `data/uploads/recap/<id>/`) → status **Dibayar** otomatis bila semua PO (yg tidak batal) lunas.
+  Bayar melunasi sisa TERKINI tiap PO lewat helper `recordPoPayment()` (dipakai juga oleh `POST /purchase-orders/:id/payments`)
+  → jurnal otomatis; riwayat di tabel `bill_recap_payments`. Endpoint: `POST /finance/recaps/:id/submit|unsubmit|pay`,
+  `GET /finance/recaps/:id/payments/:pid/proof`. Rekap yang sudah ada pembayaran tidak bisa dihapus/dibatalkan pengajuannya.
+- **Keuangan (lainnya)**: kolom Tgl Order + sort per kolom di 4 tab; SO/PO **batal** disembunyikan kecuali sudah ada uang
+  bergerak (tampil label merah "Dibatalkan", tidak dihitung di ringkasan); bayar komisi/cashback SO batal & bayar PO batal
+  ditolak server; SO/PO **diarsipkan** disembunyikan.
 - **Fase 3 — BELUM**: rekap yang sama untuk Invoice SO (struktur sudah pakai `doc_type`).
 
 ## Koreksi arsitektur penting (session ini menemukan info yang salah di versi handoff sebelumnya)
