@@ -5,7 +5,8 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth/auth-client';
 import { BarcodeScanner } from '@/components/barcode-scanner';
-import { ArrowLeft, ArrowUpFromLine, ChevronRight, Loader2, ScanLine, Keyboard, ListChecks, Check, AlertCircle, Search, X, Snowflake } from 'lucide-react';
+import { WeightInput } from '@/components/ui/weight-input';
+import { ArrowLeft, ArrowUpFromLine, ChevronRight, Loader2, ScanLine, Keyboard, ListChecks, Check, AlertCircle, Search, X, Snowflake, Scale } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -67,6 +68,12 @@ export default function TallyOutboundPage() {
               <div><div className="text-[13px] text-[#5A687C]">Total berat</div><div className="text-2xl font-bold">{kg(done.kg)} <span className="text-sm font-medium text-[#5A687C]">kg</span></div></div>
             </div>
             <div className="text-sm text-[#5A687C]">{done.complete ? 'Karung sudah dikunci untuk pesanan ini.' : 'Karung sudah dikunci. Pesanan belum lengkap, bisa dilanjutkan nanti.'}</div>
+            {done.reweigh?.length > 0 && (
+              <div className="w-full mt-1 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl px-3.5 py-3 text-left text-sm">
+                <b>{done.reweigh.reduce((a, o) => a + o.count, 0)} karung ditimbang ulang</b>, menunggu persetujuan admin
+                ({done.reweigh.map(o => o.opnameNumber).join(', ')}). Berat & tagihan berubah setelah disetujui.
+              </div>
+            )}
           </div>
           <div className="mt-auto flex flex-col gap-2.5">
             <button type="button" onClick={() => setDone(null)} className="min-h-[56px] rounded-xl text-white text-lg font-bold" style={{ background: ORANGE }}>Pesanan berikutnya</button>
@@ -130,6 +137,12 @@ function OrderScan({ soId, onDone }) {
   const [saveState, setSaveState] = useState('idle');
   const saveChain = useRef(Promise.resolve());
   const bagsRef = useRef(null);
+  // Timbang ulang: { [stockId]: beratBaru } — disimpan di HP sampai SO disimpan (lalu jadi Stock Opname)
+  const rwKey = `tallyOutRw:${soId}`;
+  const [rwMap, setRwMap] = useState(() => { try { return JSON.parse(localStorage.getItem(rwKey) || '{}'); } catch { return {}; } });
+  const [rwOpen, setRwOpen] = useState(false);
+  const [rwInput, setRwInput] = useState(0);
+  const setRw = (next) => { setRwMap(next); try { localStorage.setItem(rwKey, JSON.stringify(next)); } catch {} };
 
   useEffect(() => {
     if (!so || bags) return;
@@ -147,7 +160,7 @@ function OrderScan({ soId, onDone }) {
   const items = so?.items || [];
   const lines = items.map(it => {
     const mine = (bags && bags[it.id]) || [];
-    const got = mine.reduce((a, b) => a + b.weight, 0);
+    const got = mine.reduce((a, b) => a + Number(rwMap[b.stockId] ?? b.weight), 0);
     const need = Number(it.orderedWeight || 0);
     const diff = got - need;
     let status, color, bar;
@@ -158,6 +171,8 @@ function OrderScan({ soId, onDone }) {
     return { ...it, mine, got, need, status, color, bar, pct: need > 0 ? Math.min(100, Math.round((got / need) * 100)) : 0, ok: got >= need - 0.05 };
   });
   const allOk = lines.length > 0 && lines.every(l => l.ok);
+  const lastOrd = order[order.length - 1];
+  const lastBag = lastOrd && bags ? (bags[lastOrd.itemId] || []).find(b => b.stockId === lastOrd.stockId) : null;
   const totalBags = lines.reduce((a, l) => a + l.mine.length, 0);
   const totalKg = lines.reduce((a, l) => a + l.got, 0);
 
@@ -222,6 +237,8 @@ function OrderScan({ soId, onDone }) {
     bagsRef.current = next;
     setBags(next);
     setOrder(o => o.slice(0, -1));
+    if (rwMap[last.stockId] !== undefined) { const n = { ...rwMap }; delete n[last.stockId]; setRw(n); }
+    setRwOpen(false);
     setResult({ ok: false, title: 'Dibatalkan', text: `${bag?.code || 'Karung'} dikeluarkan dari daftar.` });
     saveDraft(last.itemId);
   };
@@ -243,8 +260,21 @@ function OrderScan({ soId, onDone }) {
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(`${l.productName}: ${j.error || 'Gagal menyimpan'}`);
       }
+      const rwItems = lines.flatMap(l => l.mine.filter(b => rwMap[b.stockId] !== undefined && Math.abs(Number(rwMap[b.stockId]) - b.weight) >= 0.01)
+        .map(b => ({ stockId: b.stockId, weight: Number(rwMap[b.stockId]) })));
+      let reweigh = [];
+      if (rwItems.length) {
+        const res = await fetch(`/api/tally-outbound/orders/${soId}/reweigh`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: rwItems }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`Karung sudah dikunci, tapi timbang ulang gagal dikirim: ${j.error || 'error'}. Tekan Simpan lagi.`);
+        reweigh = j.data?.opnames || [];
+      }
+      try { localStorage.removeItem(rwKey); } catch {}
       mutate();
-      onDone({ soNumber: so.soNumber, customerName: so.customerName, bags: totalBags, kg: totalKg, complete: allOk });
+      onDone({ soNumber: so.soNumber, customerName: so.customerName, bags: totalBags, kg: totalKg, complete: allOk, reweigh });
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   };
@@ -275,9 +305,36 @@ function OrderScan({ soId, onDone }) {
       {result && (
         <div role="status" className={`rounded-xl px-3.5 py-3 flex gap-2.5 items-start border ${result.ok ? 'bg-[#EDF8F3] border-[#B7E4CF] text-[#0D6346]' : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'}`}>
           {result.ok ? <Check className="w-[22px] h-[22px] shrink-0" /> : <AlertCircle className="w-[22px] h-[22px] shrink-0 text-[#DC2828]" />}
-          <div>
+          <div className="flex-1">
             <div className="text-base font-bold">{result.title}</div>
             <div className="text-[15px]">{result.text}</div>
+            {result.ok && lastBag && !rwOpen && (
+              <button type="button" onClick={() => { setScanning(false); setRwInput(rwMap[lastBag.stockId] ?? 0); setRwOpen(true); }}
+                className="mt-2 min-h-[36px] px-3 rounded-lg border border-[#B7E4CF] bg-white text-[#0D6346] text-sm font-medium inline-flex items-center gap-1.5">
+                <Scale className="w-4 h-4" /> Timbang ulang
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {rwOpen && lastBag && (
+        <div className={`${card} p-4 flex flex-col gap-2.5`}>
+          <label htmlFor="rw" className="text-[15px] font-medium">Berat timbang ulang {lastBag.code} (kg)</label>
+          <div className="text-[13px] text-[#5A687C]">Berat saat masuk: {kg(lastBag.weight)} kg. Berat baru berlaku setelah disetujui admin.</div>
+          <WeightInput id="rw" value={rwInput} onChange={setRwInput} placeholder="0,0" className="h-[60px] text-[28px] font-bold text-center" autoFocus />
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setRwOpen(false)} className="min-h-[52px] rounded-xl border border-[#CBD5E1] bg-white text-base font-medium">Batal</button>
+            <button type="button" onClick={() => {
+              const w = Number(rwInput || 0);
+              if (!(w > 0)) { toast.error('Isi berat baru'); return; }
+              const next = { ...rwMap };
+              if (Math.abs(w - lastBag.weight) < 0.01) delete next[lastBag.stockId]; else next[lastBag.stockId] = w;
+              setRw(next);
+              setRwOpen(false);
+              const d = lastBag.weight - w;
+              setResult({ ok: true, title: `Berat dicatat: ${lastBag.code}`, text: `${kg(lastBag.weight)} → ${kg(w)} kg${d > 0 ? ` (susut ${kg(d)} kg)` : ''} · menunggu persetujuan admin` });
+            }} className="min-h-[52px] rounded-xl text-white text-base font-bold" style={{ background: ORANGE }}>Pakai berat ini</button>
           </div>
         </div>
       )}

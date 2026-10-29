@@ -223,6 +223,7 @@ function recommendStockCombo(lots, targetKg) {
 // numbers. Read-only full-replace hydrate => safe on any path (mutations still persist explicitly).
 const SALES_PATHS = new Set([
   'sales-orders', 'tally-outbound',
+  'opnames', // approve opname timbang ulang memperbarui berat alokasi SO Draft
   'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts', 'finance',
 ]);
 
@@ -249,7 +250,9 @@ const POTX_PATHS = new Set([
 // Phase 6: path[0] prefixes that READ or WRITE fixed_assets / stock_opname(+items).
 // fixed_assets CRUD lives under /accounting/fixed-assets; stock_opname under /opnames; the accounting
 // reports/engine read both (depreciation + shrinkage auto journals). Diff-persist, concurrency-safe.
-const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports']);
+// tally-outbound: timbang ulang membuat stock opname; sales-orders: konfirmasi SO dicegah selama
+// timbang ulang karungnya masih menunggu persetujuan.
+const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports', 'tally-outbound', 'sales-orders']);
 
 // Phase 7: path[0] prefixes that READ or WRITE Work Order (produksi) tables + approvals.
 // WO writers: work-orders, wo-stages, inventory (wo_outputs). Approvals are created via the
@@ -259,7 +262,7 @@ const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'repo
 const WO_APPROVAL_PATHS = new Set([
   'work-orders', 'wo-stages', 'inventory', 'sales-reports', 'production-reports',
   'accounting', 'dashboard', 'reports',
-  'approvals', 'purchase-orders', 'sales-orders', 'opnames',
+  'approvals', 'purchase-orders', 'sales-orders', 'opnames', 'tally-outbound',
 ]);
 
 // Phase 9: path[0] prefixes that READ or WRITE tally_session(+items) and/or inventory_transaction.
@@ -4719,6 +4722,12 @@ async function handleRoute(request, { params }) {
             const prod = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
             return err(`Item "${prod?.name || it.productId}" belum dipilih kode simpannya. Alokasikan kode simpan dulu.`);
           }
+          for (const a of allocs) {
+            const pending = db.select({ n: s.stockOpname.opnameNumber }).from(s.stockOpnameItems)
+              .innerJoin(s.stockOpname, eq(s.stockOpname.id, s.stockOpnameItems.opnameId))
+              .where(and(eq(s.stockOpnameItems.stockId, a.stockId), eq(s.stockOpname.status, 'submitted'), ne(s.stockOpnameItems.deltaWeight, 0))).get();
+            if (pending) return err(`Kode ${a.kodeSimpan} masih menunggu persetujuan timbang ulang (${pending.n}). Setujui atau tolak dulu di Stock Opname.`);
+          }
           for (const al of allocs) {
             // Kode simpan dikonsumsi penuh (whole storage unit)
             const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, al.stockId)).get();
@@ -7116,6 +7125,71 @@ async function handleRoute(request, { params }) {
 
     // ===== STOCK OPNAME =====
     // POST /opnames - create opname
+    // POST /tally-outbound/orders/:id/reweigh — Timbang ulang karung saat Tally Outbound.
+    // body: { items: [{ stockId, weight }] }. Berat TIDAK langsung diubah: dibuat Stock Opname
+    // (status submitted) per gudang yang menunggu persetujuan admin/supervisor. Saat disetujui,
+    // berat stok + alokasi SO Draft ikut diperbarui (lihat /opnames/:id/approve).
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 4 && path[3] === 'reweigh' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      if (so.pipelineStatus !== 'Draft') return err('Timbang ulang hanya untuk SO Draft');
+      const body = await request.json();
+      const reqItems = Array.isArray(body.items) ? body.items : [];
+      const byCs = new Map();
+      for (const r of reqItems) {
+        const w = Math.round(Number(r.weight || 0) * 1000) / 1000;
+        if (!(w > 0)) return err('Berat timbang ulang harus lebih dari 0');
+        const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, r.stockId)).get();
+        if (!stk) return err('Stok tidak ditemukan', 404);
+        const mine = db.select({ id: s.soItemStocks.id }).from(s.soItemStocks)
+          .where(and(eq(s.soItemStocks.stockId, stk.id), eq(s.soItemStocks.salesOrderId, soId))).get();
+        if (!mine) return err(`Kode ${stk.kodeSimpan} bukan karung pesanan ini`);
+        if (Math.abs(w - Number(stk.weight || 0)) < 0.01) continue;
+        const pending = db.select({ n: s.stockOpname.opnameNumber }).from(s.stockOpnameItems)
+          .innerJoin(s.stockOpname, eq(s.stockOpname.id, s.stockOpnameItems.opnameId))
+          .where(and(eq(s.stockOpnameItems.stockId, stk.id), eq(s.stockOpname.status, 'submitted'), ne(s.stockOpnameItems.deltaWeight, 0))).get();
+        if (pending) return err(`Kode ${stk.kodeSimpan} sudah ada timbang ulang yang menunggu persetujuan (${pending.n})`);
+        if (!byCs.has(stk.coldStorageId)) byCs.set(stk.coldStorageId, []);
+        byCs.get(stk.coldStorageId).push({ stk, w });
+      }
+      const created = [];
+      for (const [csId, rows] of byCs) {
+        const id = uuidv4();
+        const number = nextOpnameNumber();
+        const totalDW = Math.round(rows.reduce((a, r) => a + (r.w - Number(r.stk.weight || 0)), 0) * 1000) / 1000;
+        db.insert(s.stockOpname).values({
+          id, opnameNumber: number, opnameDate: new Date(), coldStorageId: csId,
+          status: 'submitted', totalDeltaWeight: totalDW, totalDeltaQty: 0,
+          notes: `Timbang ulang Tally Outbound ${so.soNumber}`,
+          createdBy: session.user.email, submittedAt: new Date(), createdAt: new Date(),
+        }).run();
+        for (const r of rows) {
+          const q = Number(r.stk.quantity || 0);
+          db.insert(s.stockOpnameItems).values({
+            id: uuidv4(), opnameId: id, stockId: r.stk.id,
+            systemQty: q, systemWeight: Number(r.stk.weight || 0), physicalQty: q, physicalWeight: r.w,
+            deltaQty: 0, deltaWeight: Math.round((r.w - Number(r.stk.weight || 0)) * 1000) / 1000,
+            notes: `Timbang ulang ${r.stk.kodeSimpan} untuk ${so.soNumber}`,
+          }).run();
+        }
+        const sign = totalDW > 0 ? '+' : '';
+        createApproval({
+          concernType: 'opname_variance', entityType: 'OPNAME', entityId: id, entityNumber: number,
+          title: `Timbang ulang ${so.soNumber} · ${sign}${totalDW.toFixed(2)} kg`,
+          description: `${rows.length} karung ditimbang ulang saat Tally Outbound ${so.soNumber}. Setujui Stock Opname ${number} agar berat stok & tagihan SO ikut diperbarui.`,
+          priority: Math.abs(totalDW) > 20 ? 'high' : 'normal',
+          amount: 0,
+          metadata: { opnameNumber: number, totalDeltaWeight: totalDW, salesOrderId: soId, soNumber: so.soNumber },
+          createdBy: session.user.email,
+        });
+        created.push({ id, opnameNumber: number, count: rows.length, totalDeltaWeight: totalDW });
+      }
+      return json({ data: { opnames: created } }, { status: 201 });
+    }
+
     if (route === '/opnames' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
@@ -7280,6 +7354,26 @@ async function handleRoute(request, { params }) {
         }
       }
       db.update(s.stockOpname).set({ status: 'approved', approvedBy: session.user.email, approvedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      // Karung yang sudah dialokasikan ke SO Draft (timbang ulang Tally Outbound): berat alokasi &
+      // tagihan SO ikut berat baru.
+      const touchedSo = new Set();
+      for (const it of items) {
+        if (Number(it.deltaWeight || 0) === 0) continue;
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.stockId, it.stockId)).all();
+        for (const a of allocs) {
+          const soRow = db.select({ st: s.salesOrder.pipelineStatus }).from(s.salesOrder).where(eq(s.salesOrder.id, a.salesOrderId)).get();
+          if (soRow?.st !== 'Draft') continue;
+          db.update(s.soItemStocks).set({ weight: Number(it.physicalWeight) }).where(eq(s.soItemStocks.id, a.id)).run();
+          touchedSo.add(a.salesOrderId);
+        }
+      }
+      if (touchedSo.size) {
+        const raw = getRawSqlite();
+        for (const soId of touchedSo) {
+          recalcSoTotals(soId);
+          try { await salesMongo.persistSalesOrderToMongo(raw, soId); } catch (e) { console.error('persist SO after opname approve', e?.message); }
+        }
+      }
       return json({ data: { ok: true, transactionId: txId, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
     }
     // POST /opnames/:id/reject
