@@ -604,10 +604,13 @@ async function handleRoute(request, { params }) {
 
       const uid = session.user.id;
       const sub = path[1] || '';
+      // Tanggal "Sampai"/"Per tanggal" berbentuk YYYY-MM-DD berarti sampai AKHIR hari itu (23:59:59),
+      // agar transaksi pada tanggal tersebut ikut terhitung.
+      const endOfDay = (v) => { const t = acct.toSec(v); return (t != null && /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) ? t + 86399 : t; };
       const parseRange = (url) => ({
         from: acct.toSec(url.searchParams.get('from')),
-        to: acct.toSec(url.searchParams.get('to')),
-        asOf: acct.toSec(url.searchParams.get('asOf')),
+        to: endOfDay(url.searchParams.get('to')),
+        asOf: endOfDay(url.searchParams.get('asOf')),
       });
       // Auto-post (regenerate auto journals) before reads, if enabled.
       // Guarded by a dirty-flag + 20s TTL so we only run the heavy syncLedger() when source data actually
@@ -4133,8 +4136,21 @@ async function handleRoute(request, { params }) {
       const revenue = diupTotal;                                         // pendapatan bruto (faktur di-up, sudah termasuk ongkir pembeli)
       const netRevenue = Number(so.totalAmount || 0);                    // total tagihan riil (termasuk ongkir pembeli)
       const goodsRevenue = netRevenue - buyerShipping;                   // pendapatan barang saja (ongkir pembeli netral thd margin)
-      const grossProfit = Math.round(goodsRevenue - cogsTotal - sellerShipping);
-      const grossMarginPct = goodsRevenue > 0 ? Math.round((grossProfit / goodsRevenue) * 1000) / 10 : 0;
+      // Retur "potong invoice" mengurangi pendapatan; barang yang kembali ke stok mengurangi HPP
+      // (sama dengan Laporan Laba Penjualan / salesProfitReport).
+      const potongReturns = returns.filter(r => (r.resolution || 'potong_invoice') === 'potong_invoice');
+      const returnsDeducted = potongReturns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      let cogsRestocked = 0;
+      if (potongReturns.length) {
+        const rl = db.select({ w: s.stockLedger.weightIn, h: s.stockLedger.hppPerKg }).from(s.stockLedger)
+          .where(and(eq(s.stockLedger.referenceType, 'SR'), eq(s.stockLedger.movementType, 'RETURN_IN'), inArray(s.stockLedger.referenceId, potongReturns.map(r => r.id)))).all();
+        cogsRestocked = Math.round(rl.reduce((a, b) => a + Number(b.w || 0) * Number(b.h || 0), 0));
+      }
+      const netGoodsRevenue = goodsRevenue - returnsDeducted;
+      const grossProfit = Math.round(netGoodsRevenue - (cogsTotal - cogsRestocked) - sellerShipping);
+      const grossMarginPct = netGoodsRevenue > 0 ? Math.round((grossProfit / netGoodsRevenue) * 1000) / 10 : 0;
+      // Laba hanya untuk Direktur & Akuntan
+      const canSeeProfit = ['direktur', 'akuntan'].includes(session.user.role);
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
       // Susut Dropship: selisih berat kirim (Surat Jalan) vs berat diterima customer (Penerimaan)
       let dropshipShipVsRecv = null;
@@ -4163,7 +4179,7 @@ async function handleRoute(request, { params }) {
           .from(s.contacts).where(eq(s.contacts.id, r.dropshipperId)).get();
         return { ...r, dropshipper: dsc || null };
       });
-      return json({ data: { ...so, items: enrichedItems, customer, salesContact: salesContact || null, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
+      return json({ data: { ...so, items: enrichedItems, customer, salesContact: salesContact || null, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, ...(canSeeProfit ? { grossProfit, grossMarginPct, returnsDeducted, cogsRestocked } : {}), canSeeProfit, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
     // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
@@ -5652,7 +5668,7 @@ async function handleRoute(request, { params }) {
       // Exclude cancelled
       conds.push(sql`${s.salesOrder.pipelineStatus} != 'Cancelled'`);
       if (from) conds.push(sql`${s.salesOrder.orderDate} >= ${Math.floor(new Date(from).getTime() / 1000)}`);
-      if (to) conds.push(sql`${s.salesOrder.orderDate} <= ${Math.floor(new Date(to).getTime() / 1000)}`);
+      if (to) conds.push(sql`${s.salesOrder.orderDate} <= ${Math.floor(new Date(to).getTime() / 1000) + (/^\d{4}-\d{2}-\d{2}$/.test(to) ? 86399 : 0)}`); // sampai akhir hari
       const rows = db.select({
         date: sql`date(${s.salesOrder.orderDate}, 'unixepoch')`,
         count: sql`count(*)`,

@@ -13,10 +13,14 @@ import { Label } from '@/components/ui/label';
 import { ArrowLeft, BarChart3, Loader2, TrendingUp, Users, Package, DollarSign } from 'lucide-react';
 import { format } from 'date-fns';
 import SalesProfitPanel from './sales-profit-panel';
+import { useSession } from '@/lib/auth/auth-client';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
 export default function SalesReportsPage() {
+  const { data: session } = useSession();
+  // Laba hanya untuk Direktur & Akuntan (server juga menolak role lain)
+  const canSeeProfit = ['direktur', 'akuntan'].includes(session?.user?.role);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const daily = useSWR(`/api/sales-reports/daily?${new URLSearchParams({ from, to })}`, fetcher);
@@ -35,12 +39,12 @@ export default function SalesReportsPage() {
       </div>
 
       <Tabs defaultValue="daily">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className={`grid w-full ${canSeeProfit ? 'grid-cols-5' : 'grid-cols-4'}`}>
           <TabsTrigger value="daily"><TrendingUp className="w-4 h-4 mr-1" />Daily Sales</TabsTrigger>
           <TabsTrigger value="aging"><DollarSign className="w-4 h-4 mr-1" />AR Aging</TabsTrigger>
           <TabsTrigger value="cust"><Users className="w-4 h-4 mr-1" />By Customer</TabsTrigger>
           <TabsTrigger value="prod"><Package className="w-4 h-4 mr-1" />By Product</TabsTrigger>
-          <TabsTrigger value="profit"><TrendingUp className="w-4 h-4 mr-1" />Laba</TabsTrigger>
+          {canSeeProfit && <TabsTrigger value="profit"><TrendingUp className="w-4 h-4 mr-1" />Laba</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="daily">
@@ -178,9 +182,11 @@ export default function SalesReportsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="profit">
-          <SalesProfitPanel />
-        </TabsContent>
+        {canSeeProfit && (
+          <TabsContent value="profit">
+            <SalesProfitPanel />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

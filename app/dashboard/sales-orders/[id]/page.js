@@ -1584,7 +1584,7 @@ function PaymentsTab({ so, onSaved, canEdit }) {
   };
   return (
     <div className="space-y-3">
-      <GrossProfitCard so={so} />
+      {so.canSeeProfit && <GrossProfitCard so={so} />}
       <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div><CardTitle className="text-base">Pembayaran Customer</CardTitle><CardDescription>Transfer / Tunai / QRIS</CardDescription></div>
@@ -1658,7 +1658,8 @@ function GrossProfitCard({ so }) {
   const buyerShip = Number(so.buyerShipping || 0);
   const revenue = grossRev - buyerShip; // penjualan barang (ongkir pembeli bersifat pass-through/netral)
   const cashback = (so.markupEnabled && Number(so.cashbackAmount) > 0) ? Number(so.cashbackAmount) : 0;
-  const cogs = Number(so.cogsTotal || 0);
+  const returnsDeducted = Number(so.returnsDeducted || 0);
+  const cogs = Number(so.cogsTotal || 0) - Number(so.cogsRestocked || 0);
   const shipping = Number(so.sellerShipping || 0);
   const gp = Number(so.grossProfit ?? (revenue - cashback - cogs - shipping));
   const netRev = revenue - cashback;
@@ -1669,12 +1670,13 @@ function GrossProfitCard({ so }) {
     <Card className="border-emerald-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Calculator className="w-4 h-4 text-emerald-600" />Gross Profit {so.invoiceNumber ? `· ${so.invoiceNumber}` : '(estimasi)'}</CardTitle>
-        <CardDescription>Laba kotor = Penjualan{cashback > 0 ? ' − Cashback' : ''} − HPP ({isDrop ? 'HPP PO Dropship' : 'kode simpan terpilih'}) − Biaya kirim (bila ditanggung penjual)</CardDescription>
+        <CardDescription>Laba kotor = Penjualan{cashback > 0 ? ' − Cashback' : ''}{returnsDeducted > 0 ? ' − Retur' : ''} − HPP{Number(so.cogsRestocked || 0) > 0 ? ' (dikurangi barang retur yang kembali ke stok)' : ''} ({isDrop ? 'HPP PO Dropship' : 'kode simpan terpilih'}) − Biaya kirim (bila ditanggung penjual)</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className={`grid grid-cols-2 gap-3 text-sm ${cashback > 0 ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
+        <div className={`grid grid-cols-2 gap-3 text-sm ${(cashback > 0 ? 1 : 0) + (returnsDeducted > 0 ? 1 : 0) === 2 ? 'md:grid-cols-7' : (cashback > 0 || returnsDeducted > 0) ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
           <div><div className="text-xs text-muted-foreground">Penjualan{cashback > 0 ? ' (di-up)' : ''}</div><div className="font-semibold">{rp(revenue)}</div></div>
           {cashback > 0 && <div><div className="text-xs text-muted-foreground">Cashback</div><div className="font-semibold text-red-600">-{rp(cashback)}</div></div>}
+          {returnsDeducted > 0 && <div><div className="text-xs text-muted-foreground">Retur (potong invoice)</div><div className="font-semibold text-red-600">-{rp(returnsDeducted)}</div></div>}
           <div><div className="text-xs text-muted-foreground">HPP (COGS){isDrop && so.linkedPurchaseOrder ? ` · ${so.linkedPurchaseOrder.poNumber}` : ''}</div><div className="font-semibold text-red-600">-{rp(cogs)}</div></div>
           <div><div className="text-xs text-muted-foreground">Biaya Kirim ({bearer})</div><div className={`font-semibold ${so.shippingBearer === 'buyer' ? 'text-emerald-700' : 'text-red-600'}`}>{so.shippingBearer === 'buyer' ? (buyerShip > 0 ? '+' + rp(buyerShip) + ' · netral' : rp(0)) : (shipping > 0 ? '-' + rp(shipping) : rp(0))}</div></div>
           <div><div className="text-xs text-muted-foreground">Gross Profit</div><div className={`font-bold ${gp >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{rp(gp)}</div></div>
