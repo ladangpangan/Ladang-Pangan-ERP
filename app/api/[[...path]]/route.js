@@ -7376,6 +7376,17 @@ async function handleRoute(request, { params }) {
       }
       return json({ data: { ok: true, transactionId: txId, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
     }
+    // DELETE /opnames/:id — hapus opname yang masih draft (belum diajukan, stok belum berubah)
+    if (route.startsWith('/opnames/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, path[1])).get();
+      if (!op) return err('Not found', 404);
+      if (op.status !== 'draft') return err('Hanya opname draft yang bisa dihapus');
+      db.delete(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, op.id)).run();
+      db.delete(s.stockOpname).where(eq(s.stockOpname.id, op.id)).run();
+      return json({ data: { deleted: true } });
+    }
     // POST /opnames/:id/reject
     if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'reject' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
