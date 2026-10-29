@@ -61,7 +61,7 @@ export default function TallyHomePage() {
             <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackagePlus className="w-6 h-6" /></div>
             <div className="flex-1 min-w-0">
               <div className="font-bold">Inbound Gudang (Tally)</div>
-              <div className="text-xs text-white/90">Simpan barang masuk ke inventory — dari PO (Tally), Work Order, atau Manual</div>
+              <div className="text-xs text-white/90">Scan karung, isi berat, masuk stok — dari PO, Work Order, atau lainnya</div>
             </div>
             <ChevronRight className="w-5 h-5 shrink-0" />
           </CardContent>
@@ -75,7 +75,7 @@ export default function TallyHomePage() {
             <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackageMinus className="w-6 h-6" /></div>
             <div className="flex-1 min-w-0">
               <div className="font-bold">Outbound (SO)</div>
-              <div className="text-xs text-white/90">Pilih kode simpan barang keluar untuk item Sales Order — dengan rekomendasi berat</div>
+              <div className="text-xs text-white/90">Pilih pesanan, scan karung yang dikirim</div>
             </div>
             <ChevronRight className="w-5 h-5 shrink-0" />
           </CardContent>

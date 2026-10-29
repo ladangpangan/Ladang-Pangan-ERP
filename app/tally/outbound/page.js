@@ -1,349 +1,379 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useSession } from '@/lib/auth/auth-client';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { ChevronRight, ChevronLeft, Loader2, PackageMinus, Truck, CheckCircle2, Sparkles, Snowflake, Boxes, NotebookPen, Lock, Search, X } from 'lucide-react';
+import { BarcodeScanner } from '@/components/barcode-scanner';
+import { ArrowLeft, ArrowUpFromLine, ChevronRight, Loader2, ScanLine, Keyboard, ListChecks, Check, AlertCircle, Search, X, Snowflake } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
-const fetcher = (url) => fetch(url).then(r => r.json());
-const kg = (n) => `${Number(n || 0).toLocaleString('id-ID', { maximumFractionDigits: 1 })} kg`;
+const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
+const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const card = 'bg-white border border-[#DFE5EC] rounded-[14px] shadow-[0_1px_2px_rgba(15,23,41,0.06)]';
+const sectionLabel = 'text-[13px] font-medium tracking-[0.06em] uppercase text-[#5A687C]';
+const smallBtn = 'min-h-[36px] px-3 rounded-lg border border-[#CBD5E1] bg-white text-[#0F1729] text-sm font-medium shrink-0';
+const ORANGE = '#C2410C';
+// Toleransi "Cukup": boleh lebih sampai 3 kg dari pesanan (karung utuh jarang pas)
+const OVER_TOLERANCE_KG = 3;
 
 export default function TallyOutboundPage() {
   const { data: session } = useSession();
-  const router = useRouter();
   const [selectedSo, setSelectedSo] = useState(null);
+  const [done, setDone] = useState(null);
+  const screen = done ? 'done' : selectedSo ? 'scan' : 'pick';
 
   return (
-    <div className="max-w-md mx-auto p-4 min-h-screen flex flex-col">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        {selectedSo ? (
-          <Button variant="ghost" size="icon" onClick={() => setSelectedSo(null)}><ChevronLeft className="w-5 h-5" /></Button>
-        ) : (
-          <Link href="/tally"><Button variant="ghost" size="icon"><ChevronLeft className="w-5 h-5" /></Button></Link>
-        )}
-        <div className="w-9 h-9 bg-gradient-to-br from-orange-500 to-orange-700 rounded-lg flex items-center justify-center text-white shrink-0"><PackageMinus className="w-5 h-5" /></div>
-        <div className="flex-1 min-w-0">
-          <div className="font-bold text-sm leading-tight">Tally Outbound (SO)</div>
-          <div className="text-xs text-muted-foreground truncate">{session?.user?.name || 'Operator'}</div>
+    <div className="max-w-md mx-auto min-h-screen flex flex-col bg-[#F1F5F9] text-[#0F1729]" style={{ fontFamily: 'Roboto, system-ui, sans-serif' }}>
+      <div className="bg-white border-b border-[#DFE5EC] px-4 py-3 flex flex-col gap-3 sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          {screen === 'scan' ? (
+            <button type="button" onClick={() => setSelectedSo(null)} aria-label="Kembali ke daftar pesanan" className="w-10 h-10 flex items-center justify-center rounded-[10px]"><ArrowLeft className="w-[22px] h-[22px]" /></button>
+          ) : (
+            <Link href="/tally" aria-label="Kembali ke beranda" className="w-10 h-10 flex items-center justify-center rounded-[10px] text-[#0F1729]"><ArrowLeft className="w-[22px] h-[22px]" /></Link>
+          )}
+          <div className="w-10 h-10 rounded-[10px] bg-gradient-to-br from-orange-400 to-orange-700 flex items-center justify-center text-white"><ArrowUpFromLine className="w-[22px] h-[22px]" /></div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[17px] font-bold">Barang Keluar</div>
+            <div className="text-[13px] text-[#5A687C] truncate">{screen === 'done' ? 'Selesai' : screen === 'pick' ? 'Langkah 1 dari 2 · Pesanan' : 'Langkah 2 dari 2 · Scan'}</div>
+          </div>
         </div>
+        {screen !== 'done' && (
+          <div className="grid grid-cols-2 gap-1.5">
+            {['Pesanan', 'Scan'].map((n, i) => {
+              const on = i === 0 || screen === 'scan';
+              return (
+                <div key={n} className="flex flex-col gap-1">
+                  <div className="h-1 rounded-full" style={{ background: on ? ORANGE : '#E2E8F0' }} />
+                  <div className={`text-xs font-medium ${on ? 'text-[#0F1729]' : 'text-[#94A3B8]'}`}>{n}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {selectedSo
-        ? <OrderDetail soId={selectedSo} />
-        : <OrderList onSelect={setSelectedSo} />}
+      {screen === 'pick' && <OrderList onSelect={setSelectedSo} />}
+      {screen === 'scan' && <OrderScan soId={selectedSo} operator={session?.user?.name} onDone={(d) => { setDone(d); setSelectedSo(null); }} />}
+      {screen === 'done' && (
+        <div className="flex-1 p-4 pt-6 flex flex-col gap-3.5">
+          <div className={`${card} px-4 py-7 flex flex-col items-center text-center gap-2.5`}>
+            <div className="w-[72px] h-[72px] rounded-full bg-[#EDF8F3] flex items-center justify-center"><Check className="w-10 h-10 text-[#117956]" strokeWidth={2.5} /></div>
+            <div className="text-[22px] font-bold">{done.complete ? 'Siap dikirim' : 'Tersimpan'}</div>
+            <div className="text-[15px] text-[#5A687C]">{done.customerName} · {done.soNumber}</div>
+            <div className="grid grid-cols-2 w-full border-t border-[#EEF2F6] mt-1.5 pt-3">
+              <div><div className="text-[13px] text-[#5A687C]">Karung</div><div className="text-2xl font-bold">{done.bags}</div></div>
+              <div><div className="text-[13px] text-[#5A687C]">Total berat</div><div className="text-2xl font-bold">{kg(done.kg)} <span className="text-sm font-medium text-[#5A687C]">kg</span></div></div>
+            </div>
+            <div className="text-sm text-[#5A687C]">{done.complete ? 'Karung sudah dikunci untuk pesanan ini.' : 'Karung sudah dikunci. Pesanan belum lengkap, bisa dilanjutkan nanti.'}</div>
+          </div>
+          <div className="mt-auto flex flex-col gap-2.5">
+            <button type="button" onClick={() => setDone(null)} className="min-h-[56px] rounded-xl text-white text-lg font-bold" style={{ background: ORANGE }}>Pesanan berikutnya</button>
+            <Link href="/tally" className="min-h-[52px] rounded-xl border border-[#CBD5E1] bg-white text-base font-medium flex items-center justify-center">Kembali ke beranda</Link>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function OrderList({ onSelect }) {
-  const { data, isLoading, error } = useSWR('/api/tally-outbound/orders', fetcher, { refreshInterval: 15000 });
+  const { data, isLoading } = useSWR('/api/tally-outbound/orders', fetcher, { refreshInterval: 15000 });
   const rows = data?.data || [];
-
+  const todayKey = format(new Date(), 'yyyy-MM-dd');
   return (
-    <div className="flex-1">
-      <Card className="mb-4 border-orange-200 bg-gradient-to-br from-orange-50 to-white">
-        <CardContent className="pt-4 pb-4">
-          <div className="flex items-center gap-2 mb-1"><Truck className="w-5 h-5 text-orange-600" /><span className="font-bold text-sm">Pilih SO untuk Outbound</span></div>
-          <p className="text-xs text-muted-foreground">Pilih Sales Order, lalu tentukan <b>kode simpan</b> untuk tiap item. Gunakan <b>Catat</b> untuk menyimpan sementara (stok belum dikunci) & <b>Simpan</b> untuk finalisasi.</p>
-        </CardContent>
-      </Card>
-
-      <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold mb-2">SO Draft belum lengkap ({rows.length})</div>
+    <div className="flex-1 p-4 flex flex-col gap-2.5">
+      <div className={sectionLabel}>Pesanan siap kirim ({rows.length})</div>
       {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
       {!isLoading && rows.length === 0 && (
-        <Card><CardContent className="pt-6 pb-6 text-center text-muted-foreground text-sm">
-          Tidak ada SO yang perlu dipilih kode simpannya. SO baru (Draft, dari stok gudang) akan muncul di sini.
-        </CardContent></Card>
+        <div className={`${card} p-5 text-center text-sm text-[#5A687C]`}>Belum ada pesanan. SO baru (Draft, dari stok gudang) akan muncul di sini.</div>
       )}
-      <div className="space-y-3">
-        {rows.map(so => {
-          const done = so.allocatedItemCount >= so.itemCount;
-          return (
-            <Card key={so.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => onSelect(so.id)}>
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="font-mono font-bold text-sm">{so.soNumber}</div>
-                  <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                </div>
-                <div className="text-sm font-semibold truncate">{so.customerName}</div>
-                <div className="flex items-center gap-2 flex-wrap mt-2 text-xs">
-                  <Badge variant="outline">{so.orderDate ? format(new Date(so.orderDate), 'dd MMM yyyy') : '-'}</Badge>
-                  <Badge variant="secondary">{kg(so.totalWeight)}</Badge>
-                  <Badge className={done ? 'bg-emerald-600' : 'bg-amber-500'}>{so.allocatedItemCount}/{so.itemCount} disimpan</Badge>
-                  {so.draftItemCount > 0 && <Badge className="bg-sky-500">{so.draftItemCount} draft</Badge>}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+      {rows.map(so => {
+        const d = so.orderDate ? new Date(so.orderDate) : null;
+        const isToday = d && format(d, 'yyyy-MM-dd') === todayKey;
+        return (
+          <button key={so.id} type="button" onClick={() => onSelect(so.id)} className={`${card} text-left px-4 py-3.5 flex items-center gap-3`}>
+            <span className="flex flex-col gap-1 flex-1 min-w-0">
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="text-[17px] font-bold truncate">{so.customerName}</span>
+                {d && <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${isToday ? 'bg-[#FFF4EC] text-[#C2410C]' : 'bg-[#F1F5F9] text-[#5A687C]'}`}>{isToday ? 'hari ini' : format(d, 'dd MMM')}</span>}
+              </span>
+              <span className="text-sm text-[#5A687C] font-mono">{so.soNumber}</span>
+              <span className="text-sm">
+                {so.itemCount} produk · {kg(so.totalWeight)} kg
+                {so.allocatedItemCount > 0 && <span className="text-[#117956]"> · {so.allocatedItemCount}/{so.itemCount} selesai</span>}
+                {so.draftItemCount > 0 && <span className="text-[#C2410C]"> · sedang di-scan</span>}
+              </span>
+            </span>
+            <ChevronRight className="w-[22px] h-[22px] text-[#5A687C] shrink-0" />
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function OrderDetail({ soId }) {
-  const { data, isLoading, mutate } = useSWR(`/api/tally-outbound/orders/${soId}`, fetcher, { refreshInterval: 0 });
+function OrderScan({ soId, onDone }) {
+  const { data, isLoading, mutate } = useSWR(`/api/tally-outbound/orders/${soId}`, fetcher, { revalidateOnFocus: false });
   const so = data?.data;
-  const [allocItem, setAllocItem] = useState(null);
+  // bags: { [itemId]: [{ stockId, code, weight, loc }] } — urutan scan disimpan di `order`
+  const [bags, setBags] = useState(null);
+  const [order, setOrder] = useState([]); // [{ itemId, stockId }]
+  const [result, setResult] = useState(null); // { ok, title, text }
+  const [scanning, setScanning] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualCode, setManualCode] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState('idle');
+  const saveChain = useRef(Promise.resolve());
+  const bagsRef = useRef(null);
 
-  if (isLoading || !so) return <div className="text-center py-10"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
+  useEffect(() => {
+    if (!so || bags) return;
+    const init = {};
+    const ord = [];
+    for (const it of so.items || []) {
+      init[it.id] = (it.allocations || []).map(a => ({ stockId: a.stockId, code: a.kodeSimpan, weight: Number(a.weight || 0), loc: null }));
+      for (const a of it.allocations || []) ord.push({ itemId: it.id, stockId: a.stockId });
+    }
+    bagsRef.current = init;
+    setBags(init);
+    setOrder(ord);
+  }, [so, bags]);
 
-  const items = so.items || [];
-  const finalCount = items.filter(i => i.tallyStatus === 'final').length;
-  const draftCount = items.filter(i => i.tallyStatus === 'draft').length;
-  const total = items.length;
+  const items = so?.items || [];
+  const lines = items.map(it => {
+    const mine = (bags && bags[it.id]) || [];
+    const got = mine.reduce((a, b) => a + b.weight, 0);
+    const need = Number(it.orderedWeight || 0);
+    const diff = got - need;
+    let status, color, bar;
+    if (!mine.length) { status = 'Belum ada'; color = '#5A687C'; bar = '#CBD5E1'; }
+    else if (diff < -0.05) { status = `Kurang ${kg(-diff)} kg`; color = ORANGE; bar = '#F97316'; }
+    else if (diff <= OVER_TOLERANCE_KG) { status = 'Cukup'; color = '#117956'; bar = '#117956'; }
+    else { status = `Lebih ${kg(diff)} kg`; color = '#92400E'; bar = '#D97706'; }
+    return { ...it, mine, got, need, status, color, bar, pct: need > 0 ? Math.min(100, Math.round((got / need) * 100)) : 0, ok: got >= need - 0.05 };
+  });
+  const allOk = lines.length > 0 && lines.every(l => l.ok);
+  const totalBags = lines.reduce((a, l) => a + l.mine.length, 0);
+  const totalKg = lines.reduce((a, l) => a + l.got, 0);
+
+  // Simpan sementara (draft, stok belum dikunci) per item — berantai agar urut
+  const saveDraft = (itemId) => {
+    const stockIds = (bagsRef.current[itemId] || []).map(b => b.stockId);
+    const run = async () => {
+      setSaveState('saving');
+      const res = await fetch(`/api/tally-outbound/orders/${soId}/items/${itemId}/allocate`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stockIds, mode: 'draft' }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      setSaveState('saved');
+    };
+    const p = saveChain.current.then(run, run);
+    saveChain.current = p.catch((e) => { setSaveState('error'); toast.error(e.message); });
+    return p;
+  };
+
+  const addBag = (itemId, bag, title) => {
+    const next = { ...bagsRef.current, [itemId]: [...(bagsRef.current[itemId] || []), bag] };
+    bagsRef.current = next;
+    setBags(next);
+    setOrder(o => [...o, { itemId, stockId: bag.stockId }]);
+    setResult({ ok: true, title, text: `${bag.productName} · ${kg(bag.weight)} kg${bag.loc ? ` · ${bag.loc}` : ''}` });
+    saveDraft(itemId);
+  };
+
+  const handleCode = async (raw) => {
+    const code = String(raw || '').trim();
+    if (!code || !bagsRef.current) return;
+    for (const list of Object.values(bagsRef.current)) {
+      if (list.some(b => b.code === code)) { setResult({ ok: false, title: 'Sudah di-scan', text: `${code} sudah ada di pesanan ini.` }); return; }
+    }
+    setChecking(true);
+    try {
+      const res = await fetch(`/api/tally-outbound/orders/${soId}/scan?code=${encodeURIComponent(code)}`, { credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal cek kode');
+      const r = j.data;
+      if (!r.ok) {
+        const titles = { not_found: 'Kode tidak dikenal', wrong_product: 'Produk salah', allocated: 'Karung sudah dipakai', inactive: 'Karung tidak tersedia' };
+        setResult({ ok: false, title: titles[r.reason] || 'Ditolak', text: r.message });
+        try { navigator.vibrate?.([120, 80, 120]); } catch {}
+        return;
+      }
+      const loc = [r.csCode, r.zoneCode ? `Zona ${r.zoneCode}` : null].filter(Boolean).join(' · ');
+      addBag(r.itemId, { stockId: r.stockId, code: r.code, weight: Number(r.weight || 0), productName: r.productName, loc }, `Masuk: ${r.code}`);
+    } catch (e) {
+      setResult({ ok: false, title: 'Gagal', text: e.message });
+    } finally { setChecking(false); }
+  };
+
+  const undo = () => {
+    const last = order[order.length - 1];
+    if (!last) return;
+    const list = bagsRef.current[last.itemId] || [];
+    const bag = list.find(b => b.stockId === last.stockId);
+    const next = { ...bagsRef.current, [last.itemId]: list.filter(b => b.stockId !== last.stockId) };
+    bagsRef.current = next;
+    setBags(next);
+    setOrder(o => o.slice(0, -1));
+    setResult({ ok: false, title: 'Dibatalkan', text: `${bag?.code || 'Karung'} dikeluarkan dari daftar.` });
+    saveDraft(last.itemId);
+  };
+
+  const save = async () => {
+    if (!totalBags) return;
+    if (!allOk && !confirm('Pesanan belum lengkap. Tetap simpan dan kunci karung yang sudah di-scan?')) return;
+    const over = lines.filter(l => l.mine.length && l.got - l.need > OVER_TOLERANCE_KG);
+    if (allOk && over.length && !confirm(`${over.map(l => `${l.productName} lebih ${kg(l.got - l.need)} kg`).join(', ')} dari pesanan. Tetap simpan?`)) return;
+    setSaving(true);
+    try {
+      await saveChain.current;
+      for (const l of lines) {
+        if (!l.mine.length) continue;
+        const res = await fetch(`/api/tally-outbound/orders/${soId}/items/${l.id}/allocate`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stockIds: l.mine.map(b => b.stockId), mode: 'final' }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`${l.productName}: ${j.error || 'Gagal menyimpan'}`);
+      }
+      mutate();
+      onDone({ soNumber: so.soNumber, customerName: so.customerName, bags: totalBags, kg: totalKg, complete: allOk });
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  if (isLoading || !so || !bags) return <div className="text-center py-10"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
 
   return (
-    <div className="flex-1">
-      <Card className="mb-3">
-        <CardContent className="pt-4 pb-4">
-          <div className="font-mono font-bold text-sm">{so.soNumber}</div>
-          <div className="text-sm font-semibold">{so.customerName}</div>
-          <div className="mt-2 flex items-center gap-2 flex-wrap">
-            <Badge className={finalCount >= total ? 'bg-emerald-600' : 'bg-amber-500'}>{finalCount}/{total} disimpan</Badge>
-            {draftCount > 0 && <Badge className="bg-sky-500">{draftCount} draft</Badge>}
-            <Badge variant="outline">{so.pipelineStatus}</Badge>
+    <div className="flex-1 p-4 flex flex-col gap-3">
+      <div className={`${card} overflow-hidden`}>
+        <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-[#EEF2F6]">
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-bold truncate">{so.customerName}</div>
+            <div className="text-[13px] text-[#5A687C] font-mono">{so.soNumber}</div>
           </div>
-        </CardContent>
-      </Card>
-
-      <div className="space-y-3">
-        {items.map(it => {
-          const st = it.tallyStatus || 'none';
-          return (
-          <Card key={it.id} className={st === 'final' ? 'border-emerald-200' : st === 'draft' ? 'border-sky-200' : 'border-amber-200'}>
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-semibold text-sm truncate">{it.productName}</div>
-                  <div className="text-[11px] text-muted-foreground">{it.sku}</div>
-                </div>
-                {st === 'final'
-                  ? <Badge className="bg-emerald-600 shrink-0"><Lock className="w-3 h-3 mr-1" />Tersimpan</Badge>
-                  : st === 'draft'
-                  ? <Badge className="bg-sky-500 shrink-0"><NotebookPen className="w-3 h-3 mr-1" />Draft</Badge>
-                  : <Badge className="bg-amber-500 shrink-0">Belum</Badge>}
-              </div>
-              <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
-                <div><span className="text-muted-foreground">Berat pesanan:</span> <b>{kg(it.orderedWeight)}</b></div>
-                <div><span className="text-muted-foreground">Terpilih:</span> <b>{kg(it.allocatedWeight)}</b></div>
-              </div>
-              {it.allocations?.length > 0 ? (
-                <div className="mt-2 rounded-md border bg-muted/30 p-2">
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5 flex items-center gap-1">
-                    <Boxes className="w-3 h-3" /> Kode Simpan ({it.allocations.length})
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {it.allocations.map(a => (
-                      <Badge key={a.stockId} variant="secondary" className="font-mono text-[11px] gap-1 bg-white border border-emerald-200 text-emerald-800">
-                        {a.kodeSimpan}<span className="text-muted-foreground font-sans">· {kg(a.weight)}</span>
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-2 text-[11px] text-muted-foreground italic">Belum ada kode simpan dipilih</div>
-              )}
-              <Button size="sm" variant={st === 'final' ? 'outline' : 'default'} className="mt-3 w-full h-9" onClick={() => setAllocItem(it)}>
-                <Boxes className="w-4 h-4 mr-1.5" />{st === 'final' ? 'Ubah Kode Simpan' : st === 'draft' ? 'Lanjutkan / Simpan' : 'Pilih Kode Simpan'}
-              </Button>
-            </CardContent>
-          </Card>
-          );
-        })}
+        </div>
+        {lines.map(l => (
+          <div key={l.id} className="px-3.5 py-2.5 flex flex-col gap-1.5 border-b border-[#EEF2F6] last:border-0">
+            <div className="flex justify-between items-baseline gap-2">
+              <span className="text-[15px] font-medium truncate">{l.productName}</span>
+              <span className="text-sm text-[#5A687C] shrink-0"><b className="text-[#0F1729]">{kg(l.got)}</b> / {kg(l.need)} kg</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-[#EEF2F6] overflow-hidden"><div className="h-1.5 rounded-full" style={{ width: `${l.pct}%`, background: l.bar }} /></div>
+            <div className="text-[13px] font-medium" style={{ color: l.color }}>{l.status} · {l.mine.length} karung</div>
+          </div>
+        ))}
       </div>
 
-      {allocItem && (
-        <AllocDialog soId={soId} item={allocItem} onClose={() => setAllocItem(null)} onSaved={() => { setAllocItem(null); mutate(); }} />
+      {result && (
+        <div role="status" className={`rounded-xl px-3.5 py-3 flex gap-2.5 items-start border ${result.ok ? 'bg-[#EDF8F3] border-[#B7E4CF] text-[#0D6346]' : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'}`}>
+          {result.ok ? <Check className="w-[22px] h-[22px] shrink-0" /> : <AlertCircle className="w-[22px] h-[22px] shrink-0 text-[#DC2828]" />}
+          <div>
+            <div className="text-base font-bold">{result.title}</div>
+            <div className="text-[15px]">{result.text}</div>
+          </div>
+        </div>
+      )}
+
+      {scanning && <BarcodeScanner continuous accent="#FB923C" height={170} onDetect={handleCode} />}
+      <button type="button" onClick={() => setScanning(s => !s)} className="min-h-[60px] rounded-xl text-white text-xl font-bold flex items-center justify-center gap-2.5" style={{ background: ORANGE }}>
+        {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}
+        {scanning ? 'Tutup Kamera' : 'Scan Karung'}
+      </button>
+      {scanning && <div className="text-[13px] text-[#5A687C] text-center -mt-1">Kamera tetap menyala. Scan karung satu per satu.</div>}
+
+      {manualOpen ? (
+        <div className={`${card} p-3 flex gap-2`}>
+          <input autoFocus value={manualCode} onChange={(e) => setManualCode(e.target.value)} placeholder="Ketik kode di label"
+            onKeyDown={(e) => { if (e.key === 'Enter') { handleCode(manualCode); setManualCode(''); setManualOpen(false); } }}
+            className="flex-1 min-w-0 h-12 border border-[#CBD5E1] rounded-[10px] px-3 text-lg font-mono font-bold" />
+          <button type="button" onClick={() => { handleCode(manualCode); setManualCode(''); setManualOpen(false); }} className="h-12 px-4 rounded-[10px] text-white font-bold" style={{ background: ORANGE }}>OK</button>
+        </div>
+      ) : (
+        <div className="flex justify-between gap-2">
+          <button type="button" onClick={undo} disabled={!order.length} className="min-h-[40px] text-sm font-medium text-[#DC2828] disabled:opacity-40">Batalkan karung terakhir</button>
+          <button type="button" onClick={() => setManualOpen(true)} className="min-h-[40px] text-sm font-medium flex items-center gap-1.5" style={{ color: ORANGE }}><Keyboard className="w-4 h-4" /> Ketik kode manual</button>
+        </div>
+      )}
+      <button type="button" onClick={() => { setScanning(false); setPickerOpen(true); }} className="min-h-[46px] rounded-xl border border-dashed border-[#FDBA74] bg-[#FFF7ED] text-[#9A3412] text-[15px] font-medium flex items-center justify-center gap-2">
+        <ListChecks className="w-4 h-4" /> Barcode rusak: pilih karung dari daftar
+      </button>
+
+      <div className="text-[13px] text-[#5A687C] text-center">
+        {saveState === 'saving' ? 'Menyimpan…' : saveState === 'error' ? <span className="text-red-600">Gagal tersimpan. Cek sinyal.</span> : totalBags ? 'Tersimpan otomatis. Karung dikunci saat tombol di bawah ditekan.' : ''}
+      </div>
+
+      <button type="button" onClick={save} disabled={saving || !totalBags}
+        className={`min-h-[56px] rounded-xl text-[17px] font-bold mt-auto flex items-center justify-center gap-2 disabled:opacity-50 ${allOk ? 'bg-[#117956] text-white' : 'border border-[#CBD5E1] bg-white text-[#5A687C]'}`}>
+        {saving && <Loader2 className="w-5 h-5 animate-spin" />}
+        {allOk ? 'Simpan & Kunci Karung' : 'Simpan (pesanan belum lengkap)'}
+      </button>
+
+      {pickerOpen && (
+        <StockPicker soId={soId} lines={lines} onClose={() => setPickerOpen(false)}
+          onPick={(itemId, st, productName) => {
+            setPickerOpen(false);
+            const loc = [st.csCode, st.zoneCode ? `Zona ${st.zoneCode}` : null].filter(Boolean).join(' · ');
+            addBag(itemId, { stockId: st.id, code: st.kodeSimpan, weight: Number(st.weight || 0), productName, loc }, `Masuk: ${st.kodeSimpan}`);
+          }} />
       )}
     </div>
   );
 }
 
-function AllocDialog({ soId, item, onClose, onSaved }) {
-  const { data, isLoading } = useSWR(`/api/tally-outbound/orders/${soId}/items/${item.id}/stocks`, fetcher, { revalidateOnFocus: false });
-  const stocks = data?.data?.stocks || [];
-  const orderedWeight = data?.data?.orderedWeight ?? item.orderedWeight;
-  const recommendedIds = data?.data?.recommendedIds || [];
-  const recommendedTotal = data?.data?.recommendedTotal || 0;
-  const [selected, setSelected] = useState(() => new Set((item.allocations || []).map(a => a.stockId)));
-  const [saving, setSaving] = useState(null); // null | 'draft' | 'final'
+// Cadangan bila barcode rusak: pilih produk, lalu pilih karung dari daftar stok
+function StockPicker({ soId, lines, onClose, onPick }) {
+  const [itemId, setItemId] = useState(lines.find(l => !l.ok)?.id || lines[0]?.id);
   const [q, setQ] = useState('');
-
-  const pickRecommended = () => setSelected(new Set(recommendedIds));
-
-  const toggle = (id) => {
-    setSelected(prev => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
-  };
-
-  const selectedStocks = useMemo(() => stocks.filter(st => selected.has(st.id)), [selected, stocks]);
-  const selectedWeight = useMemo(() => {
-    let w = 0;
-    for (const st of selectedStocks) w += Number(st.weight || 0);
-    return Math.round(w * 100) / 100;
-  }, [selectedStocks]);
-  const remaining = Math.round((Number(orderedWeight || 0) - selectedWeight) * 100) / 100;
-
-  const filteredStocks = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return stocks;
-    const numTerm = term.replace(',', '.'); // dukung input berat desimal ala Indonesia "25,5"
-    return stocks.filter(st => {
-      const weightStr = String(Number(st.weight || 0)); // contoh "25.5"
-      return (st.kodeSimpan || '').toLowerCase().includes(term) ||
-        (st.csCode || '').toLowerCase().includes(term) ||
-        (st.zoneCode || '').toLowerCase().includes(term) ||
-        weightStr.includes(numTerm);
-    });
-  }, [q, stocks]);
-
-  const submit = async (mode) => {
-    setSaving(mode);
-    try {
-      const res = await fetch(`/api/tally-outbound/orders/${soId}/items/${item.id}/allocate`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stockIds: Array.from(selected), mode }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
-      if (mode === 'draft') toast.success(`Dicatat sebagai draft (${kg(j.data?.allocatedWeight)}) · stok belum dikunci`);
-      else toast.success(`Kode simpan disimpan & dikunci (${kg(j.data?.allocatedWeight)})`);
-      onSaved();
-    } catch (e) {
-      toast.error(e.message);
-    } finally { setSaving(null); }
-  };
-
-  const busy = saving !== null;
+  const line = lines.find(l => l.id === itemId);
+  const { data, isLoading } = useSWR(itemId ? `/api/tally-outbound/orders/${soId}/items/${itemId}/stocks` : null, fetcher, { revalidateOnFocus: false });
+  const taken = useMemo(() => new Set(lines.flatMap(l => l.mine.map(b => b.stockId))), [lines]);
+  const stocks = (data?.data?.stocks || []).filter(st => !taken.has(st.id));
+  const term = q.trim().toLowerCase();
+  const shown = term ? stocks.filter(st => (st.kodeSimpan || '').toLowerCase().includes(term) || String(st.weight).includes(term.replace(',', '.'))) : stocks;
 
   return (
-    <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md p-0 gap-0 max-h-[90vh] flex flex-col">
-        <DialogHeader className="p-4 pb-3 border-b">
-          <DialogTitle className="text-base">{item.productName}</DialogTitle>
-          <div className="text-xs text-muted-foreground">Berat pesanan: <b>{kg(orderedWeight)}</b> · Pilih kode simpan (utuh per-lot)</div>
-        </DialogHeader>
-
-        {/* Ringkasan sisa berat dinamis */}
-        <div className="px-4 py-2.5 border-b bg-muted/40">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Terpilih</span>
-            <b className="text-sm">{kg(selectedWeight)}</b>
-          </div>
-          <div className="flex items-center justify-between text-xs mt-1">
-            <span className="text-muted-foreground">{remaining >= 0 ? 'Sisa yang diminta' : 'Kelebihan'}</span>
-            <b className={`text-sm ${remaining > 0 ? 'text-amber-600' : remaining < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-              {remaining === 0 ? 'Pas (0 kg)' : kg(Math.abs(remaining))}
-            </b>
-          </div>
-          {selectedStocks.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {selectedStocks.map(st => (
-                <Badge key={st.id} variant="secondary" className="font-mono text-[10px] gap-1">
-                  {st.kodeSimpan} · {kg(st.weight)}
-                  <button onClick={() => toggle(st.id)} className="ml-0.5 text-muted-foreground hover:text-foreground" aria-label="hapus">×</button>
-                </Badge>
-              ))}
-            </div>
-          )}
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end justify-center" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label="Pilih karung dari daftar" className="w-full max-w-md bg-[#F1F5F9] rounded-t-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 py-3 bg-white rounded-t-2xl border-b border-[#DFE5EC]">
+          <div className="flex-1 text-[17px] font-bold">Pilih karung</div>
+          <button type="button" onClick={onClose} aria-label="Tutup" className="w-10 h-10 flex items-center justify-center"><X className="w-5 h-5" /></button>
         </div>
-
-        {/* Kotak pencarian kode simpan */}
-        {!isLoading && stocks.length > 0 && (
-          <div className="px-3 py-2 border-b">
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Cari kode simpan / berat / CS / zona..."
-                className="pl-8 pr-8 h-9"
-              />
-              {q && (
-                <button onClick={() => setQ('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label="bersihkan">
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-            {q.trim() && (
-              <div className="text-[11px] text-muted-foreground mt-1">
-                Menampilkan {filteredStocks.length} dari {stocks.length} kode simpan
-              </div>
-            )}
+        <div className="p-3 flex flex-col gap-2.5 bg-white border-b border-[#DFE5EC]">
+          {lines.length > 1 && (
+            <select value={itemId} onChange={(e) => setItemId(e.target.value)} className="h-12 w-full border border-[#CBD5E1] rounded-[10px] text-base font-medium px-3 bg-white">
+              {lines.map(l => <option key={l.id} value={l.id}>{l.productName} ({l.status})</option>)}
+            </select>
+          )}
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#5A687C]" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari kode / berat" className="h-11 w-full border border-[#CBD5E1] rounded-[10px] pl-9 pr-3 text-base" />
           </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
-          {!isLoading && stocks.length === 0 && (
-            <div className="text-center text-sm text-muted-foreground py-8">Tidak ada kode simpan tersedia untuk produk ini di gudang.</div>
-          )}
-          {!isLoading && recommendedIds.length > 0 && !q.trim() && (
-            <div className="rounded-lg border border-orange-300 bg-orange-50 p-3 flex items-center justify-between gap-2">
-              <div className="text-xs min-w-0">
-                <div className="font-semibold text-orange-700 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Rekomendasi kombinasi</div>
-                <div className="text-muted-foreground">{recommendedIds.length} kode simpan · total <b>{kg(recommendedTotal)}</b> (selisih {kg(Math.abs(recommendedTotal - orderedWeight))})</div>
-              </div>
-              <Button size="sm" variant="outline" className="border-orange-400 text-orange-700 hover:bg-orange-100 h-8 shrink-0" onClick={pickRecommended}>Pilih</Button>
-            </div>
-          )}
-          {!isLoading && stocks.length > 0 && filteredStocks.length === 0 && (
-            <div className="text-center text-sm text-muted-foreground py-8">
-              Tidak ada kode simpan cocok dengan "<b>{q}</b>".
-            </div>
-          )}
-          {filteredStocks.map(st => {
-            const active = selected.has(st.id);
-            return (
-              <button key={st.id} onClick={() => toggle(st.id)}
-                className={`w-full text-left rounded-lg border p-3 transition-colors ${active ? 'border-emerald-500 bg-emerald-50' : 'border-border bg-card hover:bg-muted/40'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${active ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-muted-foreground/40'}`}>
-                      {active && <CheckCircle2 className="w-4 h-4" />}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-mono font-semibold text-sm truncate">{st.kodeSimpan}</div>
-                      <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
-                        {st.csCode && <span className="inline-flex items-center gap-0.5"><Snowflake className="w-3 h-3" />{st.csCode}{st.zoneCode ? `/${st.zoneCode}` : ''}</span>}
-                        {st.expiredDate && <span>ED {format(new Date(st.expiredDate), 'dd/MM/yy')}</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="font-bold text-sm">{kg(st.weight)}</div>
-                    {st.recommended && <Badge className="bg-orange-500 text-[9px] px-1.5 py-0 h-4 mt-0.5"><Sparkles className="w-2.5 h-2.5 mr-0.5" />Rekomendasi</Badge>}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
         </div>
-
-        <DialogFooter className="p-3 border-t grid grid-cols-3 gap-2 sm:grid-cols-3">
-          <Button variant="outline" size="sm" onClick={onClose} disabled={busy} className="w-full">Batal</Button>
-          <Button variant="outline" size="sm" onClick={() => submit('draft')} disabled={busy} className="w-full border-sky-400 text-sky-700 hover:bg-sky-50">
-            {saving === 'draft' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><NotebookPen className="w-4 h-4 mr-1" />Catat</>}
-          </Button>
-          <Button size="sm" onClick={() => submit('final')} disabled={busy || selected.size === 0} className="w-full bg-emerald-600 hover:bg-emerald-700">
-            {saving === 'final' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Lock className="w-4 h-4 mr-1" />Simpan</>}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+          {isLoading && <div className="text-center py-6"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
+          {!isLoading && shown.length === 0 && <div className="text-center text-sm text-[#5A687C] py-6">Tidak ada karung tersedia.</div>}
+          {shown.map(st => (
+            <button key={st.id} type="button" onClick={() => onPick(itemId, st, line?.productName)} className={`${card} text-left px-3.5 py-3 flex items-center justify-between gap-2`}>
+              <span className="min-w-0">
+                <span className="block font-mono font-bold">{st.kodeSimpan}</span>
+                <span className="text-[13px] text-[#5A687C] flex items-center gap-2">
+                  {st.csCode && <span className="inline-flex items-center gap-0.5"><Snowflake className="w-3 h-3" />{st.csCode}{st.zoneCode ? `/${st.zoneCode}` : ''}</span>}
+                  {st.expiredDate && <span>ED {format(new Date(st.expiredDate), 'dd/MM/yy')}</span>}
+                </span>
+              </span>
+              <b className="shrink-0">{kg(st.weight)} kg</b>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

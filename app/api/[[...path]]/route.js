@@ -4323,6 +4323,42 @@ async function handleRoute(request, { params }) {
       return json({ data: { id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-', orderDate: so.orderDate, pipelineStatus: so.pipelineStatus, items: outItems } });
     }
 
+    // GET /tally-outbound/orders/:id/scan?code=X — cari karung hasil scan untuk SO ini.
+    // Mengembalikan item SO yang cocok (berdasarkan produk) atau alasan ditolak.
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 4 && path[3] === 'scan' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2];
+      const code = String(new URL(request.url).searchParams.get('code') || '').trim();
+      if (!code) return err('Kode kosong', 400);
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get();
+      const reject = (reason, message) => json({ data: { ok: false, reason, code, message } });
+      if (!stk || stk.archivedAt) return reject('not_found', `${code} tidak ada di stok. Cek labelnya atau ketik kode manual.`);
+      const p = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, stk.productId)).get();
+      const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+      const item = items.find(it => it.productId === stk.productId);
+      // Sudah dialokasikan: ke SO ini (boleh, tampil sebagai sudah dipilih) atau SO lain (tolak)
+      const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.stockId, stk.id)).all();
+      const otherAlloc = allocs.find(a => a.salesOrderId !== soId);
+      if (stk.status !== 'active' && !allocs.some(a => a.salesOrderId === soId)) {
+        if (otherAlloc) {
+          const o = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(eq(s.salesOrder.id, otherAlloc.salesOrderId)).get();
+          return reject('allocated', `${code} sudah dikunci untuk ${o?.n || 'SO lain'}. Ambil karung lain.`);
+        }
+        return reject('inactive', `${code} sudah tidak tersedia (status: ${stk.status}). Ambil karung lain.`);
+      }
+      if (!item) return reject('wrong_product', `${code} berisi ${p?.name || 'produk lain'}. Tidak ada di pesanan ini, jangan dimuat.`);
+      const cs = stk.coldStorageId ? db.select({ code: s.coldStorages.code }).from(s.coldStorages).where(eq(s.coldStorages.id, stk.coldStorageId)).get() : null;
+      const z = stk.zoneId ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, stk.zoneId)).get() : null;
+      return json({ data: {
+        ok: true, code, stockId: stk.id, itemId: item.id, productId: stk.productId, productName: p?.name || '-',
+        weight: Number(stk.weight || 0), csCode: cs?.code || null, zoneCode: z?.code || null, expiredDate: stk.expiredDate,
+        draftElsewhere: !!otherAlloc,
+      } });
+    }
+
     // GET /tally-outbound/orders/:id/items/:itemId/stocks — kode simpan tersedia + rekomendasi (berat mendekati pesanan)
     if (route.startsWith('/tally-outbound/orders/') && path.length === 6 && path[3] === 'items' && path[5] === 'stocks' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -6513,6 +6549,16 @@ async function handleRoute(request, { params }) {
       // body: { referenceId(PO/WO id), referenceType, coldStorageId, zoneId?, items: [{productId, weight, quantity, expiredDate, packagingType, zoneId?}] }
       if (!Array.isArray(body.items) || body.items.length === 0) { const e = new Error('items required'); e.status = 400; throw e; }
       if (!body.coldStorageId) { const e = new Error('coldStorageId required'); e.status = 400; throw e; }
+      // Kode simpan (label/barcode karung) harus unik — cek sebelum menulis apa pun agar pesan jelas.
+      const seenKode = new Set();
+      for (const it of body.items) {
+        const k = it.kodeSimpan ? String(it.kodeSimpan).trim() : '';
+        if (!k) continue;
+        if (seenKode.has(k)) { const e = new Error(`Kode ${k} dipakai dua kali di tally ini`); e.status = 400; throw e; }
+        seenKode.add(k);
+        const dup = db.select({ id: s.inventoryStock.id }).from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, k)).get();
+        if (dup) { const e = new Error(`Kode ${k} sudah dipakai karung lain di stok`); e.status = 400; throw e; }
+      }
       const txId = uuidv4();
       const totalW = body.items.reduce((a, b) => a + Number(b.weight || 0), 0);
       const totalQ = body.items.reduce((a, b) => a + Number(b.quantity || 0), 0);
@@ -6669,6 +6715,30 @@ async function handleRoute(request, { params }) {
         .where(eq(s.tallySession.status, status))
         .orderBy(desc(s.tallySession.updatedAt)).all();
       return json({ data: rows.map(r => enrichTallySession(r, false)) });
+    }
+
+    // GET /tally-sessions/check-kode?code=X[&session=<id>] — cek kode karung hasil scan (Tally Inbound).
+    // Kode tidak boleh sudah ada di stok, atau sudah dipakai di draft tally lain.
+    if (route === '/tally-sessions/check-kode' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const u = new URL(request.url);
+      const code = String(u.searchParams.get('code') || '').trim();
+      const own = u.searchParams.get('session') || '';
+      if (!code) return err('Kode kosong', 400);
+      const stk = db.select({ id: s.inventoryStock.id, productId: s.inventoryStock.productId, createdAt: s.inventoryStock.createdAt })
+        .from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get();
+      if (stk) {
+        const p = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, stk.productId)).get();
+        return json({ data: { available: false, reason: 'in_stock', message: `${code} sudah dipakai (${p?.name || 'produk lain'}). Ambil karung dengan label baru.` } });
+      }
+      const drafts = db.select({ sid: s.tallySessionItems.sessionId }).from(s.tallySessionItems).where(eq(s.tallySessionItems.kodeSimpan, code)).all();
+      for (const d of drafts) {
+        if (d.sid === own) continue;
+        const ts = db.select({ status: s.tallySession.status }).from(s.tallySession).where(eq(s.tallySession.id, d.sid)).get();
+        if (ts && ts.status === 'draft') return json({ data: { available: false, reason: 'in_draft', message: `${code} sudah di-scan di tally lain yang belum selesai.` } });
+      }
+      return json({ data: { available: true, code } });
     }
 
     // GET /tally-sessions/:id — one session with items
