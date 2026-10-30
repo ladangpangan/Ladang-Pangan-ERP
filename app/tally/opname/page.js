@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { WeightInput } from '@/components/ui/weight-input';
@@ -63,6 +64,16 @@ export default function TallyOpnamePage() {
     catch (e) { toast.error(e.message); } finally { setBusy(false); }
   };
   const resume = (d) => { setOp(d); setCsId(d.coldStorageId); setZoneId(d.zoneId || ''); setScreen('scan'); };
+  // Dibuka dari "Belum selesai" di Beranda Tally: /tally/opname?resume=<id>
+  const searchParams = useSearchParams();
+  const resumeDone = useRef(false);
+  useEffect(() => {
+    const rid = searchParams.get('resume');
+    if (!rid || resumeDone.current || !drafts.length) return;
+    resumeDone.current = true;
+    const d = drafts.find(x => x.id === rid);
+    if (d) resume(d);
+  }, [drafts, searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
   const removeDraft = async (d) => {
     if (!confirm(`Hapus opname ${d.opnameNumber}? Hitungan yang sudah di-scan ikut terhapus.`)) return;
     const res = await fetch(`/api/opnames/${d.id}`, { method: 'DELETE', credentials: 'include' });
