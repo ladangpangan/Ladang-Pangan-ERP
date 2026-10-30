@@ -9,7 +9,11 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
-import { FileText, ChevronRight, Loader2, History, Smartphone } from 'lucide-react';
+import { FileText, ChevronRight, Loader2, History, Smartphone, MoreHorizontal, Plus, Lock } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Label } from '@/components/ui/label';
+import { WeightInput } from '@/components/ui/weight-input';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
@@ -32,9 +36,9 @@ export default function TallyHistoryPage() {
 
   useEffect(() => { const t = setTimeout(() => setQ(qInput.trim()), 350); return () => clearTimeout(t); }, [qInput]);
 
-  const { from, to } = periodRange(period);
-  const qs = new URLSearchParams({ type, from, to, ...(cs !== 'all' ? { cs } : {}), ...(q ? { q } : {}) });
-  const { data, isLoading } = useSWR(`/api/tally-history?${qs}`, fetcher);
+  const { from } = periodRange(period);
+  const qs = new URLSearchParams({ type, from, ...(cs !== 'all' ? { cs } : {}), ...(q ? { q } : {}) });
+  const { data, isLoading, mutate: mutateList } = useSWR(`/api/tally-history?${qs}`, fetcher);
   const { data: csData } = useSWR('/api/cold-storages', fetcher);
   const csList = csData?.data || [];
   const all = data?.data || [];
@@ -57,6 +61,10 @@ export default function TallyHistoryPage() {
     try { setDetail(await fetchTallyDetail(r.type, r.id)); } catch (e) { toast.error(e.message); setSel(null); }
   };
   const link = detail ? T.link(detail) : null;
+  const reloadDetail = async () => {
+    mutateList();
+    if (sel) { try { setDetail(await fetchTallyDetail(sel.type, sel.id)); } catch (e) { toast.error(e.message); } }
+  };
 
   return (
     <div className="space-y-4">
@@ -134,7 +142,7 @@ export default function TallyHistoryPage() {
               {rows.map(r => (
                 <TableRow key={r.id} className="cursor-pointer" onClick={() => openDetail(r)}>
                   <TableCell className="text-slate-700">{format(new Date(r.at), 'dd MMM HH:mm')}</TableCell>
-                  <TableCell className="min-w-0"><div className="font-mono font-bold">{r.ref}</div><div className="text-[13px] text-muted-foreground truncate max-w-[360px]">{r.sub}</div></TableCell>
+                  <TableCell className="min-w-0"><div className="font-mono font-bold">{r.ref}</div><div className="text-[13px] text-muted-foreground truncate max-w-[360px]">{r.sub}</div>{r.revisions > 0 && <span className="inline-block mt-0.5 text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Revisi {r.revisions}</span>}</TableCell>
                   {type !== 'wo' && <TableCell>{r.cs || '-'}</TableCell>}
                   <TableCell className="text-right tabular-nums">{r.bags}</TableCell>
                   {type !== 'wo' && <TableCell className="text-right font-bold tabular-nums">{kg(r.kg)}</TableCell>}
@@ -156,7 +164,7 @@ export default function TallyHistoryPage() {
       {type === 'out' && <p className="text-xs text-muted-foreground">Petugas Barang Keluar mulai tercatat sejak fitur Riwayat Tally rilis; riwayat sebelumnya tampil &quot;–&quot;.</p>}
 
       <Sheet open={!!sel} onOpenChange={(o) => { if (!o) { setSel(null); setDetail(null); } }}>
-        <SheetContent className="w-full sm:max-w-[460px] flex flex-col p-0 gap-0">
+        <SheetContent className={`w-full ${type === 'in' ? 'sm:max-w-[560px]' : 'sm:max-w-[460px]'} flex flex-col p-0 gap-0`}>
           {sel && (
             <>
               <SheetHeader className="p-5 border-b text-left">
@@ -165,7 +173,9 @@ export default function TallyHistoryPage() {
                 <div className="text-[13px] text-muted-foreground">{format(new Date(sel.at), 'dd MMM yyyy HH:mm')} · {sel.operator || '–'}</div>
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-5 py-3">
-                {!detail ? <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> : (
+                {!detail ? <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> : type === 'in' ? (
+                  <InboundPanel detail={detail} onChanged={reloadDetail} />
+                ) : (
                   <>
                     <div className="grid grid-cols-[110px_1fr] gap-y-1 text-sm mb-3">
                       {detail.meta.map(([k, v]) => <div key={k} className="contents"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>)}
@@ -191,6 +201,134 @@ export default function TallyHistoryPage() {
         </SheetContent>
       </Sheet>
       {pdfPreview.element}
+    </div>
+  );
+}
+
+// Barang Masuk per PO/kiriman: karung per produk + revisi supervisor (buka kembali, tambah, ubah berat, hapus).
+function InboundPanel({ detail, onChanged }) {
+  const [dlg, setDlg] = useState(null); // { kind: 'add' | 'weight' | 'delete', item? }
+  const [form, setForm] = useState({ productId: '', kodeSimpan: '', weight: 0, reason: '' });
+  const [saving, setSaving] = useState(false);
+  const { data: poData } = useSWR(detail.refType === 'PO' && detail.refId ? `/api/purchase-orders/${detail.refId}` : null, fetcher);
+  const productOptions = poData?.data?.items?.length
+    ? poData.data.items.map(i => ({ id: i.productId, name: i.product?.name || i.productName || detail.products.find(p => p.productId === i.productId)?.name || 'Produk' }))
+    : detail.products.map(p => ({ id: p.productId, name: p.name }));
+  const gid = encodeURIComponent(detail.groupId);
+
+  const call = async (url, body) => {
+    setSaving(true);
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(body || {}) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      return j.data;
+    } finally { setSaving(false); }
+  };
+  const afterRevision = (d, msg) => {
+    toast.success(msg);
+    if (d?.refund >= 1) toast.warning(`PO jadi lebih bayar Rp ${Math.round(d.refund).toLocaleString('id-ID')} — finance diberi tahu untuk minta refund supplier.`);
+    setDlg(null); onChanged();
+  };
+  const reopen = async () => {
+    if (!confirm('Buka kembali tally ini? Petugas akan melihatnya di "Belum selesai" di HP untuk scan karung yang tertinggal.')) return;
+    try { const d = await call(`/api/tally-history/in/${gid}/reopen`); toast.success(d.already ? 'Tally ini sudah dibuka di HP petugas' : 'Tally dibuka kembali — muncul di HP petugas'); onChanged(); }
+    catch (e) { toast.error(e.message); }
+  };
+  const openDlg = (kind, item) => {
+    setForm({ productId: item?.productId || productOptions[0]?.id || '', kodeSimpan: '', weight: kind === 'weight' ? item.weight : 0, reason: '' });
+    setDlg({ kind, item });
+  };
+  const submit = async () => {
+    try {
+      if (dlg.kind === 'add') afterRevision(await call(`/api/tally-history/in/${gid}/add`, form), 'Karung ditambahkan ke stok');
+      else afterRevision(await call(`/api/tally-history/in/${gid}/items/${encodeURIComponent(dlg.item.kode)}`, { action: dlg.kind, weight: form.weight, reason: form.reason }),
+        dlg.kind === 'delete' ? 'Karung dihapus dari tally & stok' : 'Berat diperbarui');
+    } catch (e) { toast.error(e.message); }
+  };
+  const title = dlg?.kind === 'add' ? 'Tambah karung tertinggal' : dlg?.kind === 'weight' ? `Ubah berat ${dlg?.item?.kode}` : `Hapus karung ${dlg?.item?.kode}?`;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-[110px_1fr] gap-y-1 text-sm">
+        {detail.meta.map(([k, v]) => <div key={k} className="contents"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>)}
+      </div>
+      {detail.canRevise && (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={reopen} disabled={saving || !!detail.openRevision}>
+            <Smartphone className="w-4 h-4 mr-1.5" />{detail.openRevision ? 'Sedang dibuka di HP' : 'Buka kembali di HP'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => openDlg('add')} disabled={saving}><Plus className="w-4 h-4 mr-1.5" />Tambah karung</Button>
+        </div>
+      )}
+      {detail.products.map((p, pi) => (
+        <div key={p.productId} className="border rounded-lg overflow-hidden">
+          <div className="flex justify-between gap-2 px-3 py-2 bg-slate-50 text-sm"><b>{pi + 1}. {p.name}</b><b className="shrink-0">{p.count} karung · {kg(p.kg)} kg</b></div>
+          {p.items.map(it => (
+            <div key={it.itemId} className="grid grid-cols-[112px_minmax(0,1fr)_76px_32px] gap-2 items-center px-3 py-1.5 border-t text-sm">
+              <span className="font-mono truncate">{it.kode || '-'}</span>
+              <span className="min-w-0">
+                {it.added && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Tambahan revisi</span>}
+                {!it.added && it.weightFrom != null && <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">Berat diubah</span>}
+              </span>
+              <b className="text-right tabular-nums">{kg(it.weight)} kg</b>
+              {detail.canRevise ? (it.editable ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild><Button size="icon" variant="outline" className="h-7 w-7" aria-label={`Ubah atau hapus ${it.kode}`}><MoreHorizontal className="w-4 h-4" /></Button></DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => openDlg('weight', it)}>Ubah berat</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => openDlg('delete', it)} className="text-red-600 focus:text-red-700">Hapus karung…</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : <span title={it.lockReason || ''} aria-label={it.lockReason || 'Terkunci'} className="flex justify-center text-muted-foreground"><Lock className="w-3.5 h-3.5" /></span>) : <span />}
+            </div>
+          ))}
+        </div>
+      ))}
+      <div className="text-sm font-bold">Total: {detail.total}</div>
+      {detail.revisionLines?.length > 0 && (
+        <div className="border-t pt-2">
+          <div className="text-xs font-bold tracking-wider uppercase text-muted-foreground mb-1">Catatan revisi</div>
+          <ul className="text-[13px] text-slate-700 space-y-1">{detail.revisionLines.map((l, i) => <li key={i}>{l}</li>)}</ul>
+        </div>
+      )}
+
+      <Dialog open={!!dlg} onOpenChange={(o) => { if (!o) setDlg(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{detail.ref}{detail.kirimanLabel ? ` · ${detail.kirimanLabel}` : ''}</DialogDescription></DialogHeader>
+          <div className="flex flex-col gap-3">
+            {dlg?.kind === 'add' && (
+              <>
+                <div className="flex flex-col gap-1.5"><Label>Produk</Label>
+                  <Select value={form.productId || undefined} onValueChange={v => setForm({ ...form, productId: v })}>
+                    <SelectTrigger><SelectValue placeholder="Pilih produk" /></SelectTrigger>
+                    <SelectContent>{productOptions.map(o => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5"><Label>Kode simpan <span className="text-muted-foreground font-normal">(kosongkan = kode otomatis)</span></Label>
+                  <Input value={form.kodeSimpan} onChange={e => setForm({ ...form, kodeSimpan: e.target.value })} className="font-mono" /></div>
+              </>
+            )}
+            {dlg?.kind === 'delete' && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                Karung <b>{dlg.item.kode} · {kg(dlg.item.weight)} kg</b> dikeluarkan dari stok dan dari tally. Kode bisa dipakai lagi.
+              </div>
+            )}
+            {dlg?.kind !== 'delete' && (
+              <div className="flex flex-col gap-1.5"><Label>Berat (kg)</Label><WeightInput value={form.weight} onChange={v => setForm({ ...form, weight: v })} className="text-lg font-bold" /></div>
+            )}
+            <div className="flex flex-col gap-1.5"><Label>Alasan</Label>
+              <Input value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} placeholder="Contoh: tertinggal di truk / salah ketik" /></div>
+            <p className="text-xs text-muted-foreground">Stok, kartu stok, dan berat tally PO ikut diperbarui. Kalau PO sudah dibayar lebih dari tagihan baru, finance diminta menagih refund ke supplier.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDlg(null)}>Batal</Button>
+            <Button onClick={submit} disabled={saving || form.reason.trim().length < 3} className={dlg?.kind === 'delete' ? 'bg-red-600 hover:bg-red-700' : ''}>
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{dlg?.kind === 'add' ? 'Tambah ke stok' : dlg?.kind === 'delete' ? 'Hapus karung' : 'Simpan'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
