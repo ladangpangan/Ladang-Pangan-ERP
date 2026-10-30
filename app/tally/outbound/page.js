@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useSession } from '@/lib/auth/auth-client';
 import { BarcodeScanner } from '@/components/barcode-scanner';
 import { KodeConfirm } from '@/components/kode-confirm';
@@ -25,6 +26,10 @@ export default function TallyOutboundPage() {
   const [selectedSo, setSelectedSo] = useState(null);
   const [done, setDone] = useState(null);
   const screen = done ? 'done' : selectedSo ? 'scan' : 'pick';
+  // Dibuka dari "Belum selesai" di Beranda Tally: /tally/outbound?so=<id>
+  const searchParams = useSearchParams();
+  const soParam = searchParams.get('so');
+  useEffect(() => { if (soParam) setSelectedSo(soParam); }, [soParam]);
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col bg-[#F1F5F9] text-[#0F1729]" style={{ fontFamily: 'Roboto, system-ui, sans-serif' }}>

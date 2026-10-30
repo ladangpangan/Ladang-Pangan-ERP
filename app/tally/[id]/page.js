@@ -166,7 +166,7 @@ export default function TallyProductionPage() {
     <div className="max-w-md mx-auto p-4 min-h-screen pb-32 flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <Button size="icon" variant="ghost" onClick={() => router.push('/tally')}><ChevronLeft className="w-5 h-5" /></Button>
+        <Button size="icon" variant="ghost" onClick={() => router.push('/tally/produksi')}><ChevronLeft className="w-5 h-5" /></Button>
         <div className="flex-1 min-w-0">
           <div className="font-mono font-bold text-sm truncate">{wo.woNumber}</div>
           <div className="text-xs text-muted-foreground truncate">{wo.mode} · {wo.pipelineStatus}</div>

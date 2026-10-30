@@ -3,15 +3,23 @@
 import useSWR from 'swr';
 import Link from 'next/link';
 import { useSession, authClient } from '@/lib/auth/auth-client';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Smartphone, ChevronRight, LogOut, Wheat, ClipboardList, Loader2, Wifi, WifiOff, History, Play, PackagePlus, PackageMinus, ClipboardCheck } from 'lucide-react';
+import { ChevronRight, LogOut, Wheat, Wifi, WifiOff, History, ArrowDownToLine, ArrowUpFromLine, ClipboardCheck, Factory } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { format } from 'date-fns';
+import { format, isToday } from 'date-fns';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
+const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const when = (d) => (d ? (isToday(new Date(d)) ? `hari ini ${format(new Date(d), 'HH.mm')}` : format(new Date(d), 'dd MMM HH.mm')) : '');
+const ROLE_LABEL = { operator: 'Operator Gudang', admin: 'Admin', supervisor: 'Supervisor', direktur: 'Direktur', akuntan: 'Akuntan' };
+
+// Pekerjaan di Tally: warna sama dengan layar masing-masing dan Riwayat Tally.
+const JOBS = [
+  { href: '/tally/inbound', title: 'Barang Masuk', desc: 'Scan karung, isi berat, masuk stok', icon: ArrowDownToLine, bg: '#EDF8F3', fg: '#117956' },
+  { href: '/tally/outbound', title: 'Barang Keluar', desc: 'Pilih pesanan, scan karung yang dikirim', icon: ArrowUpFromLine, bg: '#FFF4EC', fg: '#C2410C' },
+  { href: '/tally/opname', title: 'Stock Opname', desc: 'Hitung karung di gudang dengan scan', icon: ClipboardCheck, bg: '#EFF6FF', fg: '#1D4ED8' },
+  { href: '/tally/produksi', title: 'Produksi', desc: 'Catat data tahap produksi per WO', icon: Factory, bg: '#F5F3FF', fg: '#7C3AED', countKey: 'wo' },
+];
 
 export default function TallyHomePage() {
   const { data: session } = useSession();
@@ -25,149 +33,96 @@ export default function TallyHomePage() {
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
 
-  const { data, isLoading } = useSWR('/api/work-orders?status=Dalam Proses', fetcher, { refreshInterval: 10000 });
-  const rows = data?.data || [];
-  const { data: draftData } = useSWR('/api/tally-sessions?status=draft', fetcher, { refreshInterval: 15000 });
-  const drafts = draftData?.data || [];
+  const { data: woData } = useSWR('/api/work-orders?status=Dalam Proses', fetcher, { refreshInterval: 30000 });
+  const { data: inData } = useSWR('/api/tally-sessions?status=draft', fetcher, { refreshInterval: 15000 });
+  const { data: outData } = useSWR('/api/tally-outbound/orders', fetcher, { refreshInterval: 15000 });
+  const { data: opData } = useSWR('/api/opnames/tally/active', fetcher, { refreshInterval: 15000 });
+  const woCount = (woData?.data || []).length;
+
+  // Semua pekerjaan yang belum selesai, terbaru di atas.
+  const pending = [
+    ...(inData?.data || []).map(d => ({
+      key: `in-${d.id}`, href: `/tally/inbound?session=${d.id}`, color: '#117956', at: d.updatedAt,
+      title: `Masuk · ${d.refNumber ? `${d.referenceType} ${d.refNumber}` : 'Lainnya'}`,
+      sub: `${d.itemCount} karung · ${kg(d.totalWeight)} kg`,
+    })),
+    ...(outData?.data || []).filter(o => Number(o.draftItemCount || 0) > 0).map(o => ({
+      key: `out-${o.id}`, href: `/tally/outbound?so=${o.id}`, color: '#C2410C', at: null,
+      title: `Keluar · ${o.soNumber}`, sub: o.customerName || 'Pesanan',
+    })),
+    ...(opData?.data || []).map(o => ({
+      key: `op-${o.id}`, href: `/tally/opname?resume=${o.id}`, color: '#1D4ED8', at: o.updatedAt,
+      title: `Opname · ${o.csCode || ''}${o.zoneCode ? ` Zona ${o.zoneCode}` : ''}`.trim(),
+      sub: `${o.counted}/${o.expected} karung dihitung`,
+    })),
+  ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
 
   const logout = async () => { await authClient.signOut(); router.push('/login'); };
+  const role = session?.user?.role;
 
   return (
-    <div className="max-w-md mx-auto p-4 min-h-screen flex flex-col">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-lg flex items-center justify-center text-white"><Wheat className="w-6 h-6" /></div>
-        <div className="flex-1">
-          <div className="font-bold text-sm leading-tight">Tally App</div>
-          <div className="text-xs text-muted-foreground">{session?.user?.name || 'Operator'}</div>
+    <div className="max-w-md mx-auto min-h-screen flex flex-col bg-[#F1F5F9] text-[#0F1729]" style={{ fontFamily: 'Roboto, system-ui, sans-serif' }}>
+      <div className="bg-white border-b border-[#DFE5EC] px-4 py-3.5 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-[10px] flex items-center justify-center text-white" style={{ background: 'linear-gradient(135deg, #10B981, #047857)' }}><Wheat className="w-[22px] h-[22px]" /></div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[17px] font-bold">Tally App</div>
+          <div className="text-[13px] text-[#5A687C] truncate">{session?.user?.name || 'Petugas'}{role ? ` · ${ROLE_LABEL[role] || role}` : ''}</div>
         </div>
-        {online ? <Wifi className="w-5 h-5 text-emerald-600" /> : <WifiOff className="w-5 h-5 text-red-500" />}
-        <Button variant="ghost" size="icon" onClick={logout}><LogOut className="w-5 h-5" /></Button>
+        <div className={`flex items-center gap-1.5 text-[13px] font-medium ${online ? 'text-[#117956]' : 'text-[#DC2828]'}`}>
+          {online ? <Wifi className="w-[18px] h-[18px]" /> : <WifiOff className="w-[18px] h-[18px]" />}{online ? 'Online' : 'Offline'}
+        </div>
+        <button type="button" onClick={logout} aria-label="Keluar akun" className="w-10 h-10 flex items-center justify-center rounded-[10px] text-[#5A687C]"><LogOut className="w-5 h-5" /></button>
       </div>
 
-      {/* Info Card */}
-      <Card className="mb-4 border-emerald-200 bg-gradient-to-br from-emerald-50 to-white">
-        <CardContent className="pt-4">
-          <div className="flex items-center gap-2 mb-2"><Smartphone className="w-5 h-5 text-emerald-600" /><span className="font-bold">Mode Produksi</span></div>
-          <p className="text-sm text-muted-foreground">Pilih Work Order aktif → pilih Stage → catat data via <b>Catat / Daftar / Simpan</b>. Data akan disimpan saat online.</p>
-          {!online && <div className="mt-2 text-xs bg-red-100 text-red-700 p-2 rounded">Offline: input akan dicache dan disync saat kembali online</div>}
-        </CardContent>
-      </Card>
-
-      {/* Mulai Inbound Gudang (Tally) — entry point untuk operator */}
-      <Link href="/tally/inbound" className="block mb-4">
-        <Card className="border-emerald-300 bg-gradient-to-br from-emerald-600 to-emerald-700 text-white hover:shadow-md transition-shadow cursor-pointer">
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackagePlus className="w-6 h-6" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold">Inbound Gudang (Tally)</div>
-              <div className="text-xs text-white/90">Scan karung, isi berat, masuk stok — dari PO, Work Order, atau lainnya</div>
-            </div>
-            <ChevronRight className="w-5 h-5 shrink-0" />
-          </CardContent>
-        </Card>
-      </Link>
-
-      {/* Mulai Outbound (SO) — pilih kode simpan untuk item Sales Order */}
-      <Link href="/tally/outbound" className="block mb-4">
-        <Card className="border-orange-300 bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:shadow-md transition-shadow cursor-pointer">
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><PackageMinus className="w-6 h-6" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold">Outbound (SO)</div>
-              <div className="text-xs text-white/90">Pilih pesanan, scan karung yang dikirim</div>
-            </div>
-            <ChevronRight className="w-5 h-5 shrink-0" />
-          </CardContent>
-        </Card>
-      </Link>
-
-      {/* Stock Opname — hitung karung di gudang dengan scan (asal-usul karung terlacak) */}
-      <Link href="/tally/opname" className="block mb-4">
-        <Card className="border-blue-300 bg-gradient-to-br from-blue-500 to-blue-700 text-white hover:shadow-md transition-shadow cursor-pointer">
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="w-11 h-11 bg-white/20 rounded-lg flex items-center justify-center shrink-0"><ClipboardCheck className="w-6 h-6" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold">Stock Opname</div>
-              <div className="text-xs text-white/90">Hitung karung di gudang dengan scan — hasil diajukan ke admin</div>
-            </div>
-            <ChevronRight className="w-5 h-5 shrink-0" />
-          </CardContent>
-        </Card>
-      </Link>
-
-      {/* Riwayat Tally — cetak ulang berita acara Masuk/Keluar/Opname/Produksi */}
-      <Link href="/tally/riwayat" className="block mb-4">
-        <Card className="border-slate-300 bg-white hover:shadow-md transition-shadow cursor-pointer">
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <div className="w-11 h-11 bg-slate-100 text-slate-700 rounded-lg flex items-center justify-center shrink-0"><History className="w-6 h-6" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold">Riwayat Tally</div>
-              <div className="text-xs text-muted-foreground">Lihat tally yang sudah selesai & cetak ulang berita acara</div>
-            </div>
-            <ChevronRight className="w-5 h-5 shrink-0 text-muted-foreground" />
-          </CardContent>
-        </Card>
-      </Link>
-
-      {/* Tally Inbound draft yang bisa dilanjutkan */}
-      {drafts.length > 0 && (
-        <Card className="mb-4 border-amber-200 bg-amber-50/40">
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2 text-amber-800"><History className="w-5 h-5" /><span className="font-bold text-sm">Lanjutkan Tally Inbound ({drafts.length})</span></div>
-            <div className="space-y-1.5">
-              {drafts.map(d => (
-                <div key={d.id} className="flex items-center gap-2 bg-white border rounded-lg px-2.5 py-2">
-                  <PackagePlus className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{d.csCode || 'CS?'}{d.refNumber ? ` · ${d.referenceType} ${d.refNumber}` : ' · Manual'}</div>
-                    <div className="text-[11px] text-muted-foreground">{d.itemCount} item · {Number(d.totalWeight || 0).toFixed(1)} kg{d.updatedAt && ` · ${format(new Date(d.updatedAt), 'dd MMM HH:mm')}`}</div>
-                  </div>
-                  <Link href={`/tally/inbound?session=${d.id}`}>
-                    <Button size="sm" className="h-8 bg-emerald-600 hover:bg-emerald-700 text-xs"><Play className="w-3.5 h-3.5 mr-1" /> Lanjutkan</Button>
-                  </Link>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* WO List */}
-      <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold mb-2">WO Aktif ({rows.length})</div>
-      <div className="space-y-3 flex-1">
-        {isLoading && <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
-        {!isLoading && rows.length === 0 && (
-          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">
-            Tidak ada WO yang &quot;Dalam Proses&quot;. Hubungi supervisor untuk approve WO baru.
-          </CardContent></Card>
+      <div className="flex-1 px-4 py-5 flex flex-col gap-3">
+        {!online && (
+          <div role="alert" className="bg-[#FEF2F2] border border-[#FECACA] text-[#991B1B] rounded-xl px-3.5 py-3 text-[15px] font-medium">
+            Tidak ada sinyal. Data disimpan dulu di HP dan dikirim saat online kembali.
+          </div>
         )}
-        {rows.map(wo => (
-          <Link key={wo.id} href={`/tally/${wo.id}`}>
-            <Card className="hover:shadow-md transition-shadow cursor-pointer">
-              <CardContent className="pt-4 pb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="font-mono font-bold text-sm">{wo.woNumber}</div>
-                  <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                </div>
-                <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <Badge variant="outline">{wo.mode}</Badge>
-                  {wo.po && <Badge variant="secondary" className="text-xs">{wo.po.method}</Badge>}
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div><span className="text-muted-foreground">Berat LB:</span> <b>{Number(wo.totalLiveBirdWeight).toLocaleString('id-ID')} kg</b></div>
-                  <div><span className="text-muted-foreground">Ekor:</span> <b>{wo.totalLiveBirdHeadCount}</b></div>
-                  <div className="col-span-2 text-muted-foreground">Start: {wo.startDate && format(new Date(wo.startDate), 'dd MMM yyyy')}</div>
-                </div>
-              </CardContent>
-            </Card>
+
+        <div className="text-[13px] font-medium tracking-[0.06em] uppercase text-[#5A687C]">Pilih pekerjaan</div>
+        {JOBS.map(j => (
+          <Link key={j.href} href={j.href} className="flex items-center gap-3.5 bg-white border border-[#DFE5EC] rounded-[14px] px-4 py-4 shadow-sm">
+            <div className="w-14 h-14 rounded-xl flex items-center justify-center shrink-0" style={{ background: j.bg }}><j.icon className="w-7 h-7" style={{ color: j.fg }} /></div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xl font-bold flex items-center gap-2">
+                {j.title}
+                {j.countKey === 'wo' && woCount > 0 && <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: j.bg, color: j.fg }}>{woCount} WO</span>}
+              </div>
+              <div className="text-sm text-[#5A687C] mt-0.5">{j.desc}</div>
+            </div>
+            <ChevronRight className="w-[22px] h-[22px] shrink-0 text-[#5A687C]" />
           </Link>
         ))}
-      </div>
 
-      <div className="mt-6 text-center">
-        {session?.user?.role !== 'operator' && (
-          <Link href="/dashboard" className="text-xs text-muted-foreground hover:text-foreground">← Kembali ke Dashboard</Link>
+        {pending.length > 0 && (
+          <>
+            <div className="text-[13px] font-medium tracking-[0.06em] uppercase text-[#5A687C] mt-2.5">Belum selesai ({pending.length})</div>
+            {pending.map(p => (
+              <Link key={p.key} href={p.href} className="flex items-center gap-3 bg-[#FFFBEB] border border-[#FDE68A] rounded-[14px] px-4 py-3.5">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-base font-bold truncate">{p.title}</div>
+                  <div className="text-sm text-[#5A687C] truncate">{p.sub}{p.at ? ` · ${when(p.at)}` : ''}</div>
+                </div>
+                <span className="text-[15px] font-bold shrink-0" style={{ color: p.color }}>Lanjutkan</span>
+              </Link>
+            ))}
+          </>
+        )}
+
+        <Link href="/tally/riwayat" className="flex items-center gap-3 bg-white border border-[#DFE5EC] rounded-[14px] px-4 py-3.5 mt-2.5">
+          <div className="w-10 h-10 rounded-[10px] bg-[#F1F5F9] text-[#334155] flex items-center justify-center shrink-0"><History className="w-5 h-5" /></div>
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-bold">Riwayat Tally</div>
+            <div className="text-sm text-[#5A687C]">Tally yang sudah selesai & berita acara</div>
+          </div>
+          <ChevronRight className="w-5 h-5 shrink-0 text-[#5A687C]" />
+        </Link>
+
+        {role && role !== 'operator' && (
+          <Link href="/dashboard" className="mt-auto pt-4 text-center text-sm text-[#5A687C] min-h-[44px] flex items-center justify-center">← Kembali ke Dashboard</Link>
         )}
       </div>
     </div>

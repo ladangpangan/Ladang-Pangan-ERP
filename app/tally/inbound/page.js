@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useSession } from '@/lib/auth/auth-client';
@@ -327,13 +328,13 @@ export default function TallyInboundPage() {
     const res = await fetch(`/api/tally-sessions/${id}`, { method: 'DELETE', credentials: 'include' });
     if (res.ok) { toast.success('Dihapus'); mutateDrafts(); } else toast.error('Gagal menghapus');
   };
+  // Dibuka dari "Belum selesai" di Beranda Tally: /tally/inbound?session=<id>
+  const searchParams = useSearchParams();
+  const sessionParam = searchParams.get('session');
   useEffect(() => {
-    try {
-      const sid = new URLSearchParams(window.location.search).get('session');
-      if (sid) loadSession(sid);
-    } catch {}
+    if (sessionParam) loadSession(sessionParam);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionParam]);
 
   // ===== Navigasi langkah =====
   const goSetup = () => {
