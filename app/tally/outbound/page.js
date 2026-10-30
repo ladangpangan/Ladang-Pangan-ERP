@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth/auth-client';
 import { BarcodeScanner } from '@/components/barcode-scanner';
+import { KodeConfirm } from '@/components/kode-confirm';
 import { WeightInput } from '@/components/ui/weight-input';
 import { ArrowLeft, ArrowUpFromLine, ChevronRight, Loader2, ScanLine, Keyboard, ListChecks, Check, AlertCircle, Search, X, Snowflake, Scale } from 'lucide-react';
 import { format } from 'date-fns';
@@ -129,6 +130,7 @@ function OrderScan({ soId, onDone }) {
   const [order, setOrder] = useState([]); // [{ itemId, stockId }]
   const [result, setResult] = useState(null); // { ok, title, text }
   const [scanning, setScanning] = useState(true);
+  const [textRead, setTextRead] = useState(null); // hasil baca tulisan spidol, menunggu konfirmasi
   const [checking, setChecking] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState('');
@@ -339,7 +341,12 @@ function OrderScan({ soId, onDone }) {
         </div>
       )}
 
-      {scanning && <BarcodeScanner continuous accent="#FB923C" height={170} onDetect={handleCode} />}
+      {textRead && (
+        <KodeConfirm result={textRead} mode="stock" accent={ORANGE}
+          onAccept={(c) => { setTextRead(null); setScanning(true); handleCode(c); }}
+          onRetake={() => { setTextRead(null); setScanning(true); }} />
+      )}
+      {scanning && !textRead && <BarcodeScanner continuous accent="#FB923C" height={170} onDetect={handleCode} onText={(r) => { setScanning(false); setTextRead(r); }} />}
       <button type="button" onClick={() => setScanning(s => !s)} className="min-h-[60px] rounded-xl text-white text-xl font-bold flex items-center justify-center gap-2.5" style={{ background: ORANGE }}>
         {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}
         {scanning ? 'Tutup Kamera' : 'Scan Karung'}

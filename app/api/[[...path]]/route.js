@@ -28,6 +28,7 @@ import * as recapMongo from '@/lib/db/recap-mongo';
 import { getMongoDb } from '@/lib/db/mongo';
 import { ensureHppBackfill } from '@/lib/db/hpp-backfill';
 import { recordLedger } from '@/lib/inventory/ledger';
+import { matchKode } from '@/lib/ocr/match-kode';
 import * as soPoRollback from '@/lib/ops/so-po-rollback';
 import * as billRecap from '@/lib/finance/bill-recap';
 import { DEFAULT_TEMPLATE as RECAP_DEFAULT_TEMPLATE, sanitizeColumns as sanitizeRecapColumns } from '@/lib/finance/recap-fields';
@@ -6799,6 +6800,34 @@ async function handleRoute(request, { params }) {
         if (ts && ts.status === 'draft') return json({ data: { available: false, reason: 'in_draft', message: `${code} sudah di-scan di tally lain yang belum selesai.` } });
       }
       return json({ data: { available: true, code } });
+    }
+
+    // GET /tally-sessions/match-kode?code=X[&conf=90,85,…] — hasil baca tulisan spidol (OCR) dicocokkan
+    // dengan kode simpan di gudang. `exact` = kode persis ada (status apa pun); `candidates` = kode mirip
+    // yang masih di gudang, untuk dipilih petugas kalau OCR salah baca.
+    if (route === '/tally-sessions/match-kode' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const u = new URL(request.url);
+      const code = String(u.searchParams.get('code') || '').replace(/\D/g, '');
+      const confs = String(u.searchParams.get('conf') || '').split(',').filter(Boolean).map(Number);
+      if (!code) return err('Kode kosong', 400);
+      const IN_STOCK = ['active', 'opened', 'allocated'];
+      const products = new Map(db.select({ id: s.products.id, name: s.products.name }).from(s.products).all().map(p => [p.id, p.name]));
+      const zones = new Map(db.select({ id: s.zones.id, code: s.zones.code }).from(s.zones).all().map(z => [z.id, z.code]));
+      const info = (stk) => ({
+        code: stk.kodeSimpan, productName: products.get(stk.productId) || null, weight: Number(stk.weight || 0),
+        zoneCode: stk.zoneId ? zones.get(stk.zoneId) || null : null, status: stk.status, inStock: IN_STOCK.includes(stk.status),
+      });
+      const cols = { kodeSimpan: s.inventoryStock.kodeSimpan, productId: s.inventoryStock.productId, weight: s.inventoryStock.weight, zoneId: s.inventoryStock.zoneId, status: s.inventoryStock.status };
+      const exactRow = db.select(cols).from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get();
+      const rows = db.select(cols).from(s.inventoryStock)
+        .where(and(inArray(s.inventoryStock.status, IN_STOCK), isNull(s.inventoryStock.archivedAt))).all();
+      const byCode = new Map(rows.map(r => [r.kodeSimpan, r]));
+      const candidates = matchKode(code, rows.map(r => r.kodeSimpan), confs, { limit: 4 })
+        .filter(m => m.code !== code)
+        .map(m => ({ ...info(byCode.get(m.code)), distance: m.distance }));
+      return json({ data: { code, exact: exactRow ? info(exactRow) : null, candidates } });
     }
 
     // GET /tally-sessions/:id — one session with items

@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { WeightInput } from '@/components/ui/weight-input';
 import { BarcodeScanner } from '@/components/barcode-scanner';
+import { KodeConfirm } from '@/components/kode-confirm';
 import { ArrowLeft, ClipboardCheck, ScanLine, Check, AlertCircle, Loader2, Keyboard, Trash2 } from 'lucide-react';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
@@ -37,6 +38,7 @@ export default function TallyOpnamePage() {
   const [op, setOp] = useState(null); // ringkasan opname aktif dari server
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [textRead, setTextRead] = useState(null); // hasil baca tulisan spidol, menunggu konfirmasi
   const [checking, setChecking] = useState(false);
   const [current, setCurrent] = useState(null); // hasil scan yang menunggu konfirmasi
   const [weighing, setWeighing] = useState(false);
@@ -254,9 +256,13 @@ export default function TallyOpnamePage() {
               )}
               <button type="button" onClick={() => setCurrent(null)} className="w-full py-2 text-sm text-[#5A687C] border-t border-[#EEF2F6]">Batal, bukan karung ini</button>
             </div>
+          ) : textRead ? (
+            <KodeConfirm result={textRead} mode="stock" accent={BLUE}
+              onAccept={(c) => { setTextRead(null); handleCode(c); }}
+              onRetake={() => { setTextRead(null); setScanning(true); }} />
           ) : (
             <>
-              {scanning && <BarcodeScanner accent="#60A5FA" height={170} onDetect={(c) => handleCode(c)} />}
+              {scanning && <BarcodeScanner accent="#60A5FA" height={170} onDetect={(c) => handleCode(c)} onText={(r) => { setScanning(false); setTextRead(r); }} />}
               <button type="button" onClick={() => { setErrorMsg(null); setScanning(s => !s); }} disabled={checking}
                 className="min-h-[64px] rounded-xl text-white text-xl font-bold flex items-center justify-center gap-2.5 disabled:opacity-60" style={{ background: BLUE }}>
                 {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}

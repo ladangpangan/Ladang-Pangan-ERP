@@ -2,28 +2,77 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-// Pemindai barcode/QR lewat kamera HP (Tally Inbound/Outbound).
-// Pakai BarcodeDetector bawaan browser (Chrome Android) bila ada; selain itu jatuh ke @zxing/browser.
+// Pemindai kode karung lewat kamera HP (Tally Masuk/Keluar/Opname): QR, barcode, dan tulisan spidol.
+// Barcode/QR: BarcodeDetector bawaan browser (Chrome Android) bila ada; selain itu @zxing/browser.
+// Tulisan spidol (angka): dibaca di HP oleh lib/ocr/digit-ocr bila `onText` diberikan. Barcode didahulukan;
+// tulisan baru dicoba kalau tidak ada barcode yang terlihat. Hasil tulisan wajib dikonfirmasi petugas.
 // Kamera hanya bisa dibuka di alamat https (atau localhost).
 const NATIVE_FORMATS = ['code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'itf', 'codabar', 'upc_a', 'upc_e', 'qr_code', 'data_matrix'];
 
-export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399', height = 200 }) {
+// Kotak bidik (pecahan dari area kamera). Tulisan dibaca hanya di dalam kotak ini.
+const GUIDE = { x: 0.06, y: 0.24, w: 0.88, h: 0.5 };
+const OCR_IDLE_MS = 1200;   // tulisan dicoba setelah sekian lama tidak ada barcode
+const OCR_EVERY_MS = 1400;  // jeda antar percobaan baca tulisan otomatis
+
+export function BarcodeScanner({ onDetect, onText, continuous = false, accent = '#34D399', height = 200 }) {
   const videoRef = useRef(null);
   const onDetectRef = useRef(onDetect);
+  const onTextRef = useRef(onText);
   const lastRef = useRef({ code: '', at: 0 });
+  const lastBarcodeAt = useRef(0);
+  const ocrBusy = useRef(false);
+  const ocrPrev = useRef('');
+  const pausedRef = useRef(false);
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [hint, setHint] = useState(null);
+  const ocrOn = typeof onText === 'function';
 
   useEffect(() => { onDetectRef.current = onDetect; }, [onDetect]);
+  useEffect(() => { onTextRef.current = onText; }, [onText]);
+
+  // Baca tulisan di kotak bidik. `manual` = petugas menekan tombol: tampilkan hasil apa pun yang terbaca.
+  const readText = async (manual) => {
+    const video = videoRef.current;
+    if (!video || ocrBusy.current || pausedRef.current || video.readyState < 2) return;
+    ocrBusy.current = true;
+    if (manual) { setReading(true); setHint(null); }
+    try {
+      const { cropVideo, readKode } = await import('@/lib/ocr/digit-ocr');
+      const crop = cropVideo(video, GUIDE);
+      if (!crop) return;
+      const r = await readKode(crop, { quick: !manual });
+      if (pausedRef.current) return;
+      const okAuto = r && r.digits.length >= 8 && r.digits.every(d => d.conf >= 55);
+      if (manual ? (r && r.digits.length >= 4) : (okAuto && r.code === ocrPrev.current)) {
+        ocrPrev.current = '';
+        pausedRef.current = true; // tunggu konfirmasi petugas
+        try { navigator.vibrate?.(60); } catch {}
+        onTextRef.current?.({ ...r, image: crop.toDataURL('image/jpeg', 0.8) });
+        return;
+      }
+      ocrPrev.current = okAuto ? r.code : '';
+      if (manual) setHint('Tulisan belum terbaca. Dekatkan HP, pastikan terang, lalu coba lagi.');
+    } catch {
+      if (manual) setHint('Pembaca tulisan tidak bisa dimuat. Pakai "Ketik kode manual".');
+    } finally {
+      ocrBusy.current = false;
+      if (manual) setReading(false);
+    }
+  };
 
   useEffect(() => {
     let stopped = false;
     let stream = null;
     let timer = null;
+    let ocrTimer = null;
     let zxingControls = null;
+    pausedRef.current = false;
 
     const emit = (raw) => {
       const code = String(raw || '').trim();
+      lastBarcodeAt.current = Date.now();
       if (!code || stopped) return;
       const now = Date.now();
       // Kode yang sama dianggap scan yang sama selama label masih terlihat (jeda < 2,5 detik antar deteksi)
@@ -43,7 +92,7 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
         return;
       }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
       } catch (e) {
         setError(e?.name === 'NotAllowedError'
           ? 'Izin kamera ditolak. Izinkan kamera di pengaturan browser, lalu coba lagi.'
@@ -55,6 +104,17 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
       video.srcObject = stream;
       try { await video.play(); } catch {}
       setReady(true);
+      lastBarcodeAt.current = Date.now();
+
+      if (ocrOn) {
+        import('@/lib/ocr/digit-ocr').then(m => m.loadDigitModel()).catch(() => {});
+        const ocrTick = async () => {
+          if (stopped) return;
+          if (Date.now() - lastBarcodeAt.current > OCR_IDLE_MS && !document.hidden) await readText(false);
+          if (!stopped) ocrTimer = setTimeout(ocrTick, OCR_EVERY_MS);
+        };
+        ocrTimer = setTimeout(ocrTick, OCR_IDLE_MS);
+      }
 
       let detector = null;
       if ('BarcodeDetector' in window) {
@@ -68,7 +128,7 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
         const tick = async () => {
           if (stopped) return;
           try {
-            if (video.readyState >= 2) {
+            if (video.readyState >= 2 && !pausedRef.current) {
               const found = await detector.detect(video);
               if (found && found[0]) {
                 emit(found[0].rawValue);
@@ -86,7 +146,7 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
         if (stopped) return;
         const reader = new BrowserMultiFormatReader();
         zxingControls = await reader.decodeFromVideoElement(video, (result) => {
-          if (result) {
+          if (result && !pausedRef.current) {
             emit(result.getText());
             if (!continuous) zxingControls?.stop();
           }
@@ -100,16 +160,18 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      if (ocrTimer) clearTimeout(ocrTimer);
       try { zxingControls?.stop(); } catch {}
       if (stream) stream.getTracks().forEach(t => t.stop());
     };
-  }, [continuous]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continuous, ocrOn]);
 
   const corner = { position: 'absolute', width: 30, height: 30, borderColor: accent, borderStyle: 'solid' };
   return (
     <div className="relative rounded-[14px] overflow-hidden bg-[#0F1729] shrink-0" style={{ height }}>
       <video ref={videoRef} playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-      {!error && (
+      {!error && !ocrOn && (
         <>
           <div style={{ ...corner, left: '22%', top: '14%', borderWidth: '4px 0 0 4px', borderRadius: '6px 0 0 0' }} />
           <div style={{ ...corner, right: '22%', top: '14%', borderWidth: '4px 4px 0 0', borderRadius: '0 6px 0 0' }} />
@@ -118,6 +180,23 @@ export function BarcodeScanner({ onDetect, continuous = false, accent = '#34D399
           <div className="absolute left-0 right-0 bottom-2 text-center text-sm text-slate-300">
             {ready ? 'Arahkan kamera ke barcode karung' : 'Membuka kamera…'}
           </div>
+        </>
+      )}
+      {!error && ocrOn && (
+        <>
+          <div className="absolute rounded-[10px]" style={{
+            left: `${GUIDE.x * 100}%`, top: `${GUIDE.y * 100}%`, width: `${GUIDE.w * 100}%`, height: `${GUIDE.h * 100}%`,
+            border: `3px solid ${accent}`, boxShadow: '0 0 0 400px rgba(15,23,41,0.5)',
+          }} />
+          <div className="absolute left-0 right-0 top-1.5 text-center text-[13px] font-medium text-white px-3">
+            {ready ? (hint || 'Arahkan kotak ke QR, barcode, atau tulisan kode') : 'Membuka kamera…'}
+          </div>
+          {ready && (
+            <button type="button" onClick={() => readText(true)} disabled={reading}
+              className="absolute left-1/2 -translate-x-1/2 bottom-1.5 min-h-[36px] px-4 rounded-full bg-white/90 text-[#0F1729] text-sm font-bold disabled:opacity-70">
+              {reading ? 'Membaca tulisan…' : 'Baca tulisan sekarang'}
+            </button>
+          )}
         </>
       )}
       {error && (
