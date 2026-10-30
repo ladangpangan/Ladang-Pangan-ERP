@@ -223,6 +223,7 @@ function recommendStockCombo(lots, targetKg) {
 // numbers. Read-only full-replace hydrate => safe on any path (mutations still persist explicitly).
 const SALES_PATHS = new Set([
   'sales-orders', 'tally-outbound',
+  'opnames', // approve opname timbang ulang memperbarui berat alokasi SO Draft
   'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts', 'finance',
 ]);
 
@@ -249,7 +250,9 @@ const POTX_PATHS = new Set([
 // Phase 6: path[0] prefixes that READ or WRITE fixed_assets / stock_opname(+items).
 // fixed_assets CRUD lives under /accounting/fixed-assets; stock_opname under /opnames; the accounting
 // reports/engine read both (depreciation + shrinkage auto journals). Diff-persist, concurrency-safe.
-const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports']);
+// tally-outbound: timbang ulang membuat stock opname; sales-orders: konfirmasi SO dicegah selama
+// timbang ulang karungnya masih menunggu persetujuan.
+const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports', 'tally-outbound', 'sales-orders']);
 
 // Phase 7: path[0] prefixes that READ or WRITE Work Order (produksi) tables + approvals.
 // WO writers: work-orders, wo-stages, inventory (wo_outputs). Approvals are created via the
@@ -259,7 +262,7 @@ const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'repo
 const WO_APPROVAL_PATHS = new Set([
   'work-orders', 'wo-stages', 'inventory', 'sales-reports', 'production-reports',
   'accounting', 'dashboard', 'reports',
-  'approvals', 'purchase-orders', 'sales-orders', 'opnames',
+  'approvals', 'purchase-orders', 'sales-orders', 'opnames', 'tally-outbound',
 ]);
 
 // Phase 9: path[0] prefixes that READ or WRITE tally_session(+items) and/or inventory_transaction.
@@ -376,7 +379,7 @@ async function handleRoute(request, { params }) {
     // always available regardless of `only`.
     let only = null;
     if (isRead) {
-      if (route === '/sales-orders') only = new Set(['sales']);                 // reads sales_order + contacts(master)
+      if (route === '/sales-orders') only = new Set(['sales', 'potx']);         // reads sales_order + sales_returns(potx) + contacts(master)
       else if (route === '/purchase-orders') only = new Set(['potx']);          // reads purchase_order + contacts(master)
       else if (route === '/inventory/stocks') only = new Set(['inventory', 'sales']); // reads inventory_stock + Draft SO reservations
     }
@@ -601,10 +604,13 @@ async function handleRoute(request, { params }) {
 
       const uid = session.user.id;
       const sub = path[1] || '';
+      // Tanggal "Sampai"/"Per tanggal" berbentuk YYYY-MM-DD berarti sampai AKHIR hari itu (23:59:59),
+      // agar transaksi pada tanggal tersebut ikut terhitung.
+      const endOfDay = (v) => { const t = acct.toSec(v); return (t != null && /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) ? t + 86399 : t; };
       const parseRange = (url) => ({
         from: acct.toSec(url.searchParams.get('from')),
-        to: acct.toSec(url.searchParams.get('to')),
-        asOf: acct.toSec(url.searchParams.get('asOf')),
+        to: endOfDay(url.searchParams.get('to')),
+        asOf: endOfDay(url.searchParams.get('asOf')),
       });
       // Auto-post (regenerate auto journals) before reads, if enabled.
       // Guarded by a dirty-flag + 20s TTL so we only run the heavy syncLedger() when source data actually
@@ -863,6 +869,8 @@ async function handleRoute(request, { params }) {
       // ---- Sales Profit Report (Laporan Laba Penjualan) ----
       if (sub === 'sales-profit' && method === 'GET') {
         autoSync();
+        // HPP retur memakai Kartu Stok (RETURN_IN): segarkan dari Mongo (TTL 60 dtk)
+        if (Date.now() - (g.stockLedger || 0) > 60000) { try { await jmongo.ensureStockLedgerReady(raw); g.stockLedger = Date.now(); } catch { /* best-effort */ } }
         const { from, to } = parseRange(new URL(request.url));
         return json({ data: acct.salesProfitReport(raw, { from, to }) });
       }
@@ -3305,19 +3313,24 @@ async function handleRoute(request, { params }) {
       if (!po) return err('Not found', 404);
       const allowed = PO_FLOW[po.pipelineStatus] || [];
       if (!allowed.includes(target)) return err(`Transisi ${po.pipelineStatus} -> ${target} tidak diizinkan`);
-      db.update(s.purchaseOrder).set({ pipelineStatus: target, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      const cancelling = target === 'Dibatalkan' || target === 'Cancelled';
+      const reason = cancelling ? String(body.reason || '').trim() : '';
+      const poUpd = { pipelineStatus: target, updatedAt: new Date() };
+      // Alasan pembatalan disimpan di catatan PO agar terlacak
+      if (reason) poUpd.notes = [po.notes, `Dibatalkan ${new Date().toLocaleDateString('id-ID')}: ${reason}`].filter(Boolean).join('\n');
+      db.update(s.purchaseOrder).set(poUpd).where(eq(s.purchaseOrder.id, id)).run();
       // Auto-create approval concern for PO Cancellation
-      if (target === 'Dibatalkan' || target === 'Cancelled') {
+      if (cancelling) {
         createApproval({
           concernType: 'po_cancel',
           entityType: 'PO',
           entityId: id,
           entityNumber: po.poNumber,
           title: `Pembatalan PO ${po.poNumber}`,
-          description: `Purchase Order dibatalkan dari status ${po.pipelineStatus}. Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}`,
+          description: `Purchase Order dibatalkan dari status ${po.pipelineStatus}. Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}${reason ? ` · Alasan: ${reason}` : ''}`,
           priority: Number(po.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
           amount: Number(po.totalAmount || 0),
-          metadata: { previousStatus: po.pipelineStatus, poNumber: po.poNumber },
+          metadata: { previousStatus: po.pipelineStatus, poNumber: po.poNumber, reason: reason || null },
           createdBy: session.user.email,
         });
       }
@@ -3848,7 +3861,11 @@ async function handleRoute(request, { params }) {
       const custIds = [...new Set(rows.map(r => r.customerId).filter(Boolean))];
       const cMap = {};
       if (custIds.length) for (const c of db.select({ id: s.contacts.id, code: s.contacts.code, name: s.contacts.displayName, isSubscriber: s.contacts.isSubscriber }).from(s.contacts).where(inArray(s.contacts.id, custIds)).all()) cMap[c.id] = { code: c.code, name: c.name, isSubscriber: c.isSubscriber };
-      const enriched = rows.map(r => ({ ...r, customer: cMap[r.customerId] || null }));
+      // Retur potong invoice per SO (agar daftar bisa menampilkan total bersih retur)
+      const retMap = {};
+      for (const rr of db.select({ soId: s.salesReturns.salesOrderId, v: sql`coalesce(sum(${s.salesReturns.totalAmount}),0)` }).from(s.salesReturns)
+        .where(eq(s.salesReturns.resolution, 'potong_invoice')).groupBy(s.salesReturns.salesOrderId).all()) retMap[rr.soId] = Number(rr.v || 0);
+      const enriched = rows.map(r => ({ ...r, customer: cMap[r.customerId] || null, returnsAmount: retMap[r.id] || 0 }));
       return json({ data: enriched });
     }
 
@@ -4130,8 +4147,21 @@ async function handleRoute(request, { params }) {
       const revenue = diupTotal;                                         // pendapatan bruto (faktur di-up, sudah termasuk ongkir pembeli)
       const netRevenue = Number(so.totalAmount || 0);                    // total tagihan riil (termasuk ongkir pembeli)
       const goodsRevenue = netRevenue - buyerShipping;                   // pendapatan barang saja (ongkir pembeli netral thd margin)
-      const grossProfit = Math.round(goodsRevenue - cogsTotal - sellerShipping);
-      const grossMarginPct = goodsRevenue > 0 ? Math.round((grossProfit / goodsRevenue) * 1000) / 10 : 0;
+      // Retur "potong invoice" mengurangi pendapatan; barang yang kembali ke stok mengurangi HPP
+      // (sama dengan Laporan Laba Penjualan / salesProfitReport).
+      const potongReturns = returns.filter(r => (r.resolution || 'potong_invoice') === 'potong_invoice');
+      const returnsDeducted = potongReturns.reduce((a, b) => a + Number(b.totalAmount || 0), 0);
+      let cogsRestocked = 0;
+      if (potongReturns.length) {
+        const rl = db.select({ w: s.stockLedger.weightIn, h: s.stockLedger.hppPerKg }).from(s.stockLedger)
+          .where(and(eq(s.stockLedger.referenceType, 'SR'), eq(s.stockLedger.movementType, 'RETURN_IN'), inArray(s.stockLedger.referenceId, potongReturns.map(r => r.id)))).all();
+        cogsRestocked = Math.round(rl.reduce((a, b) => a + Number(b.w || 0) * Number(b.h || 0), 0));
+      }
+      const netGoodsRevenue = goodsRevenue - returnsDeducted;
+      const grossProfit = Math.round(netGoodsRevenue - (cogsTotal - cogsRestocked) - sellerShipping);
+      const grossMarginPct = netGoodsRevenue > 0 ? Math.round((grossProfit / netGoodsRevenue) * 1000) / 10 : 0;
+      // Laba hanya untuk Direktur & Akuntan
+      const canSeeProfit = ['direktur', 'akuntan'].includes(session.user.role);
       const allAllocated = enrichedItems.length > 0 && enrichedItems.every(it => Number(it.allocatedWeight || 0) > 0);
       // Susut Dropship: selisih berat kirim (Surat Jalan) vs berat diterima customer (Penerimaan)
       let dropshipShipVsRecv = null;
@@ -4160,7 +4190,7 @@ async function handleRoute(request, { params }) {
           .from(s.contacts).where(eq(s.contacts.id, r.dropshipperId)).get();
         return { ...r, dropshipper: dsc || null };
       });
-      return json({ data: { ...so, items: enrichedItems, customer, salesContact: salesContact || null, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, grossProfit, grossMarginPct, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
+      return json({ data: { ...so, items: enrichedItems, customer, salesContact: salesContact || null, suratJalan: sjRows, payments, returns, receipts, outstanding, totalReturns, totalShrinkageValue, totalShrinkageWeight, cogsTotal: Math.round(cogsTotal), shippingCost, sellerShipping, buyerShipping, goodsRevenue, revenue, netRevenue, cashbackAmount: cashbackAmt, ...(canSeeProfit ? { grossProfit, grossMarginPct, returnsDeducted, cogsRestocked } : {}), canSeeProfit, allAllocated, linkedPurchaseOrder, dropshipShipVsRecv, commissions } });
     }
 
     // POST /sales-orders/:id/rollback - Rollback ke Draft atau Hapus Total (direktur-only).
@@ -4321,6 +4351,42 @@ async function handleRoute(request, { params }) {
         };
       });
       return json({ data: { id: so.id, soNumber: so.soNumber, customerName: cust?.name || '-', orderDate: so.orderDate, pipelineStatus: so.pipelineStatus, items: outItems } });
+    }
+
+    // GET /tally-outbound/orders/:id/scan?code=X — cari karung hasil scan untuk SO ini.
+    // Mengembalikan item SO yang cocok (berdasarkan produk) atau alasan ditolak.
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 4 && path[3] === 'scan' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2];
+      const code = String(new URL(request.url).searchParams.get('code') || '').trim();
+      if (!code) return err('Kode kosong', 400);
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get();
+      const reject = (reason, message) => json({ data: { ok: false, reason, code, message } });
+      if (!stk || stk.archivedAt) return reject('not_found', `${code} tidak ada di stok. Cek labelnya atau ketik kode manual.`);
+      const p = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, stk.productId)).get();
+      const items = db.select().from(s.salesOrderItems).where(eq(s.salesOrderItems.salesOrderId, soId)).all();
+      const item = items.find(it => it.productId === stk.productId);
+      // Sudah dialokasikan: ke SO ini (boleh, tampil sebagai sudah dipilih) atau SO lain (tolak)
+      const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.stockId, stk.id)).all();
+      const otherAlloc = allocs.find(a => a.salesOrderId !== soId);
+      if (stk.status !== 'active' && !allocs.some(a => a.salesOrderId === soId)) {
+        if (otherAlloc) {
+          const o = db.select({ n: s.salesOrder.soNumber }).from(s.salesOrder).where(eq(s.salesOrder.id, otherAlloc.salesOrderId)).get();
+          return reject('allocated', `${code} sudah dikunci untuk ${o?.n || 'SO lain'}. Ambil karung lain.`);
+        }
+        return reject('inactive', `${code} sudah tidak tersedia (status: ${stk.status}). Ambil karung lain.`);
+      }
+      if (!item) return reject('wrong_product', `${code} berisi ${p?.name || 'produk lain'}. Tidak ada di pesanan ini, jangan dimuat.`);
+      const cs = stk.coldStorageId ? db.select({ code: s.coldStorages.code }).from(s.coldStorages).where(eq(s.coldStorages.id, stk.coldStorageId)).get() : null;
+      const z = stk.zoneId ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, stk.zoneId)).get() : null;
+      return json({ data: {
+        ok: true, code, stockId: stk.id, itemId: item.id, productId: stk.productId, productName: p?.name || '-',
+        weight: Number(stk.weight || 0), csCode: cs?.code || null, zoneCode: z?.code || null, expiredDate: stk.expiredDate,
+        draftElsewhere: !!otherAlloc,
+      } });
     }
 
     // GET /tally-outbound/orders/:id/items/:itemId/stocks — kode simpan tersedia + rekomendasi (berat mendekati pesanan)
@@ -4682,6 +4748,12 @@ async function handleRoute(request, { params }) {
           if (allocs.length === 0) {
             const prod = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, it.productId)).get();
             return err(`Item "${prod?.name || it.productId}" belum dipilih kode simpannya. Alokasikan kode simpan dulu.`);
+          }
+          for (const a of allocs) {
+            const pending = db.select({ n: s.stockOpname.opnameNumber }).from(s.stockOpnameItems)
+              .innerJoin(s.stockOpname, eq(s.stockOpname.id, s.stockOpnameItems.opnameId))
+              .where(and(eq(s.stockOpnameItems.stockId, a.stockId), eq(s.stockOpname.status, 'submitted'), ne(s.stockOpnameItems.deltaWeight, 0))).get();
+            if (pending) return err(`Kode ${a.kodeSimpan} masih menunggu persetujuan timbang ulang (${pending.n}). Setujui atau tolak dulu di Stock Opname.`);
           }
           for (const al of allocs) {
             // Kode simpan dikonsumsi penuh (whole storage unit)
@@ -5597,6 +5669,27 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     // SALES REPORTS
     // =====================================================================
+    // GET /sales-reports/overview?from=YYYY-MM-DD&to=YYYY-MM-DD — Laporan Penjualan (satu periode untuk
+    // semua tab). Angka laba (HPP, ongkir, komisi, laba) hanya dikirim ke Direktur & Akuntan.
+    if (route === '/sales-reports/overview' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const day = (v, end) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) return null; const t = acct.toSec(v); return t == null ? null : t + (end ? 86399 : 0); };
+      const raw = getRawSqlite();
+      // Kartu Stok (retur kembali ke stok) dibaca untuk HPP retur: segarkan dari Mongo (TTL 60 dtk)
+      const gTs = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      if (Date.now() - (gTs.stockLedger || 0) > 60000) { try { await jmongo.ensureStockLedgerReady(raw); gTs.stockLedger = Date.now(); } catch { /* best-effort */ } }
+      const data = acct.salesOverview(raw, { from: day(url.searchParams.get('from'), false), to: day(url.searchParams.get('to'), true) });
+      const canSeeProfit = ['direktur', 'akuntan'].includes(session.user.role);
+      if (!canSeeProfit) {
+        const PROFIT = ['cogs', 'shipping', 'commission', 'grossProfit', 'netProfit', 'margin', 'netMargin', 'profitPerKg', 'hppMissing'];
+        const strip = (o) => { for (const k of PROFIT) delete o[k]; return o; };
+        strip(data.totals); data.byProduct.forEach(strip); data.byCustomer.forEach(strip); data.orders.forEach(strip);
+      }
+      return json({ data: { ...data, canSeeProfit } });
+    }
+
     if (route === '/sales-reports/daily' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
@@ -5607,7 +5700,7 @@ async function handleRoute(request, { params }) {
       // Exclude cancelled
       conds.push(sql`${s.salesOrder.pipelineStatus} != 'Cancelled'`);
       if (from) conds.push(sql`${s.salesOrder.orderDate} >= ${Math.floor(new Date(from).getTime() / 1000)}`);
-      if (to) conds.push(sql`${s.salesOrder.orderDate} <= ${Math.floor(new Date(to).getTime() / 1000)}`);
+      if (to) conds.push(sql`${s.salesOrder.orderDate} <= ${Math.floor(new Date(to).getTime() / 1000) + (/^\d{4}-\d{2}-\d{2}$/.test(to) ? 86399 : 0)}`); // sampai akhir hari
       const rows = db.select({
         date: sql`date(${s.salesOrder.orderDate}, 'unixepoch')`,
         count: sql`count(*)`,
@@ -6513,6 +6606,16 @@ async function handleRoute(request, { params }) {
       // body: { referenceId(PO/WO id), referenceType, coldStorageId, zoneId?, items: [{productId, weight, quantity, expiredDate, packagingType, zoneId?}] }
       if (!Array.isArray(body.items) || body.items.length === 0) { const e = new Error('items required'); e.status = 400; throw e; }
       if (!body.coldStorageId) { const e = new Error('coldStorageId required'); e.status = 400; throw e; }
+      // Kode simpan (label/barcode karung) harus unik — cek sebelum menulis apa pun agar pesan jelas.
+      const seenKode = new Set();
+      for (const it of body.items) {
+        const k = it.kodeSimpan ? String(it.kodeSimpan).trim() : '';
+        if (!k) continue;
+        if (seenKode.has(k)) { const e = new Error(`Kode ${k} dipakai dua kali di tally ini`); e.status = 400; throw e; }
+        seenKode.add(k);
+        const dup = db.select({ id: s.inventoryStock.id }).from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, k)).get();
+        if (dup) { const e = new Error(`Kode ${k} sudah dipakai karung lain di stok`); e.status = 400; throw e; }
+      }
       const txId = uuidv4();
       const totalW = body.items.reduce((a, b) => a + Number(b.weight || 0), 0);
       const totalQ = body.items.reduce((a, b) => a + Number(b.quantity || 0), 0);
@@ -6669,6 +6772,30 @@ async function handleRoute(request, { params }) {
         .where(eq(s.tallySession.status, status))
         .orderBy(desc(s.tallySession.updatedAt)).all();
       return json({ data: rows.map(r => enrichTallySession(r, false)) });
+    }
+
+    // GET /tally-sessions/check-kode?code=X[&session=<id>] — cek kode karung hasil scan (Tally Inbound).
+    // Kode tidak boleh sudah ada di stok, atau sudah dipakai di draft tally lain.
+    if (route === '/tally-sessions/check-kode' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const u = new URL(request.url);
+      const code = String(u.searchParams.get('code') || '').trim();
+      const own = u.searchParams.get('session') || '';
+      if (!code) return err('Kode kosong', 400);
+      const stk = db.select({ id: s.inventoryStock.id, productId: s.inventoryStock.productId, createdAt: s.inventoryStock.createdAt })
+        .from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get();
+      if (stk) {
+        const p = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, stk.productId)).get();
+        return json({ data: { available: false, reason: 'in_stock', message: `${code} sudah dipakai (${p?.name || 'produk lain'}). Ambil karung dengan label baru.` } });
+      }
+      const drafts = db.select({ sid: s.tallySessionItems.sessionId }).from(s.tallySessionItems).where(eq(s.tallySessionItems.kodeSimpan, code)).all();
+      for (const d of drafts) {
+        if (d.sid === own) continue;
+        const ts = db.select({ status: s.tallySession.status }).from(s.tallySession).where(eq(s.tallySession.id, d.sid)).get();
+        if (ts && ts.status === 'draft') return json({ data: { available: false, reason: 'in_draft', message: `${code} sudah di-scan di tally lain yang belum selesai.` } });
+      }
+      return json({ data: { available: true, code } });
     }
 
     // GET /tally-sessions/:id — one session with items
@@ -7046,6 +7173,71 @@ async function handleRoute(request, { params }) {
 
     // ===== STOCK OPNAME =====
     // POST /opnames - create opname
+    // POST /tally-outbound/orders/:id/reweigh — Timbang ulang karung saat Tally Outbound.
+    // body: { items: [{ stockId, weight }] }. Berat TIDAK langsung diubah: dibuat Stock Opname
+    // (status submitted) per gudang yang menunggu persetujuan admin/supervisor. Saat disetujui,
+    // berat stok + alokasi SO Draft ikut diperbarui (lihat /opnames/:id/approve).
+    if (route.startsWith('/tally-outbound/orders/') && path.length === 4 && path[3] === 'reweigh' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const soId = path[2];
+      const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+      if (!so) return err('SO tidak ditemukan', 404);
+      if (so.pipelineStatus !== 'Draft') return err('Timbang ulang hanya untuk SO Draft');
+      const body = await request.json();
+      const reqItems = Array.isArray(body.items) ? body.items : [];
+      const byCs = new Map();
+      for (const r of reqItems) {
+        const w = Math.round(Number(r.weight || 0) * 1000) / 1000;
+        if (!(w > 0)) return err('Berat timbang ulang harus lebih dari 0');
+        const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, r.stockId)).get();
+        if (!stk) return err('Stok tidak ditemukan', 404);
+        const mine = db.select({ id: s.soItemStocks.id }).from(s.soItemStocks)
+          .where(and(eq(s.soItemStocks.stockId, stk.id), eq(s.soItemStocks.salesOrderId, soId))).get();
+        if (!mine) return err(`Kode ${stk.kodeSimpan} bukan karung pesanan ini`);
+        if (Math.abs(w - Number(stk.weight || 0)) < 0.01) continue;
+        const pending = db.select({ n: s.stockOpname.opnameNumber }).from(s.stockOpnameItems)
+          .innerJoin(s.stockOpname, eq(s.stockOpname.id, s.stockOpnameItems.opnameId))
+          .where(and(eq(s.stockOpnameItems.stockId, stk.id), eq(s.stockOpname.status, 'submitted'), ne(s.stockOpnameItems.deltaWeight, 0))).get();
+        if (pending) return err(`Kode ${stk.kodeSimpan} sudah ada timbang ulang yang menunggu persetujuan (${pending.n})`);
+        if (!byCs.has(stk.coldStorageId)) byCs.set(stk.coldStorageId, []);
+        byCs.get(stk.coldStorageId).push({ stk, w });
+      }
+      const created = [];
+      for (const [csId, rows] of byCs) {
+        const id = uuidv4();
+        const number = nextOpnameNumber();
+        const totalDW = Math.round(rows.reduce((a, r) => a + (r.w - Number(r.stk.weight || 0)), 0) * 1000) / 1000;
+        db.insert(s.stockOpname).values({
+          id, opnameNumber: number, opnameDate: new Date(), coldStorageId: csId,
+          status: 'submitted', totalDeltaWeight: totalDW, totalDeltaQty: 0,
+          notes: `Timbang ulang Tally Outbound ${so.soNumber}`,
+          createdBy: session.user.email, submittedAt: new Date(), createdAt: new Date(),
+        }).run();
+        for (const r of rows) {
+          const q = Number(r.stk.quantity || 0);
+          db.insert(s.stockOpnameItems).values({
+            id: uuidv4(), opnameId: id, stockId: r.stk.id,
+            systemQty: q, systemWeight: Number(r.stk.weight || 0), physicalQty: q, physicalWeight: r.w,
+            deltaQty: 0, deltaWeight: Math.round((r.w - Number(r.stk.weight || 0)) * 1000) / 1000,
+            notes: `Timbang ulang ${r.stk.kodeSimpan} untuk ${so.soNumber}`,
+          }).run();
+        }
+        const sign = totalDW > 0 ? '+' : '';
+        createApproval({
+          concernType: 'opname_variance', entityType: 'OPNAME', entityId: id, entityNumber: number,
+          title: `Timbang ulang ${so.soNumber} · ${sign}${totalDW.toFixed(2)} kg`,
+          description: `${rows.length} karung ditimbang ulang saat Tally Outbound ${so.soNumber}. Setujui Stock Opname ${number} agar berat stok & tagihan SO ikut diperbarui.`,
+          priority: Math.abs(totalDW) > 20 ? 'high' : 'normal',
+          amount: 0,
+          metadata: { opnameNumber: number, totalDeltaWeight: totalDW, salesOrderId: soId, soNumber: so.soNumber },
+          createdBy: session.user.email,
+        });
+        created.push({ id, opnameNumber: number, count: rows.length, totalDeltaWeight: totalDW });
+      }
+      return json({ data: { opnames: created } }, { status: 201 });
+    }
+
     if (route === '/opnames' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
@@ -7210,7 +7402,38 @@ async function handleRoute(request, { params }) {
         }
       }
       db.update(s.stockOpname).set({ status: 'approved', approvedBy: session.user.email, approvedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      // Karung yang sudah dialokasikan ke SO Draft (timbang ulang Tally Outbound): berat alokasi &
+      // tagihan SO ikut berat baru.
+      const touchedSo = new Set();
+      for (const it of items) {
+        if (Number(it.deltaWeight || 0) === 0) continue;
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.stockId, it.stockId)).all();
+        for (const a of allocs) {
+          const soRow = db.select({ st: s.salesOrder.pipelineStatus }).from(s.salesOrder).where(eq(s.salesOrder.id, a.salesOrderId)).get();
+          if (soRow?.st !== 'Draft') continue;
+          db.update(s.soItemStocks).set({ weight: Number(it.physicalWeight) }).where(eq(s.soItemStocks.id, a.id)).run();
+          touchedSo.add(a.salesOrderId);
+        }
+      }
+      if (touchedSo.size) {
+        const raw = getRawSqlite();
+        for (const soId of touchedSo) {
+          recalcSoTotals(soId);
+          try { await salesMongo.persistSalesOrderToMongo(raw, soId); } catch (e) { console.error('persist SO after opname approve', e?.message); }
+        }
+      }
       return json({ data: { ok: true, transactionId: txId, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
+    }
+    // DELETE /opnames/:id — hapus opname yang masih draft (belum diajukan, stok belum berubah)
+    if (route.startsWith('/opnames/') && path.length === 2 && method === 'DELETE') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, path[1])).get();
+      if (!op) return err('Not found', 404);
+      if (op.status !== 'draft') return err('Hanya opname draft yang bisa dihapus');
+      db.delete(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, op.id)).run();
+      db.delete(s.stockOpname).where(eq(s.stockOpname.id, op.id)).run();
+      return json({ data: { deleted: true } });
     }
     // POST /opnames/:id/reject
     if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'reject' && method === 'POST') {

@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, ClipboardCheck, Loader2, Plus, CheckCircle2, XCircle, Send, Save } from 'lucide-react';
+import { ArrowLeft, ClipboardCheck, Loader2, Plus, CheckCircle2, XCircle, Send, Save, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -140,6 +140,13 @@ function OpnameDetailDialog({ id, onClose, onRefresh, canApprove, canCreate }) {
     if (res.ok) { toast.success('Approved. Stock adjusted + notif ke Direktur.'); mutate(); onRefresh(); }
     else toast.error(j.error);
   };
+  const remove = async () => {
+    if (!confirm(`Hapus draft ${op.opnameNumber}? Stok tidak berubah.`)) return;
+    const res = await fetch(`/api/opnames/${id}`, { method: 'DELETE' });
+    const j = await res.json();
+    if (res.ok) { toast.success('Draft opname dihapus'); onRefresh(); onClose(); }
+    else toast.error(j.error || 'Gagal menghapus');
+  };
   const reject = async () => {
     const res = await fetch(`/api/opnames/${id}/reject`, { method: 'POST' });
     const j = await res.json();
@@ -153,7 +160,7 @@ function OpnameDetailDialog({ id, onClose, onRefresh, canApprove, canCreate }) {
         <DialogHeader>
           <div className="flex items-center gap-2">
             <DialogTitle className="font-mono">{op.opnameNumber}</DialogTitle>
-            <Badge className={op.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : op.status === 'submitted' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100'}>{op.status}</Badge>
+            <Badge className={op.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : op.status === 'submitted' ? 'bg-amber-100 text-amber-700' : op.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'}>{op.status}</Badge>
           </div>
           <DialogDescription>{op.coldStorage?.name} · {format(new Date(op.opnameDate), 'dd MMM yyyy')} · by {op.createdBy}</DialogDescription>
         </DialogHeader>
@@ -181,6 +188,7 @@ function OpnameDetailDialog({ id, onClose, onRefresh, canApprove, canCreate }) {
         </Table>
 
         <DialogFooter className="flex-wrap gap-2">
+          {editable && <Button variant="ghost" className="text-red-600 hover:text-red-700 hover:bg-red-50 mr-auto" onClick={remove} disabled={saving}><Trash2 className="w-4 h-4 mr-1" />Hapus Draft</Button>}
           {editable && <Button variant="outline" onClick={saveItems} disabled={saving}><Save className="w-4 h-4 mr-1" />Simpan Fisik</Button>}
           {editable && <Button onClick={submit} disabled={saving}><Send className="w-4 h-4 mr-1" />Submit for Approval</Button>}
           {op.status === 'submitted' && canApprove && (
