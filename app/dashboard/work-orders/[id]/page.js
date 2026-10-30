@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import { useState } from 'react';
 import useSWR from 'swr';
 import { useParams } from 'next/navigation';
@@ -22,6 +23,7 @@ import { ArrowLeft, Loader2, CheckCircle2, XCircle, Truck, Layers, Calculator, D
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { WO_COLOR } from '../page';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const WO_FLOW = { 'Draft': ['Disetujui', 'Dibatalkan'], 'Disetujui': ['Dalam Proses', 'Dibatalkan'], 'Dalam Proses': ['Selesai', 'Dibatalkan'], 'Selesai': [], 'Dibatalkan': [] };
@@ -85,9 +87,9 @@ export default function WODetailPage() {
       </CardContent></Card>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat label="Berat Live Bird" value={`${Number(wo.totalLiveBirdWeight).toLocaleString('id-ID')} kg`} sub={`${wo.totalLiveBirdHeadCount} ekor · BW ${Number(wo.bwAvg).toFixed(2)}kg`} />
+        <Stat label="Berat Live Bird" value={`${Number(wo.totalLiveBirdWeight).toLocaleString('id-ID')} kg`} sub={`${wo.totalLiveBirdHeadCount} ekor · BW ${fmtNum(wo.bwAvg, 2)} kg`} />
         <Stat label="Total Cost" value={`Rp ${Number(wo.totalCost).toLocaleString('id-ID')}`} sub={`Base + Maklon + Custom`} />
-        <Stat label="Total Rendemen" value={`${Number(wo.totalRendemenWeight).toLocaleString('id-ID')} kg`} sub={wo.totalLiveBirdWeight > 0 ? `${((wo.totalRendemenWeight / wo.totalLiveBirdWeight) * 100).toFixed(1)}% dari LB` : '-'} color="emerald" />
+        <Stat label="Total Rendemen" value={`${Number(wo.totalRendemenWeight).toLocaleString('id-ID')} kg`} sub={wo.totalLiveBirdWeight > 0 ? `${fmtNum((wo.totalRendemenWeight / wo.totalLiveBirdWeight) * 100, 1)}% dari LB` : '-'} color="emerald" />
         <Stat label="Ekor Mati" value={`${wo.ekorMati || 0} ekor`} sub={wo.po?.method || '-'} color={wo.ekorMati > 0 ? 'red' : 'slate'} />
       </div>
 
@@ -262,7 +264,7 @@ function StagesTab({ wo, onSaved, canOperate }) {
         <span className="text-sm text-muted-foreground">{(v === true || v === 'true') ? 'Ya' : 'Tidak'}</span>
       </div>
     );
-    if (f.type === 'date') return <Input type="date" value={v} onChange={(e) => set(e.target.value)} />;
+    if (f.type === 'date') return <DateInput value={v} onChange={(e) => set(e.target.value)} />;
     if (f.type === 'datetime') return <Input type="datetime-local" value={v} onChange={(e) => set(e.target.value)} />;
     if (f.type === 'number') return (
       <div className="relative">
@@ -439,9 +441,9 @@ function OutputsTab({ wo, onSaved, canOperate, canEdit }) {
         <div><CardTitle className="text-base">Outputs Final</CardTitle><CardDescription>Set produk output, berat, dan koefisien. Total weighted coefficient harus = 1 untuk alokasi cost 100%.</CardDescription></div>
         {canEdit && wo.pipelineStatus !== 'Selesai' && (
           <Dialog open={finalizeOpen} onOpenChange={setFinalizeOpen}>
-            <DialogTrigger asChild><Button size="sm" variant="default"><PackageCheck className="w-4 h-4 mr-1" />Kirim ke Inventory</Button></DialogTrigger>
+            <DialogTrigger asChild><Button size="sm" variant="default"><PackageCheck className="w-4 h-4 mr-1" />Kirim ke Stok</Button></DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Finalize & Kirim ke Inventory</DialogTitle></DialogHeader>
+              <DialogHeader><DialogTitle>Selesaikan & Kirim ke Stok</DialogTitle></DialogHeader>
               <div className="space-y-3">
                 <F label="Cold Storage *">
                   <Select value={finalizeForm.coldStorageId} onValueChange={v => setFinalizeForm({ ...finalizeForm, coldStorageId: v })}>
@@ -491,7 +493,7 @@ function OutputsTab({ wo, onSaved, canOperate, canEdit }) {
           </TableBody>
         </Table>
         <div className={`p-3 rounded-lg text-sm ${coefValid ? 'bg-emerald-50 border border-emerald-200' : 'bg-amber-50 border border-amber-200'}`}>
-          <b>Weighted Coefficient:</b> {weightedCoef.toFixed(4)} {coefValid ? '✓ (100% cost allocated)' : `⚠️ harus mendekati 1.000 agar total HPP = total cost`}
+          <b>Weighted Coefficient:</b> {fmtNum(weightedCoef, 4)} {coefValid ? '✓ (100% cost allocated)' : `⚠️ harus mendekati 1.000 agar total HPP = total cost`}
         </div>
         {canOperate && <div className="flex justify-between"><Button variant="outline" size="sm" onClick={add}><Plus className="w-4 h-4 mr-1" />Tambah Output</Button><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan Outputs</Button></div>}
       </CardContent>
@@ -506,12 +508,12 @@ function HppTab({ woId }) {
   const validPct = validation.totalCost > 0 ? (validation.allocated / validation.totalCost) * 100 : 0;
   return (
     <div className="space-y-4">
-      <Card><CardHeader><CardTitle className="text-base">Ringkasan HPP</CardTitle><CardDescription>Rumus: HPP = (Total Cost / Total Rendemen Weight) × Koefisien per Output</CardDescription></CardHeader>
+      <Card><CardHeader><CardTitle className="text-base">Ringkasan HPP</CardTitle><CardDescription>Rumus: HPP = (Total Cost / Total Berat Rendemen) × Koefisien per Output</CardDescription></CardHeader>
         <CardContent className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
           <Stat label="Total Cost" value={`Rp ${Number(validation.totalCost).toLocaleString('id-ID')}`} />
-          <Stat label="Total Rendemen Weight" value={`${Number(validation.totalWeight).toFixed(2)} kg`} />
+          <Stat label="Total Berat Rendemen" value={`${fmtNum(validation.totalWeight, 2)} kg`} />
           <Stat label="Base HPP/kg" value={`Rp ${Number(validation.baseHpp).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} color="emerald" />
-          <Stat label="Alokasi" value={`${validPct.toFixed(1)}%`} sub={`Delta: Rp ${Math.abs(validation.delta).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} color={Math.abs(validation.delta) < 1 ? 'emerald' : 'amber'} />
+          <Stat label="Alokasi" value={`${fmtNum(validPct, 1)}%`} sub={`Delta: Rp ${Math.abs(validation.delta).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} color={Math.abs(validation.delta) < 1 ? 'emerald' : 'amber'} />
         </CardContent>
       </Card>
       <Card><CardHeader><CardTitle className="text-base">Detail HPP per Output</CardTitle></CardHeader>
@@ -611,10 +613,10 @@ function ReportTab({ woId }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Stat label="Base Weight (LB)" value={`${Number(summary.baseWeight).toLocaleString('id-ID')} kg`} sub={`${summary.totalHeads} ekor · BW ${Number(summary.bwAvg).toFixed(2)}`} />
+        <Stat label="Base Weight (LB)" value={`${Number(summary.baseWeight).toLocaleString('id-ID')} kg`} sub={`${summary.totalHeads} ekor · BW ${fmtNum(summary.bwAvg, 2)}`} />
         <Stat label="Total Rendemen" value={`${Number(summary.totalOutputWeight).toLocaleString('id-ID')} kg`} />
-        <Stat label="Rendemen %" value={`${summary.overallRendemenPct.toFixed(2)}%`} color={summary.overallRendemenPct >= 70 ? 'emerald' : summary.overallRendemenPct >= 60 ? 'amber' : 'red'} sub="Actual (belum ada standard master)" />
-        <Stat label="Susut" value={`${(summary.baseWeight - summary.totalOutputWeight).toFixed(2)} kg`} color="red" sub={`${(((summary.baseWeight - summary.totalOutputWeight) / summary.baseWeight) * 100).toFixed(2)}%`} />
+        <Stat label="Rendemen %" value={`${fmtNum(summary.overallRendemenPct, 2)}%`} color={summary.overallRendemenPct >= 70 ? 'emerald' : summary.overallRendemenPct >= 60 ? 'amber' : 'red'} sub="Actual (belum ada standard master)" />
+        <Stat label="Susut" value={`${fmtNum(summary.baseWeight - summary.totalOutputWeight, 2)} kg`} color="red" sub={`${fmtNum(((summary.baseWeight - summary.totalOutputWeight) / summary.baseWeight) * 100, 2)}%`} />
       </div>
       <Card><CardHeader><CardTitle className="text-base">Yield per Stage</CardTitle></CardHeader>
         <CardContent className="p-0">
@@ -624,10 +626,10 @@ function ReportTab({ woId }) {
               {stages.map((st, i) => (
                 <TableRow key={i}>
                   <TableCell className="font-medium">{st.stageName}</TableCell>
-                  <TableCell className="text-right">{Number(st.inputWeight).toFixed(2)}</TableCell>
-                  <TableCell className="text-right">{Number(st.outputWeight).toFixed(2)}</TableCell>
+                  <TableCell className="text-right">{fmtNum(st.inputWeight, 2)}</TableCell>
+                  <TableCell className="text-right">{fmtNum(st.outputWeight, 2)}</TableCell>
                   <TableCell className="text-right">{st.headCount}</TableCell>
-                  <TableCell className="text-right"><Badge className={st.yieldPct >= 90 ? 'bg-emerald-100 text-emerald-700' : st.yieldPct >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}>{st.yieldPct.toFixed(1)}%</Badge></TableCell>
+                  <TableCell className="text-right"><Badge className={st.yieldPct >= 90 ? 'bg-emerald-100 text-emerald-700' : st.yieldPct >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}>{fmtNum(st.yieldPct, 1)}%</Badge></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -641,9 +643,9 @@ function ReportTab({ woId }) {
               {outputs.map(o => (
                 <TableRow key={o.id}>
                   <TableCell><div className="font-medium">{o.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{o.product?.sku}</div></TableCell>
-                  <TableCell className="text-right">{Number(o.weight).toFixed(2)} kg</TableCell>
+                  <TableCell className="text-right">{fmtNum(o.weight, 2)} kg</TableCell>
                   <TableCell className="text-right">{o.headCount}</TableCell>
-                  <TableCell className="text-right font-semibold">{o.rendemenPct.toFixed(2)}%</TableCell>
+                  <TableCell className="text-right font-semibold">{fmtNum(o.rendemenPct, 2)}%</TableCell>
                 </TableRow>
               ))}
             </TableBody></Table>

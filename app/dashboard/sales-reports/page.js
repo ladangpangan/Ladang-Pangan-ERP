@@ -15,9 +15,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, BarChart3, Loader2, FileSpreadsheet, AlertTriangle, ArrowUpRight, Lock } from 'lucide-react';
 import { exportToExcel } from '@/lib/xlsx-export';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
-const rp = (n) => 'Rp ' + Math.round(Number(n || 0)).toLocaleString('id-ID');
+const rp = (n) => 'Rp\u00A0' + Math.round(Number(n || 0)).toLocaleString('id-ID');
 const kg = (n) => Number(n || 0).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + ' kg';
 const pct = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
 const ymd = (d) => format(d, 'yyyy-MM-dd');
@@ -95,8 +96,8 @@ export default function SalesReportsPage() {
           </div>
           {preset === 'custom' && (
             <>
-              <div className="space-y-1"><Label className="text-xs" htmlFor="rep-from">Dari</Label><Input id="rep-from" type="date" value={custom.from} onChange={e => setCustom({ ...custom, from: e.target.value })} className="w-40" /></div>
-              <div className="space-y-1"><Label className="text-xs" htmlFor="rep-to">Sampai</Label><Input id="rep-to" type="date" value={custom.to} onChange={e => setCustom({ ...custom, to: e.target.value })} className="w-40" /></div>
+              <div className="space-y-1"><Label className="text-xs" htmlFor="rep-from">Dari</Label><DateInput id="rep-from" value={custom.from} onChange={e => setCustom({ ...custom, from: e.target.value })} className="w-40" /></div>
+              <div className="space-y-1"><Label className="text-xs" htmlFor="rep-to">Sampai</Label><DateInput id="rep-to" value={custom.to} onChange={e => setCustom({ ...custom, to: e.target.value })} className="w-40" /></div>
             </>
           )}
           <Button variant="outline" onClick={doExport} disabled={!d}><FileSpreadsheet className="w-4 h-4 mr-2" />Unduh Excel</Button>

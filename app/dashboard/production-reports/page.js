@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -37,7 +38,7 @@ export default function ProductionReports() {
                     <Stat label="Total Batches" value={b.summary.totalBatches} />
                     <Stat label="Total Live Bird" value={`${Number(b.summary.totalBaseWeight).toLocaleString('id-ID')} kg`} />
                     <Stat label="Total Rendemen" value={`${Number(b.summary.totalOutputWeight).toLocaleString('id-ID')} kg`} color="emerald" />
-                    <Stat label="Avg Rendemen %" value={`${b.summary.avgRendemenPct.toFixed(2)}%`} color={b.summary.avgRendemenPct >= 70 ? 'emerald' : 'amber'} />
+                    <Stat label="Rata-rata Rendemen" value={`${fmtNum(b.summary.avgRendemenPct, 2)}%`} color={b.summary.avgRendemenPct >= 70 ? 'emerald' : 'amber'} />
                   </div>
                   <Table><TableHeader><TableRow><TableHead>WO</TableHead><TableHead>Mode</TableHead><TableHead>Start</TableHead><TableHead>Status</TableHead><TableHead className="text-right">LB (kg)</TableHead><TableHead className="text-right">Rendemen</TableHead><TableHead className="text-right">% Yield</TableHead><TableHead className="text-right">Total Cost</TableHead><TableHead className="text-right">HPP/kg</TableHead></TableRow></TableHeader>
                     <TableBody>
@@ -48,9 +49,9 @@ export default function ProductionReports() {
                           <TableCell><Badge variant="outline">{w.mode}</Badge>{w.maklon && <div className="text-xs text-muted-foreground">{w.maklon.name}</div>}</TableCell>
                           <TableCell className="text-sm">{format(new Date(w.startDate), 'dd MMM yyyy')}</TableCell>
                           <TableCell><Badge className={w.pipelineStatus === 'Selesai' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100'}>{w.pipelineStatus}</Badge></TableCell>
-                          <TableCell className="text-right">{Number(w.totalLiveBirdWeight).toFixed(0)}</TableCell>
-                          <TableCell className="text-right">{Number(w.totalRendemenWeight).toFixed(1)}</TableCell>
-                          <TableCell className="text-right"><Badge className={w.rendemenPct >= 70 ? 'bg-emerald-100 text-emerald-700' : w.rendemenPct >= 60 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}>{w.rendemenPct.toFixed(1)}%</Badge></TableCell>
+                          <TableCell className="text-right">{fmtNum(w.totalLiveBirdWeight, 0)}</TableCell>
+                          <TableCell className="text-right">{fmtNum(w.totalRendemenWeight, 1)}</TableCell>
+                          <TableCell className="text-right"><Badge className={w.rendemenPct >= 70 ? 'bg-emerald-100 text-emerald-700' : w.rendemenPct >= 60 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}>{fmtNum(w.rendemenPct, 1)}%</Badge></TableCell>
                           <TableCell className="text-right font-medium">Rp {Number(w.totalCost).toLocaleString('id-ID')}</TableCell>
                           <TableCell className="text-right font-bold text-emerald-700">Rp {Number(w.avgHppPerKg).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                         </TableRow>
@@ -73,9 +74,9 @@ export default function ProductionReports() {
                         <TableCell><div className="font-medium">{r.product?.name}</div><div className="text-xs font-mono text-muted-foreground">{r.product?.sku}</div></TableCell>
                         <TableCell><Badge variant="outline">{r.stage}</Badge></TableCell>
                         <TableCell className="text-right">{r.count}</TableCell>
-                        <TableCell className="text-right">{Number(r.totalWeight).toFixed(2)} kg</TableCell>
-                        <TableCell className="text-right">{Number(r.avgCoef).toFixed(3)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{Number(r.product?.rendemenCoefficient || 1).toFixed(3)}</TableCell>
+                        <TableCell className="text-right">{fmtNum(r.totalWeight, 2)} kg</TableCell>
+                        <TableCell className="text-right">{fmtNum(r.avgCoef, 3)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{fmtNum(r.product?.rendemenCoefficient || 1, 3)}</TableCell>
                         <TableCell className="text-right font-bold text-emerald-700">Rp {Number(r.avgHpp).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                       </TableRow>
                     ))}

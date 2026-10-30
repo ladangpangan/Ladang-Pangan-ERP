@@ -5,6 +5,7 @@ import { Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import AIAssistantChat from '@/components/ai-assistant-chat';
 
+// Asisten AI: tombol di header + panel melayang di kanan atas.
 export default function FloatingAIAssistant() {
   const [open, setOpen] = useState(false);
 
@@ -13,8 +14,8 @@ export default function FloatingAIAssistant() {
       {/* Panel */}
       <div
         className={cn(
-          'fixed z-[60] bottom-24 right-4 sm:right-6 w-[calc(100vw-2rem)] sm:w-[400px] h-[560px] max-h-[calc(100vh-8rem)]',
-          'bg-white rounded-2xl shadow-2xl border flex flex-col overflow-hidden origin-bottom-right transition-all duration-200',
+          'fixed z-[60] top-[4.5rem] right-4 sm:right-6 w-[calc(100vw-2rem)] sm:w-[400px] h-[560px] max-h-[calc(100vh-6rem)]',
+          'bg-white rounded-2xl shadow-2xl border flex flex-col overflow-hidden origin-top-right transition-all duration-200',
           open ? 'scale-100 opacity-100 pointer-events-auto' : 'scale-90 opacity-0 pointer-events-none'
         )}
       >
@@ -32,16 +33,19 @@ export default function FloatingAIAssistant() {
         </div>
       </div>
 
-      {/* Floating button */}
+      {/* Tombol di header (dulu tombol mengambang yang menutupi isi halaman) */}
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'fixed z-[60] bottom-5 right-4 sm:right-6 w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl transition-all duration-200 hover:scale-105 active:scale-95',
-          'bg-gradient-to-br from-violet-500 to-indigo-600'
+          'h-9 px-2.5 sm:px-3 rounded-lg flex items-center gap-1.5 text-sm font-medium transition-colors',
+          open ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-50'
         )}
-        aria-label="Buka Asisten AI"
+        aria-label={open ? 'Tutup Asisten AI' : 'Buka Asisten AI'}
+        aria-expanded={open}
       >
-        {open ? <X className="w-6 h-6" /> : <Sparkles className="w-6 h-6" />}
+        {open ? <X className="w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
+        <span className="hidden sm:inline">Asisten AI</span>
       </button>
     </>
   );

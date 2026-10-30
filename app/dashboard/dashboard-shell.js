@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { authClient } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -23,73 +23,93 @@ import FloatingAIAssistant from '@/components/floating-ai-assistant';
 import { setPdfCompany, setPdfSettings } from '@/lib/pdf/invoice';
 import { applyAccent } from '@/lib/themes';
 
+// Menu disusun per alur kerja LPI (jual · beli · gudang · produksi · keuangan). `hideFor` merapikan menu
+// untuk peran yang tidak memakainya (hak akses tetap diatur oleh `roles` dan server).
+const ALL = ['admin', 'supervisor', 'direktur', 'akuntan', 'operator'];
+const MGMT = ['admin', 'supervisor', 'direktur', 'akuntan'];
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin','supervisor','direktur','akuntan','operator'] },
+  { href: '/dashboard', label: 'Beranda', icon: LayoutDashboard, roles: ALL },
+  { href: '/dashboard/approvals', label: 'Persetujuan', icon: ClipboardCheck, roles: ['supervisor', 'direktur', 'akuntan'] },
   {
-    section: 'Master Data',
+    section: 'Penjualan',
     items: [
-      { href: '/dashboard/contacts', label: 'Contacts', icon: Users, roles: ['admin','supervisor','direktur','akuntan'] },
-      { href: '/dashboard/products', label: 'Products', icon: Package, roles: ['admin','supervisor','direktur','akuntan'] },
-      { href: '/dashboard/cold-storage', label: 'Cold Storage & Zones', icon: Warehouse, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/masters/wo-stages', label: 'WO Stages', icon: Layers, roles: ['admin','supervisor','direktur'] },
+      { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/contacts?type=Customer', label: 'Pelanggan', icon: Users, roles: MGMT },
+      { href: '/dashboard/leads', label: 'Prospek', icon: Target, roles: ALL, hideFor: ['akuntan'] },
     ],
   },
   {
-    section: 'CRM',
+    section: 'Pembelian',
     items: [
-      { href: '/dashboard/leads', label: 'Pipeline Prospek', icon: Target, roles: ['admin','supervisor','direktur','akuntan','operator'] },
+      { href: '/dashboard/purchase-orders', label: 'Purchase Order', icon: ShoppingCart, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/contacts?type=Supplier', label: 'Supplier', icon: Users, roles: MGMT },
     ],
   },
   {
-    section: 'Operasional',
+    section: 'Gudang',
     items: [
-      { href: '/dashboard/purchase-orders', label: 'Purchase Order', icon: ShoppingCart, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '/dashboard/work-orders', label: 'Work Order', icon: ClipboardList, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '/dashboard/inventory', label: 'Inventory', icon: Boxes, roles: ['admin','supervisor','direktur','operator'] },
-      { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin','supervisor','direktur','operator'] },
+      { href: '/dashboard/inventory', label: 'Stok', icon: Boxes, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/inventory/opnames', label: 'Stock Opname', icon: ClipboardList, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/tally-history', label: 'Riwayat Tally', icon: History, roles: MGMT },
+      { href: '/tally', label: 'Tally App', icon: Smartphone, roles: ['admin', 'supervisor', 'operator'], hideFor: ['akuntan'] },
+    ],
+  },
+  {
+    section: 'Produksi',
+    items: [
+      { href: '/dashboard/work-orders', label: 'Work Order', icon: ClipboardList, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
+      { href: '/dashboard/masters/wo-stages', label: 'Tahap Produksi', icon: Layers, roles: ['admin', 'supervisor', 'direktur'], hideFor: ['akuntan'] },
+    ],
+  },
+  {
+    section: 'Keuangan',
+    items: [
+      { href: '/dashboard/finance', label: 'Tagihan & Komisi', icon: HandCoins, roles: MGMT },
+      { href: '/dashboard/accounting/cashbook', label: 'Pencatatan Kas', icon: Receipt, roles: ['admin', 'supervisor', 'akuntan', 'direktur'] },
+      {
+        label: 'Akuntansi', icon: Landmark, roles: ['akuntan', 'direktur'], base: '/dashboard/accounting',
+        children: [
+          { href: '/dashboard/accounting', label: 'Ringkasan' },
+          { href: '/dashboard/accounting/journals', label: 'Jurnal Umum' },
+          { href: '/dashboard/accounting/ledger', label: 'Buku Besar' },
+          { href: '/dashboard/accounting/reports', label: 'Laporan Keuangan' },
+          { href: '/dashboard/accounting/coa', label: 'Daftar Akun' },
+          { href: '/dashboard/accounting/fixed-assets', label: 'Aset Tetap' },
+          { href: '/dashboard/accounting/closing', label: 'Tutup Buku' },
+        ],
+      },
     ],
   },
   {
     section: 'Laporan',
     items: [
-      { href: '/dashboard/sales-reports', label: 'Laporan Penjualan', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
-      { href: '/dashboard/purchase-reports', label: 'Laporan Pembelian', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
-      { href: '/dashboard/production-reports', label: 'Laporan Produksi', icon: FileBarChart, roles: ['admin','supervisor','direktur'] },
-      { href: '/dashboard/inventory-reports', label: 'Laporan Inventory', icon: FileBarChart, roles: ['admin','supervisor','direktur','akuntan'] },
+      { href: '/dashboard/sales-reports', label: 'Penjualan', icon: FileBarChart, roles: MGMT },
+      { href: '/dashboard/purchase-reports', label: 'Pembelian', icon: FileBarChart, roles: MGMT },
+      { href: '/dashboard/production-reports', label: 'Produksi', icon: FileBarChart, roles: ['admin', 'supervisor', 'direktur'] },
+      { href: '/dashboard/inventory-reports', label: 'Stok', icon: FileBarChart, roles: MGMT },
     ],
   },
   {
-    section: 'Akuntansi',
+    section: 'Pengaturan',
     items: [
-      { href: '/dashboard/finance', label: 'Keuangan (Komisi & Cashback)', icon: HandCoins, roles: ['admin','supervisor','direktur','akuntan'] },
-      { href: '/dashboard/accounting', label: 'Ringkasan Akuntansi', icon: Landmark, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/cashbook', label: 'Pencatatan Cepat', icon: Receipt, roles: ['admin','supervisor','akuntan','direktur'] },
-      { href: '/dashboard/accounting/coa', label: 'Chart of Account', icon: BookOpen, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/journals', label: 'Jurnal Umum', icon: Calculator, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/ledger', label: 'Buku Besar', icon: Wallet, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/fixed-assets', label: 'Aset Tetap', icon: Building, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/closing', label: 'Tutup Buku', icon: Lock, roles: ['akuntan','direktur'] },
-      { href: '/dashboard/accounting/reports', label: 'Laporan Keuangan', icon: Scale, roles: ['akuntan','direktur'] },
-    ],
-  },
-  {
-    section: 'Tally Gudang (HP)',
-    items: [
-      { href: '/tally', label: 'Tally App', icon: Smartphone, roles: ['admin','supervisor','operator'] },
-      { href: '/dashboard/tally-history', label: 'Riwayat Tally', icon: History, roles: ['admin','supervisor','direktur','akuntan'] },
-    ],
-  },
-  {
-    section: 'Sistem',
-    items: [
-      { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
-      { href: '/dashboard/approvals', label: 'Approval & Concern', icon: ClipboardCheck, roles: ['supervisor', 'direktur', 'akuntan'] },
-      { href: '/dashboard/users', label: 'User Management', icon: UserCog, roles: ['supervisor', 'direktur'] },
-      { href: '/dashboard/import-export', label: 'Impor & Ekspor', icon: Database, roles: ['admin', 'supervisor', 'direktur', 'akuntan'] },
-      { href: '/dashboard/settings', label: 'Setting', icon: Settings, roles: ['admin', 'supervisor', 'direktur', 'akuntan', 'operator'] },
+      { href: '/dashboard/products', label: 'Produk', icon: Package, roles: MGMT },
+      { href: '/dashboard/cold-storage', label: 'Gudang & Zona', icon: Warehouse, roles: ['admin', 'supervisor', 'direktur'] },
+      { href: '/dashboard/users', label: 'Pengguna', icon: UserCog, roles: ['supervisor', 'direktur'] },
+      { href: '/dashboard/import-export', label: 'Impor & Ekspor', icon: Database, roles: MGMT },
+      { href: '/dashboard/notifications', label: 'Notifikasi', icon: Bell, roles: MGMT },
+      { href: '/dashboard/settings', label: 'Pengaturan', icon: Settings, roles: ALL },
     ],
   },
 ];
+
+// Judul di header = nama menu halaman yang sedang dibuka.
+const NAV_TITLES = NAV.flatMap(n => n.items ? n.items.flatMap(i => i.children ? i.children.map(c => [c.href, c.label === 'Ringkasan' ? 'Akuntansi' : c.label]) : [[i.href.split('?')[0], n.section === 'Laporan' ? `Laporan ${i.label}` : i.label]]) : [[n.href, n.label]])
+  .sort((a, b) => b[0].length - a[0].length);
+function pageTitle(pathname) {
+  const hit = NAV_TITLES.find(([h]) => pathname === h || (h !== '/dashboard' && pathname.startsWith(h + '/')));
+  return hit ? hit[1] : 'PT Ladang Pangan Indonesia';
+}
+const NAV_PATHS = NAV.flatMap(n => n.items ? n.items.flatMap(i => i.children ? i.children.map(c => c.href) : [i.href.split('?')[0]]) : [n.href]);
 
 const ROLE_COLOR = {
   admin: 'bg-red-100 text-red-700 border-red-200',
@@ -130,27 +150,36 @@ export default function DashboardShell({ user, children }) {
 
   const initials = (user?.name || user?.email || '?').split(/\s+/).map(s => s[0]).slice(0,2).join('').toUpperCase();
 
+  // Menu aktif: halaman itu sendiri atau halaman di bawahnya (detail). Tautan ber-query (Pelanggan/Supplier)
+  // aktif bila filternya cocok.
+  const searchParams = useSearchParams();
+  const isActive = (href) => {
+    const [path, query] = href.split('?');
+    if (query) { const [k, v] = query.split('='); return pathname === path && searchParams.get(k) === v; }
+    if (path === '/dashboard' || path === '/dashboard/accounting') return pathname === path;
+    return pathname === path || (pathname.startsWith(path + '/') && !NAV_PATHS.some(p => p !== path && p.startsWith(path + '/') && pathname.startsWith(p)));
+  };
+  // Akuntan memiliki akses setara Admin: cocokkan item yang mengizinkan 'admin'.
+  const roleCan = (it) => !(it.hideFor || []).includes(role) && ((it.roles || []).includes(role) || (role === 'akuntan' && (it.roles || []).includes('admin')));
   const renderNav = () => (
-    <nav className="space-y-6">
+    <nav className="space-y-5">
       {NAV.map((item, i) => {
-        // Akuntan memiliki akses setara Admin: cocokkan item yang mengizinkan 'admin'.
-        const roleCan = (roles) => (roles || []).includes(role) || (role === 'akuntan' && (roles || []).includes('admin'));
         if (item.section) {
-          const visible = item.items.filter(it => roleCan(it.roles));
+          const visible = item.items.filter(roleCan);
           if (visible.length === 0) return null;
           return (
             <div key={i}>
-              <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-2">{item.section}</div>
-              <div className="space-y-1">
-                {visible.map(it => (
-                  <NavLink key={it.href + it.label} item={it} active={pathname === it.href} />
-                ))}
+              <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1.5">{item.section}</div>
+              <div className="space-y-0.5">
+                {visible.map(it => it.children
+                  ? <NavGroup key={it.label} item={it} pathname={pathname} isActive={isActive} />
+                  : <NavLink key={it.href + it.label} item={it} active={isActive(it.href)} />)}
               </div>
             </div>
           );
         }
-        if (!roleCan(item.roles)) return null;
-        return <NavLink key={item.href} item={item} active={pathname === item.href} />;
+        if (!roleCan(item)) return null;
+        return <NavLink key={item.href} item={item} active={isActive(item.href)} />;
       })}
     </nav>
   );
@@ -169,7 +198,7 @@ export default function DashboardShell({ user, children }) {
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">Ladang Pangan</div>
-              <div className="text-xs text-muted-foreground">ERP System</div>
+              <div className="text-xs text-muted-foreground">PT Ladang Pangan Indonesia</div>
             </div>
           </div>
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(false)}><X className="w-5 h-5" /></Button>
@@ -198,18 +227,14 @@ export default function DashboardShell({ user, children }) {
         <header className="sticky top-0 z-30 bg-background/80 backdrop-blur border-b h-16 flex items-center px-4 md:px-8 gap-3">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(true)}><Menu className="w-5 h-5" /></Button>
           <div className="flex-1">
-            <div className="text-sm font-medium text-foreground">PT Ladang Pangan Indonesia</div>
+            <div className="text-sm font-medium text-foreground">{pageTitle(pathname)}</div>
           </div>
+          {['admin', 'supervisor', 'direktur', 'akuntan'].includes(role) && pathname !== '/dashboard/ai-assistant' && <FloatingAIAssistant />}
           <NotificationBell />
-          <Badge variant="secondary" className="hidden sm:inline-flex">Beta v0.1</Badge>
         </header>
         <main className="p-4 md:p-8">{children}</main>
       </div>
 
-      {/* Floating AI Assistant — for management roles, hidden on the full AI page */}
-      {['admin', 'supervisor', 'direktur', 'akuntan'].includes(role) && pathname !== '/dashboard/ai-assistant' && (
-        <FloatingAIAssistant />
-      )}
     </div>
   );
 }
@@ -318,6 +343,29 @@ function NotificationBell() {
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function NavGroup({ item, pathname, isActive }) {
+  const inside = pathname.startsWith(item.base);
+  const [open, setOpen] = useState(inside);
+  useEffect(() => { if (inside) setOpen(true); }, [inside]);
+  const Icon = item.icon;
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className={cn('w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors', inside ? 'text-primary font-semibold' : 'text-foreground/70 hover:bg-muted')}>
+        <Icon className="w-4 h-4" /><span>{item.label}</span>
+        <ChevronRight className={cn('w-4 h-4 ml-auto transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && (
+        <div className="ml-5 pl-2 border-l space-y-0.5 mt-0.5">
+          {item.children.map(c => (
+            <Link key={c.href} href={c.href} className={cn('block px-3 py-1.5 rounded-md text-sm transition-colors', isActive(c.href) ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground/70 hover:bg-muted')}>{c.label}</Link>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

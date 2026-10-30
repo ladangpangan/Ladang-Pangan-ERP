@@ -14,6 +14,7 @@ import { Loader2, Scale, Printer, FileSpreadsheet, FileDown } from 'lucide-react
 import { fmtRp, acctFetcher, defaultRange, todayStr, TYPE_LABEL } from '@/lib/accounting/ui';
 import { exportToExcel } from '@/lib/xlsx-export';
 import { balanceSheetPDF, incomeStatementPDF, incomeStatementComparisonPDF, cashFlowPDF } from '@/lib/pdf/financial';
+import { DateInput, PeriodPresets } from '@/components/ui/date-input';
 
 const idDate = (iso) => { try { return new Date(iso).toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' }); } catch { return iso; } };
 const shiftMonth = (iso, delta) => { const d = new Date(iso); d.setMonth(d.getMonth() + delta); return d.toISOString().slice(0, 10); };
@@ -60,7 +61,7 @@ function TrialBalance() {
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle className="text-base">Neraca Saldo</CardTitle>
         <div className="flex items-end gap-2">
-          <div><Label className="text-xs">Per Tanggal</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" /></div>
+          <div><Label className="text-xs">Per Tanggal</Label><DateInput value={to} onChange={(e) => setTo(e.target.value)} className="w-40" /></div>
           <Button variant="outline" size="sm" disabled={!d} onClick={() => exportToExcel(`neraca-saldo-${to}`, [{ name: 'Neraca Saldo', headers: [{ key: 'code', label: 'Kode' }, { key: 'name', label: 'Nama Akun' }, { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Kredit' }], rows: [...(d?.rows || []), { code: '', name: 'TOTAL', debit: d?.totalDebit, credit: d?.totalCredit }] }])}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
           <PrintBtn />
         </div>
@@ -143,8 +144,9 @@ function IncomeStatement({ company }) {
         <CardTitle className="text-base">Laporan Laba Rugi</CardTitle>
         <div className="flex items-end gap-2 flex-wrap">
           <label className="flex items-center gap-2 text-xs border rounded-md px-2 h-9 cursor-pointer"><Switch checked={compare} onCheckedChange={setCompare} />Bandingkan bulan sebelumnya</label>
-          <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
-          <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Dari</Label><DateInput value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Sampai</Label><DateInput value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <PeriodPresets onPick={setRange} />
           <PdfBtn onClick={exportPdf} disabled={!d || (compare && !p)} />
           <PrintBtn />
         </div>
@@ -223,7 +225,7 @@ function BalanceSheet({ company }) {
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle className="text-base">Laporan Posisi Keuangan (Neraca)</CardTitle>
         <div className="flex items-end gap-2">
-          <div><Label className="text-xs">Per Tanggal</Label><Input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} className="w-40" /></div>
+          <div><Label className="text-xs">Per Tanggal</Label><DateInput value={asOf} onChange={(e) => setAsOf(e.target.value)} className="w-40" /></div>
           <PdfBtn onClick={() => d && balanceSheetPDF(d, company, idDate(asOf)).save(`neraca-${asOf}.pdf`)} disabled={!d} />
           <PrintBtn />
         </div>
@@ -264,8 +266,9 @@ function CashFlow({ company }) {
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle className="text-base">Laporan Arus Kas</CardTitle>
         <div className="flex items-end gap-2">
-          <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
-          <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Dari</Label><DateInput value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Sampai</Label><DateInput value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <PeriodPresets onPick={setRange} />
           <PdfBtn onClick={() => d && cashFlowPDF(d, company, `${idDate(range.from)} – ${idDate(range.to)}`).save(`arus-kas-${range.from}_${range.to}.pdf`)} disabled={!d} />
           <PrintBtn />
         </div>

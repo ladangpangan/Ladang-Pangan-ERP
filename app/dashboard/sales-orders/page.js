@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
@@ -17,13 +18,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Plus, Search, Eye, Loader2, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes, Archive, ArchiveRestore } from 'lucide-react';
+import { Plus, Search, Eye, Loader2, ShoppingCart, Trash2, TrendingUp, BarChart3, Package, AlertTriangle, Boxes, Archive, ArchiveRestore } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { MonthYearFilter, useMonthFilter } from '@/components/month-year-filter';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { pkgLabel, pkgShort } from '@/lib/constants';
+import { DateInput } from '@/components/ui/date-input';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -99,7 +102,7 @@ export default function SOListPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <TrendingUp className="w-8 h-8 text-emerald-600" /> Sales Orders
+            <TrendingUp className="w-8 h-8 text-emerald-600" /> Sales Order
           </h1>
           <p className="text-muted-foreground mt-1">Penjualan B2B: pelanggan reguler &amp; subscriber (prepaid)</p>
         </div>
@@ -162,7 +165,7 @@ export default function SOListPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Tidak ada SO pada periode {mf.label}</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <EmptyRow colSpan={8} icon={ShoppingCart} title={q ? 'Tidak ada SO yang cocok' : `Belum ada SO pada periode ${mf.label}`} hint={q ? 'Coba kata kunci lain atau ganti periode.' : 'Pesanan pelanggan dicatat di sini. Stok dikurangi saat barang dikirim.'} action={q ? null : { label: 'Buat SO Baru', onClick: () => setOpen(true) }} />}
               {rows.map(r => {
                 const cancelled = r.pipelineStatus === 'Cancelled';
                 const pk = payKey(r);
@@ -399,8 +402,8 @@ function CreateSODialog({ onSaved }) {
             </div>
           )}
         </F>
-        <F label="Tanggal Order *"><Input type="date" value={form.orderDate} onChange={e => upd('orderDate', e.target.value)} /></F>
-        <F label="Perkiraan Kirim"><Input type="date" value={form.expectedDate} onChange={e => upd('expectedDate', e.target.value)} /></F>
+        <F label="Tanggal Order *"><DateInput value={form.orderDate} onChange={e => upd('orderDate', e.target.value)} /></F>
+        <F label="Perkiraan Kirim"><DateInput value={form.expectedDate} onChange={e => upd('expectedDate', e.target.value)} /></F>
         <F label="Term Pembayaran (TOP)">
           <Select value={form.paymentTerm} onValueChange={v => upd('paymentTerm', v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
@@ -423,7 +426,7 @@ function CreateSODialog({ onSaved }) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label className="flex items-center gap-2">
-            <Boxes className="w-4 h-4" /> {isDropship ? 'Items (Dropship — dari Supplier)' : 'Items (dari Inventory)'} *
+            <Boxes className="w-4 h-4" /> {isDropship ? 'Barang (Dropship — dari Supplier)' : 'Barang (dari Stok)'} *
           </Label>
           <Button size="sm" variant="outline" onClick={addItem}><Plus className="w-4 h-4 mr-1" />Tambah Item</Button>
         </div>
@@ -567,7 +570,7 @@ function StockPicker({ stocks, products, onPick }) {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" className="w-full justify-start mt-1 h-10 font-normal text-muted-foreground">
-          <Search className="w-4 h-4 mr-2" /> Pilih Kode Simpan dari Inventory...
+          <Search className="w-4 h-4 mr-2" /> Pilih Kode Simpan dari Stok...
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[600px] p-0" align="start">
@@ -614,7 +617,7 @@ function StockPicker({ stocks, products, onPick }) {
                       {p.sku && <span className="text-[10px] text-muted-foreground font-mono">{p.sku}</span>}
                       {reservedW > 0 && (
                         <Badge variant="outline" className="text-[9px] bg-amber-50 border-amber-200 text-amber-700">
-                          🔒 {reservedW.toFixed(1)} kg reserved
+                          🔒 {fmtNum(reservedW, 1)} kg reserved
                         </Badge>
                       )}
                     </div>
@@ -630,10 +633,10 @@ function StockPicker({ stocks, products, onPick }) {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <div className={cn("text-lg font-bold", fullyReserved ? 'text-slate-400' : 'text-emerald-700')}>
-                      {availW.toFixed(1)} kg
+                      {fmtNum(availW, 1)} kg
                     </div>
                     <div className="text-[10px] text-muted-foreground">
-                      dari {totalW.toFixed(1)} kg
+                      dari {fmtNum(totalW, 1)} kg
                     </div>
                   </div>
                 </div>

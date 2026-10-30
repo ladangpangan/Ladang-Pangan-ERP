@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -25,9 +26,9 @@ export default function PurchaseReports() {
       </div>
       <Tabs defaultValue="sup">
         <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="sup"><Users className="w-4 h-4 mr-1" />By Supplier</TabsTrigger>
-          <TabsTrigger value="ap"><DollarSign className="w-4 h-4 mr-1" />AP Aging</TabsTrigger>
-          <TabsTrigger value="susut"><AlertTriangle className="w-4 h-4 mr-1" />Susut Recap</TabsTrigger>
+          <TabsTrigger value="sup"><Users className="w-4 h-4 mr-1" />Per Supplier</TabsTrigger>
+          <TabsTrigger value="ap"><DollarSign className="w-4 h-4 mr-1" />Umur Utang</TabsTrigger>
+          <TabsTrigger value="susut"><AlertTriangle className="w-4 h-4 mr-1" />Rekap Susut</TabsTrigger>
         </TabsList>
 
         <TabsContent value="sup">
@@ -90,7 +91,7 @@ export default function PurchaseReports() {
               {susut.isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> : susut.data?.data && (
                 <>
                   <div className="grid grid-cols-3 gap-3 mb-4">
-                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Total Susut</div><div className="text-2xl font-bold text-red-600">{Number(susut.data.data.summary.totalSusut).toFixed(2)} kg</div></div>
+                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Total Susut</div><div className="text-2xl font-bold text-red-600">{fmtNum(susut.data.data.summary.totalSusut, 2)} kg</div></div>
                     <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Nilai Susut</div><div className="text-2xl font-bold text-red-600">Rp {Number(susut.data.data.summary.totalValue).toLocaleString('id-ID')}</div></div>
                     <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Kejadian</div><div className="text-2xl font-bold">{susut.data.data.summary.count}</div></div>
                   </div>
@@ -105,7 +106,7 @@ export default function PurchaseReports() {
                           <TableCell className="text-sm">{d.product?.name}</TableCell>
                           <TableCell className="text-right">{d.weightSupplier} kg</TableCell>
                           <TableCell className="text-right">{d.weightRph} kg</TableCell>
-                          <TableCell className="text-right font-bold text-red-600">{Number(d.susut).toFixed(2)} kg</TableCell>
+                          <TableCell className="text-right font-bold text-red-600">{fmtNum(d.susut, 2)} kg</TableCell>
                           <TableCell className="text-right">Rp {Number(d.value).toLocaleString('id-ID')}</TableCell>
                         </TableRow>
                       ))}

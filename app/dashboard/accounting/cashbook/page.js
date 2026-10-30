@@ -18,6 +18,7 @@ import {
   ArrowUpRight, ArrowDownLeft, PiggyBank, HandCoins, ArrowLeftRight,
 } from 'lucide-react';
 import { fmtRp, fmtDate, acctFetcher, SOURCE_LABEL, SOURCE_COLOR, defaultRange, todayStr } from '@/lib/accounting/ui';
+import { DateInput, PeriodPresets } from '@/components/ui/date-input';
 
 const ACTIONS = [
   { type: 'EXPENSE', label: 'Catat Pengeluaran', icon: ArrowUpRight, cls: 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100', desc: 'Bayar beban / biaya' },
@@ -87,12 +88,13 @@ export default function CashbookPage() {
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Receipt className="w-6 h-6 text-emerald-600" />Pencatatan Cepat</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Receipt className="w-6 h-6 text-emerald-600" />Pencatatan Kas</h1>
           <p className="text-muted-foreground text-sm">Catat pengeluaran & pemasukan tanpa perlu paham debit/kredit — jurnal dibuat otomatis.</p>
         </div>
         <div className="flex items-end gap-2">
-          <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
-          <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Dari</Label><DateInput value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-36" /></div>
+          <div><Label className="text-xs">Sampai</Label><DateInput value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-36" /></div>
+          <PeriodPresets onPick={setRange} />
         </div>
       </div>
 
@@ -214,7 +216,7 @@ function QuickDialog({ dlg, accounts, mapping, onClose, onSaved }) {
         <DialogHeader><DialogTitle className="flex items-center gap-2">{meta.icon && <meta.icon className="w-5 h-5" />}{edit ? 'Edit — ' : ''}{meta.label}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-xs">Tanggal</Label><Input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></div>
+            <div><Label className="text-xs">Tanggal</Label><DateInput value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></div>
             <div><Label className="text-xs">Nominal (Rp)</Label><CurrencyInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} /></div>
           </div>
 

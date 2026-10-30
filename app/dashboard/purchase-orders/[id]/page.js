@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { useParams, useRouter } from 'next/navigation';
@@ -24,8 +25,9 @@ import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
 import { generatePOPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
-import DangerZoneRollback from '@/components/danger-zone-rollback';
+import DangerZoneRollback, { RollbackMenuItems } from '@/components/danger-zone-rollback';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 // Tombol maju berlabel tindakan (bukan nama status)
@@ -55,6 +57,7 @@ export default function PODetailPage() {
   const po = data?.data;
   const pdfPreview = usePdfPreview();
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [rollbackMode, setRollbackMode] = useState(null);
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!po) return <div className="text-center py-20 text-muted-foreground">PO tidak ditemukan</div>;
@@ -104,7 +107,7 @@ export default function PODetailPage() {
           ))}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan)"><MoreHorizontal className="w-4 h-4" /></Button>
+              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan, tindakan lanjutan)"><MoreHorizontal className="w-4 h-4" /></Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               {po.isDropship && (
@@ -125,6 +128,7 @@ export default function PODetailPage() {
                   <DropdownMenuItem onSelect={() => setCancelOpen(true)} className="text-red-600 focus:text-red-700"><XCircle className="w-4 h-4 mr-2" />Batalkan PO…</DropdownMenuItem>
                 </>
               )}
+              <RollbackMenuItems onPick={setRollbackMode} />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -194,7 +198,7 @@ export default function PODetailPage() {
         <TabsContent value="hpp"><HppTab po={po} /></TabsContent>
       </Tabs>
 
-      <DangerZoneRollback kind="po" id={po.id} number={po.poNumber} router={router} listPath="/dashboard/purchase-orders" onRolledBack={mutate} />
+      <DangerZoneRollback kind="po" id={po.id} number={po.poNumber} router={router} listPath="/dashboard/purchase-orders" onRolledBack={mutate} mode={rollbackMode} onClose={() => setRollbackMode(null)} />
     </div>
   );
 }
@@ -347,7 +351,7 @@ function AdditionalCostCard({ po, onSaved, canEdit }) {
   const [bearer, setBearer] = useState(po.additionalCostBearer || 'company');
   const [payMethod, setPayMethod] = useState(po.additionalCostPayMethod || 'utang');
   const [saving, setSaving] = useState(false);
-  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   const locked = po.pipelineStatus === 'Selesai';
   const editable = canEdit && !locked;
   const save = async () => {
@@ -463,7 +467,7 @@ function ItemsTab({ po, onSaved, canEdit }) {
                   {isLB && <TableCell className="text-right"><WeightInput disabled={!canEdit} className="h-8 text-right w-24 ml-auto" value={it.weightSupplier || 0} onChange={v => upd(i, 'weightSupplier', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-20 ml-auto" value={it.headRph || 0} onChange={v => upd(i, 'headRph', v)} /></TableCell>}
                   {isLB && <TableCell className="text-right"><CurrencyInput disabled={!canEdit} className="h-8 text-right w-24 ml-auto" value={it.weightRph || 0} onChange={v => upd(i, 'weightRph', v)} /></TableCell>}
-                  {isLB && <TableCell className="text-right"><span className={susut > 0 ? 'text-red-600 font-semibold' : ''}>{susut.toFixed(2)}</span></TableCell>}
+                  {isLB && <TableCell className="text-right"><span className={susut > 0 ? 'text-red-600 font-semibold' : ''}>{fmtNum(susut, 2)}</span></TableCell>}
                   <TableCell className="text-right font-semibold">Rp {Number(it.hppPerKg || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                 </TableRow>
               );
@@ -557,7 +561,7 @@ function GrnTab({ po, onSaved, canOperate }) {
               <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
                 <div className="grid grid-cols-2 gap-3">
                   <F label="No. Surat Jalan (Supplier)"><Input value={sjNumber} onChange={e => setSjNumber(e.target.value)} placeholder="mis. SJ/2026/001" /></F>
-                  <F label="Tanggal Terima"><Input type="date" value={receivedDate} onChange={e => setReceivedDate(e.target.value)} /></F>
+                  <F label="Tanggal Terima"><DateInput value={receivedDate} onChange={e => setReceivedDate(e.target.value)} /></F>
                   <F label="Nama Supir"><Input value={driverName} onChange={e => setDriverName(e.target.value)} placeholder="opsional" /></F>
                   <F label="No. Kendaraan"><Input value={vehicleNumber} onChange={e => setVehicleNumber(e.target.value)} placeholder="opsional" /></F>
                 </div>
@@ -599,7 +603,7 @@ function GrnTab({ po, onSaved, canOperate }) {
         )}
         {po.tallyDone && (
           <div className={`rounded-lg border p-3 text-sm ${Math.abs(po.tallyVariance) < 0.01 ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-center gap-2 font-medium"><Scale className="w-4 h-4" />Rekonsiliasi Tally (Timbang Ulang Inventory)</div>
+            <div className="flex items-center gap-2 font-medium"><Scale className="w-4 h-4" />Rekonsiliasi Tally (Timbang Ulang Stok)</div>
             <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
               <div>Surat Jalan:<div className="font-semibold text-sm">{kg(po.totalReceivedWeight)}</div></div>
               <div>Hasil Tally:<div className="font-semibold text-sm">{kg(po.tallyWeight)}</div></div>
@@ -680,7 +684,7 @@ function PaymentsTab({ po, onSaved, canEdit }) {
             <DialogContent>
               <DialogHeader><DialogTitle>Catat Pembayaran</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
-                <F label="Tanggal"><Input type="date" value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} /></F>
+                <F label="Tanggal"><DateInput value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} /></F>
                 <F label="Metode">
                   <Select value={form.method} onValueChange={v => setForm({ ...form, method: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -753,7 +757,7 @@ function InvoiceBasisCard({ po, onSaved }) {
   const [invoiceNumber, setInvoiceNumber] = useState(po.invoiceNumber || '');
   const [invoiceDate, setInvoiceDate] = useState(po.invoiceDate ? new Date(po.invoiceDate).toISOString().slice(0, 10) : '');
   const [saving, setSaving] = useState(false);
-  const fmt = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const fmt = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   const kg = (n) => Number(n || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 }) + ' kg';
   const tallyAvailable = Number(po.totalTallyWeight || 0) > 0;
   const shippedTotal = Number(po.invoiceShippedTotal ?? po.totalAmount ?? 0);
@@ -817,7 +821,7 @@ function InvoiceBasisCard({ po, onSaved }) {
         {!isDrop && !tallyAvailable && <div className="text-[11px] text-amber-600">Basis Tally aktif setelah barang ditimbang ulang lewat Tally Inbound.</div>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <F label="No. Invoice Supplier (opsional)"><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} placeholder="mis. INV/2026/001" /></F>
-          <F label="Tanggal Invoice (opsional)"><Input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} /></F>
+          <F label="Tanggal Invoice (opsional)"><DateInput value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} /></F>
         </div>
         <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t">
           <div className="text-sm">Total tagihan terpilih: <b className="text-emerald-700">{fmt(selectedTotal)}</b></div>
@@ -854,7 +858,7 @@ function ReturnsTab({ po, onSaved, canOperate }) {
             <DialogContent>
               <DialogHeader><DialogTitle>Buat Retur Pembelian</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
-                <F label="Tanggal Retur"><Input type="date" value={form.returnDate} onChange={e => setForm({ ...form, returnDate: e.target.value })} /></F>
+                <F label="Tanggal Retur"><DateInput value={form.returnDate} onChange={e => setForm({ ...form, returnDate: e.target.value })} /></F>
                 <F label="Resolusi">
                   <Select value={form.resolution} onValueChange={v => setForm({ ...form, resolution: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -908,7 +912,7 @@ function HppTab({ po }) {
           <Stat label="Rata-rata HPP/kg" value={`Rp ${Number(totals.avgHppPerKg).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} highlight />
           <Stat label="Berat Ditagih (Invoice)" value={`${totals.totalWeightBilled} kg`} />
           <Stat label="Berat Diterima (Tally)" value={`${totals.totalWeightActual} kg`} />
-          <Stat label="Total Susut" value={`${totals.totalSusut.toFixed(2)} kg`} />
+          <Stat label="Total Susut" value={`${fmtNum(totals.totalSusut, 2)} kg`} />
           <Stat label="Grand Total (Invoice)" value={`Rp ${Number(totals.grandTotal).toLocaleString('id-ID')}`} highlight />
         </CardContent>
       </Card>
@@ -932,7 +936,7 @@ function HppTab({ po }) {
                   <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
                   <TableCell className="text-right">{it.weightBilled}</TableCell>
                   <TableCell className="text-right">{it.weightActual}</TableCell>
-                  <TableCell className="text-right text-red-600">{Number(it.susut).toFixed(2)}</TableCell>
+                  <TableCell className="text-right text-red-600">{fmtNum(it.susut, 2)}</TableCell>
                   <TableCell className="text-right">Rp {Number(it.itemCost).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                   <TableCell className="text-right">Rp {Number(it.additionalCostShare).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
                   <TableCell className="text-right font-semibold">Rp {Number(it.hppTotal).toLocaleString('id-ID', { maximumFractionDigits: 0 })}</TableCell>
@@ -1054,7 +1058,7 @@ function RefundBanner({ po, canResolve, onSaved }) {
             ))}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <F label="Tanggal"><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></F>
+            <F label="Tanggal"><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></F>
             <F label="Nominal (Rp)"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} /></F>
             {mode === 'transfer' && (
               <>

@@ -16,9 +16,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ArrowLeft, Loader2, Plus, Pencil, Trash2, CheckCircle2, XCircle, Building2, Phone, Mail, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
-const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
 const SOURCE_LABEL = { referral: 'Referral', cold_call: 'Cold Call', pameran: 'Pameran', website: 'Website', media_sosial: 'Media Sosial', lainnya: 'Lainnya' };
 const NEXT_STAGE = { 'Kontak Awal': 'Penawaran', 'Penawaran': 'Negosiasi' };
 const STAGE_COLOR = {
@@ -235,7 +236,7 @@ function AddTaskDialog({ open, leadId, defaultAssignee, fullAccess, onClose, onS
         <DialogHeader><DialogTitle>Tambah Follow-up</DialogTitle><DialogDescription>Pengingat untuk lead ini{fullAccess ? '' : ` (assignee: ${defaultAssignee})`}.</DialogDescription></DialogHeader>
         <div className="space-y-3">
           <div><Label className="text-xs">Judul *</Label><Input className="mt-1" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="mis. Telepon lagi, Kirim penawaran, Kunjungan" /></div>
-          <div><Label className="text-xs">Jatuh Tempo *</Label><Input type="date" className="mt-1" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
+          <div><Label className="text-xs">Jatuh Tempo *</Label><DateInput className="mt-1" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
           <div><Label className="text-xs">Catatan</Label><Textarea className="mt-1" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
         </div>
         <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>

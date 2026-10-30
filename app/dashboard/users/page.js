@@ -72,7 +72,7 @@ export default function UsersPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <UsersIcon className="w-6 h-6 text-emerald-600" /> User Management
+            <UsersIcon className="w-6 h-6 text-emerald-600" /> Pengguna
           </h1>
           <p className="text-sm text-muted-foreground">Kelola akun pengguna ERP dan role akses (admin, supervisor, direktur, operator).</p>
         </div>

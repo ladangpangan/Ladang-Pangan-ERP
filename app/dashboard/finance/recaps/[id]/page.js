@@ -20,6 +20,7 @@ import BillRecapView from '@/components/bill-recap-view';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
 import { recapExcel, recapPdf } from '@/lib/finance/recap-export';
 import { RECAP_STATUS_LABEL, fmtDate, fmtRp } from '@/lib/finance/recap-fields';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 const STATUS_COLOR = { draft: 'bg-slate-100 text-slate-700', diajukan: 'bg-blue-100 text-blue-700', dibayar: 'bg-emerald-100 text-emerald-700' };
@@ -70,7 +71,7 @@ function RecapPayDialog({ recapId, supplier, accounts, open, onOpenChange, onDon
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Tanggal</Label>
-              <Input type="date" value={form.paymentDate || ''} onChange={e => setForm({ ...form, paymentDate: e.target.value })} />
+              <DateInput value={form.paymentDate || ''} onChange={e => setForm({ ...form, paymentDate: e.target.value })} />
             </div>
             <div className="space-y-1">
               <Label>Metode</Label>

@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import { Plus, Pencil, Archive, ArchiveRestore, Trash2, Save, Loader2, RefreshCw, Building, FileSpreadsheet, PackageX } from 'lucide-react';
 import { fmtRp, fmtDate, acctFetcher, todayStr } from '@/lib/accounting/ui';
 import { exportToExcel } from '@/lib/xlsx-export';
+import { DateInput } from '@/components/ui/date-input';
 
 export default function FixedAssetsPage() {
   const [archived, setArchived] = useState(false);
@@ -145,7 +146,7 @@ export default function FixedAssetsPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div><Label className="text-xs">Kategori</Label><Input value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} placeholder="Kendaraan / Mesin" /></div>
-              <div><Label className="text-xs">Tanggal Perolehan</Label><Input type="date" value={f.acquisitionDate} onChange={(e) => setF({ ...f, acquisitionDate: e.target.value })} /></div>
+              <div><Label className="text-xs">Tanggal Perolehan</Label><DateInput value={f.acquisitionDate} onChange={(e) => setF({ ...f, acquisitionDate: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div><Label className="text-xs">Harga Perolehan</Label><CurrencyInput value={f.acquisitionCost} onChange={(v) => setF({ ...f, acquisitionCost: v })} /></div>

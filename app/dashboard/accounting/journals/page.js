@@ -15,6 +15,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { toast } from 'sonner';
 import { Plus, RefreshCw, Loader2, Calculator, Eye, Trash2, Search, X } from 'lucide-react';
 import { fmtRp, fmtDate, acctFetcher, SOURCE_LABEL, SOURCE_COLOR, defaultRange, todayStr } from '@/lib/accounting/ui';
+import { DateInput, PeriodPresets } from '@/components/ui/date-input';
 
 export default function JournalsPage() {
   const [range, setRange] = useState(defaultRange());
@@ -64,8 +65,9 @@ export default function JournalsPage() {
 
       <Card>
         <CardContent className="p-3 flex flex-wrap items-end gap-3">
-          <div><Label className="text-xs">Dari</Label><Input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-40" /></div>
-          <div><Label className="text-xs">Sampai</Label><Input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-40" /></div>
+          <div><Label className="text-xs">Dari</Label><DateInput value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-40" /></div>
+          <div><Label className="text-xs">Sampai</Label><DateInput value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-40" /></div>
+          <PeriodPresets onPick={setRange} />
           <div><Label className="text-xs">Sumber</Label>
             <Select value={source} onValueChange={setSource}>
               <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
@@ -204,7 +206,7 @@ function ManualJournalDialog({ onClose, onSaved }) {
         <DialogHeader><DialogTitle>Jurnal Manual / Penyesuaian</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="grid sm:grid-cols-3 gap-3">
-            <div><Label className="text-xs">Tanggal</Label><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+            <div><Label className="text-xs">Tanggal</Label><DateInput value={date} onChange={(e) => setDate(e.target.value)} /></div>
             <div className="sm:col-span-2"><Label className="text-xs">Deskripsi</Label><Input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="mis. Penyesuaian penyusutan" /></div>
           </div>
           <div className="rounded-md border overflow-x-auto">

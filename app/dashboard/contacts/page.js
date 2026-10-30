@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
+import { useSearchParams } from 'next/navigation';
 import { useSession } from '@/lib/auth/auth-client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,6 +24,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { exportToExcel } from '@/lib/xlsx-export';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -87,7 +89,11 @@ export default function ContactsPage() {
   const canDelete = role === 'admin';
   const canView = ['admin', 'supervisor', 'direktur'].includes(role);
 
-  const [type, setType] = useState('all');
+  // Menu Pelanggan / Supplier membuka halaman ini dengan ?type=Customer / ?type=Supplier
+  const searchParams = useSearchParams();
+  const typeParam = searchParams.get('type');
+  const [type, setType] = useState(typeParam || 'all');
+  useEffect(() => { setType(typeParam || 'all'); }, [typeParam]);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -143,7 +149,7 @@ export default function ContactsPage() {
       const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success(editing ? 'Contact diperbarui' : 'Contact dibuat');
+      toast.success(editing ? 'Kontak diperbarui' : 'Kontak dibuat');
       setOpen(false); mutate();
     } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
@@ -160,7 +166,7 @@ export default function ContactsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <Users className="w-8 h-8 text-emerald-600" /> Contacts
+            <Users className="w-8 h-8 text-emerald-600" /> {type === 'Customer' ? 'Pelanggan' : type === 'Supplier' ? 'Supplier' : 'Kontak'}
           </h1>
           <p className="text-muted-foreground mt-1">
             Kelola Supplier, Customer, Agen, Dropshipper, RPH, Karyawan, dan Mitra
@@ -174,7 +180,7 @@ export default function ContactsPage() {
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={exportContacts} disabled={!rows.length}><FileSpreadsheet className="w-4 h-4 mr-2" />Excel</Button>
             <Dialog open={open} onOpenChange={setOpen}>
-              <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Contact</Button></DialogTrigger>
+              <DialogTrigger asChild><Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" />Tambah Kontak</Button></DialogTrigger>
               <ContactDialog form={form} setForm={setForm} onSave={save} saving={saving} editing={editing} />
             </Dialog>
           </div>
@@ -187,12 +193,12 @@ export default function ContactsPage() {
             <Tabs value={type} onValueChange={setType}>
               <TabsList>
                 <TabsTrigger value="all">Semua</TabsTrigger>
-                {TYPES.map(t => <TabsTrigger key={t} value={t}>{t}</TabsTrigger>)}
+                {TYPES.map(t => <TabsTrigger key={t} value={t}>{t === 'Customer' ? 'Pelanggan' : t}</TabsTrigger>)}
               </TabsList>
             </Tabs>
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="Cari nama / kode / phone..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+              <Input placeholder="Cari nama / kode / telepon..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
             <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
@@ -212,7 +218,7 @@ export default function ContactsPage() {
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
               {error && <TableRow><TableCell colSpan={8} className="text-center py-8 text-red-500">Gagal memuat data</TableCell></TableRow>}
-              {!isLoading && !error && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Belum ada data</TableCell></TableRow>}
+              {!isLoading && !error && rows.length === 0 && <EmptyRow colSpan={8} icon={Users} title={q ? 'Tidak ada kontak yang cocok' : `Belum ada ${type === 'Customer' ? 'pelanggan' : type === 'Supplier' ? 'supplier' : 'kontak'}`} hint={q ? 'Coba kata kunci lain.' : 'Pelanggan dipakai di Sales Order, supplier dipakai di Purchase Order.'} action={q ? null : { label: 'Tambah Kontak', onClick: openCreate }} />}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
                   <TableCell><div className="flex flex-wrap gap-1">{getCats(r).map(cat => <Badge key={cat} variant="secondary" className={TYPE_COLOR[cat] || 'bg-slate-100 text-slate-700'}>{cat}</Badge>)}</div></TableCell>
@@ -362,10 +368,10 @@ function ContactDetailSheet({ id, onClose }) {
                     </div>
                   </div>
                   {(hasCat(d.contact, 'Customer') || isAgent) && (
-                    <TransactionList title="Sales Orders" items={d.salesOrders} emptyMsg="Belum ada Sales Order" numberKey="soNumber" dateKey="orderDate" />
+                    <TransactionList title="Sales Order" items={d.salesOrders} emptyMsg="Belum ada Sales Order" numberKey="soNumber" dateKey="orderDate" />
                   )}
                   {(hasCat(d.contact, 'Supplier') || hasCat(d.contact, 'RPH')) && (
-                    <TransactionList title="Purchase Orders" items={d.purchaseOrders} emptyMsg="Belum ada Purchase Order" numberKey="poNumber" dateKey="orderDate" />
+                    <TransactionList title="Purchase Order" items={d.purchaseOrders} emptyMsg="Belum ada Purchase Order" numberKey="poNumber" dateKey="orderDate" />
                   )}
                   {d.workOrders.length > 0 && (
                     <TransactionList title="Work Orders (dari PO)" items={d.workOrders} emptyMsg="" numberKey="woNumber" dateKey="startDate" />
@@ -399,7 +405,7 @@ function ContactDetailSheet({ id, onClose }) {
 }
 
 function CashbackHistoryList({ items, summary }) {
-  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
@@ -1021,7 +1027,7 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
   return (
     <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
       <DialogHeader>
-        <DialogTitle>{editing ? 'Edit Contact' : 'Tambah Contact'}</DialogTitle>
+        <DialogTitle>{editing ? 'Ubah Kontak' : 'Tambah Kontak'}</DialogTitle>
         <DialogDescription>Data master untuk relasi bisnis PT Ladang Pangan Indonesia.</DialogDescription>
       </DialogHeader>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1133,7 +1139,7 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
         <Field label="Status">
           <Select value={form.status} onValueChange={v => set('status', v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+            <SelectContent><SelectItem value="active">Aktif</SelectItem><SelectItem value="inactive">Nonaktif</SelectItem></SelectContent>
           </Select>
         </Field>
         <Field label="Catatan" className="sm:col-span-2"><Textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} /></Field>

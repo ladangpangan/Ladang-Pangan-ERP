@@ -4,6 +4,11 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/sonner';
+import { setDefaultOptions } from 'date-fns';
+import { id as idLocale } from 'date-fns/locale';
+
+// Semua tanggal tampil berbahasa Indonesia ("30 Okt 2026") tanpa perlu menyebut locale di tiap format().
+setDefaultOptions({ locale: idLocale });
 
 const queryClient = new QueryClient({
   defaultOptions: {
