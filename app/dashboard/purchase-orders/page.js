@@ -60,7 +60,9 @@ const PAY_COLOR = {
   paid: 'bg-emerald-100 text-emerald-700',
 };
 
-const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
+// CBD = bayar sebelum kirim, COD = bayar saat barang diterima. "Cash" dipertahankan untuk PO lama.
+const PAYMENT_TERMS = ['CBD', 'COD', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60', 'Cash'];
+const PAYMENT_TERM_LABEL = { CBD: 'CBD · bayar sebelum kirim', COD: 'COD · bayar saat diterima', Cash: 'Cash (lama)' };
 
 const emptyItem = () => ({ productId: '', quantity: 0, weight: 0, unitPrice: 0 });
 const emptyForm = {
@@ -313,10 +315,10 @@ function CreatePODialog({ onSaved, pdfShow }) {
         )}
         <F label="Tanggal Order *"><Input type="date" value={form.orderDate} onChange={e => update('orderDate', e.target.value)} /></F>
         <F label="Perkiraan Datang"><Input type="date" value={form.expectedDate} onChange={e => update('expectedDate', e.target.value)} /></F>
-        <F label="Term Pembayaran (TOP)">
+        <F label="Cara Bayar">
           <Select value={form.paymentTerm} onValueChange={v => update('paymentTerm', v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>{PAYMENT_TERMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+            <SelectContent>{PAYMENT_TERMS.map(t => <SelectItem key={t} value={t}>{PAYMENT_TERM_LABEL[t] || t}</SelectItem>)}</SelectContent>
           </Select>
         </F>
         <F label="Down Payment (Rp)"><CurrencyInput value={form.dpAmount} onChange={v => update('dpAmount', v)} placeholder="0" /></F>

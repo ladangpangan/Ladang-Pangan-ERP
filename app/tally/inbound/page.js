@@ -16,6 +16,7 @@ import {
 import { PACKAGING_TYPES, pkgLabel } from '@/lib/constants';
 import { generateTallyInboundPDF } from '@/lib/pdf/invoice';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
+import { openBeritaAcara } from '@/lib/tally/history';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
 const kg = (n) => Number(n || 0).toLocaleString('id-ID', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -97,7 +98,9 @@ export default function TallyInboundPage() {
   const sessionIdRef = useRef(null);
   const saveChain = useRef(Promise.resolve());
   const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
-  const [markTallyDone, setMarkTallyDone] = useState(false);
+  // Finalisasi PO: 'done' = PO lengkap (tutup tally PO), 'more' = supplier masih kirim lagi (tutup kiriman ini)
+  const [deliveryAnswer, setDeliveryAnswer] = useState(null);
+  const [isRevision, setIsRevision] = useState(false); // sesi revisi yang dibuka kembali oleh supervisor
   const [notes, setNotes] = useState('');
   const [finalizing, setFinalizing] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
@@ -159,7 +162,8 @@ export default function TallyInboundPage() {
     notes,
     kodeBase: null,
     kodeBaseAt: 0,
-    markTallyComplete: refType === 'PO' && !!markTallyDone,
+    markTallyComplete: refType === 'PO' && !isRevision && deliveryAnswer === 'done',
+    deliveryContinues: refType === 'PO' && !isRevision && deliveryAnswer === 'more',
     items: items.map(it => ({
       productId: it.productId, weight: Number(it.weight), quantity: Number(it.quantity || 1),
       packagingType: it.packagingType, expiredDate: it.expiredDate || undefined,
@@ -258,6 +262,7 @@ export default function TallyInboundPage() {
   // ===== Finalisasi =====
   const finalize = async () => {
     if (!staged.length) return;
+    if (refType === 'PO' && !isRevision && !deliveryAnswer) { toast.error('Jawab dulu: apakah supplier masih akan mengirim lagi?'); return; }
     setFinalizing(true);
     try {
       const id = await persist(staged); // pastikan data terakhir + centang PO selesai ikut tersimpan
@@ -267,6 +272,7 @@ export default function TallyInboundPage() {
       const created = j.data?.stocks || [];
       const items = staged.map((it, i) => ({ ...it, kodeSimpan: created[i]?.kodeSimpan || it.kodeSimpan }));
       setLastSaved({
+        sessionId: id,
         time: new Date(),
         operator: session?.user?.name || session?.user?.email || 'Operator',
         csCode: csObj?.code, csName: csObj?.name,
@@ -283,7 +289,7 @@ export default function TallyInboundPage() {
 
   const resetAll = () => {
     setStaged([]); setScanned(null); setWeight(0); setErrorMsg(null); setFlash(null);
-    setNotes(''); setMarkTallyDone(false); setExpManual(null); setProdDate('');
+    setNotes(''); setDeliveryAnswer(null); setIsRevision(false); setExpManual(null); setProdDate('');
     setSessionId(null); sessionIdRef.current = null; setSaveState('idle');
     setRefId(''); setOpenRef(null); setProductId('');
     setScreen('source');
@@ -301,7 +307,8 @@ export default function TallyInboundPage() {
       setColdStorageId(sess.coldStorageId || '');
       setZoneId(sess.zoneId || '');
       setNotes(sess.notes || '');
-      setMarkTallyDone(!!sess.markTallyComplete);
+      setDeliveryAnswer(sess.markTallyComplete ? 'done' : sess.deliveryContinues ? 'more' : null);
+      setIsRevision(!!sess.parentSessionId);
       const items = (sess.items || []).map(it => ({
         _id: Math.random().toString(36).slice(2),
         kodeSimpan: it.kodeSimpan || null,
@@ -405,7 +412,12 @@ export default function TallyInboundPage() {
     try { pdfPreview.show(generateTallyInboundPDF(r), `BeritaAcaraTally_${format(new Date(r.time), 'yyyyMMdd_HHmm')}.pdf`, 'Berita Acara Tally Masuk'); }
     catch (e) { toast.error('Gagal membuat PDF: ' + e.message); }
   };
-  const downloadPDF = () => { if (lastSaved) showBeritaAcara(lastSaved); };
+  // Berita acara gabungan per PO/kiriman (sama dengan Riwayat Tally); cadangan: PDF sesi ini saja.
+  const downloadPDF = async () => {
+    if (!lastSaved) return;
+    try { await openBeritaAcara(pdfPreview, 'in', lastSaved.sessionId); }
+    catch { showBeritaAcara(lastSaved); }
+  };
 
 
   return (
@@ -442,7 +454,7 @@ export default function TallyInboundPage() {
               {drafts.map(d => (
                 <div key={d.id} className="flex items-center gap-2 bg-[#FFFBEB] border border-[#FDE68A] rounded-[14px] pl-4 pr-2 py-2.5">
                   <button type="button" onClick={() => loadSession(d.id)} className="flex-1 text-left min-w-0">
-                    <div className="text-base font-bold truncate">{d.refNumber ? `${d.referenceType} ${d.refNumber}` : 'Manual'}</div>
+                    <div className="text-base font-bold truncate">{d.parentSessionId ? 'Revisi · ' : ''}{d.refNumber ? `${d.referenceType} ${d.refNumber}` : 'Manual'}</div>
                     <div className="text-sm text-[#5A687C]">{d.itemCount} karung · {kg(d.totalWeight)} kg{d.updatedAt ? ` · ${format(new Date(d.updatedAt), 'dd MMM HH:mm')}` : ''}</div>
                   </button>
                   <button type="button" onClick={() => loadSession(d.id)} className="text-[15px] font-bold text-[#117956] px-2 min-h-[44px]">Lanjutkan</button>
@@ -566,6 +578,11 @@ export default function TallyInboundPage() {
       {/* ===== Langkah 3: Scan ===== */}
       {screen === 'scan' && (
         <div className="flex-1 p-4 flex flex-col gap-3">
+          {isRevision && (
+            <div className="bg-[#FFFBEB] border border-[#FDE68A] text-[#92400E] rounded-xl px-3.5 py-2.5 text-[15px]">
+              <b>Revisi tally{refNumber ? ` · ${refNumber}` : ''}</b> — scan & timbang karung yang tertinggal saja.
+            </div>
+          )}
           <div className={`${card} overflow-hidden`}>
             <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-[#EEF2F6]">
               <div className="flex-1 min-w-0">
@@ -697,18 +714,36 @@ export default function TallyInboundPage() {
             <Row label="Kadaluarsa" value={[...new Set(byProduct.flatMap(p => [...p.exp]))].map(e => dmy(parseYmd(e))).join(', ') || '-'} />
             <div className="flex justify-between px-4 py-3.5 bg-[#F8FAFC] text-lg font-bold"><span>Total</span><span>{staged.length} karung · {kg(totalKg)} kg</span></div>
           </div>
-          {refType === 'PO' && (
-            <label className="flex items-start gap-3 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl px-3.5 py-3 cursor-pointer">
-              <input type="checkbox" checked={markTallyDone} onChange={(e) => setMarkTallyDone(e.target.checked)} className="w-6 h-6 mt-0.5 accent-[#117956] shrink-0" />
-              <span className="text-[15px]"><b>Semua barang PO ini sudah datang</b><br /><span className="text-[#5A687C] text-sm">PO tidak muncul lagi di pilihan tally</span></span>
-            </label>
+          {isRevision ? (
+            <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-xl px-3.5 py-3 text-[15px]">
+              <b>Revisi tally</b><br /><span className="text-[#5A687C] text-sm">Karung ini ditambahkan ke berita acara {refNumber || 'tally'} yang sudah ada.</span>
+            </div>
+          ) : refType === 'PO' && (
+            <div className={`bg-white rounded-[14px] px-4 py-3.5 flex flex-col gap-2.5 border-2 ${deliveryAnswer ? 'border-[#DFE5EC]' : 'border-[#F59E0B]'}`}>
+              <div className="text-[17px] font-bold">Apakah supplier masih akan mengirim lagi untuk PO ini?</div>
+              <div className="text-sm text-[#5A687C]">Dipakai untuk memisahkan berita acara per kiriman.</div>
+              {[
+                ['done', 'Tidak, PO ini sudah lengkap', 'PO selesai di-tally dan tidak muncul lagi di pilihan tally.'],
+                ['more', 'Ya, masih ada kiriman lanjutan', 'Kiriman ini ditutup. Kiriman berikutnya dapat berita acara sendiri.'],
+              ].map(([k, t, d]) => {
+                const on = deliveryAnswer === k;
+                return (
+                  <button key={k} type="button" aria-pressed={on} onClick={() => setDeliveryAnswer(k)}
+                    className={`flex gap-3 items-start text-left min-h-[64px] p-3 rounded-xl ${on ? 'bg-[#EDF8F3] border-2 border-[#117956]' : 'bg-white border border-[#CBD5E1]'}`}>
+                    <span className={`w-5 h-5 rounded-full shrink-0 mt-0.5 box-border ${on ? 'border-[6px] border-[#117956]' : 'border-2 border-[#94A3B8]'}`} />
+                    <span><b className="text-base">{t}</b><br /><span className="text-sm text-[#5A687C]">{d}</span></span>
+                  </button>
+                );
+              })}
+            </div>
           )}
           <div className="flex flex-col gap-1.5">
             <label htmlFor="catatan" className="text-[15px] font-medium">Catatan (opsional)</label>
             <textarea id="catatan" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="border border-[#CBD5E1] rounded-[10px] p-3 text-base bg-white" />
           </div>
           <div className="mt-auto flex flex-col gap-2.5">
-            <button type="button" onClick={finalize} disabled={finalizing} className={primaryBtn}>
+            {refType === 'PO' && !isRevision && !deliveryAnswer && <div className="text-[13px] text-[#92400E] text-center">Pilih salah satu jawaban di atas dulu.</div>}
+            <button type="button" onClick={finalize} disabled={finalizing || (refType === 'PO' && !isRevision && !deliveryAnswer)} className={primaryBtn}>
               {finalizing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-6 h-6" />} Masukkan ke Stok
             </button>
             <button type="button" onClick={() => setScreen('scan')} className={outlineBtn}>Kembali scan</button>

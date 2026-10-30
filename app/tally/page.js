@@ -43,7 +43,7 @@ export default function TallyHomePage() {
   const pending = [
     ...(inData?.data || []).map(d => ({
       key: `in-${d.id}`, href: `/tally/inbound?session=${d.id}`, color: '#117956', at: d.updatedAt,
-      title: `Masuk · ${d.refNumber ? `${d.referenceType} ${d.refNumber}` : 'Lainnya'}`,
+      title: `${d.parentSessionId ? 'Revisi' : 'Masuk'} · ${d.refNumber ? `${d.referenceType} ${d.refNumber}` : 'Lainnya'}`,
       sub: `${d.itemCount} karung · ${kg(d.totalWeight)} kg`,
     })),
     ...(outData?.data || []).filter(o => Number(o.draftItemCount || 0) > 0).map(o => ({

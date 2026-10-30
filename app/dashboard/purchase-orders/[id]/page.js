@@ -84,6 +84,8 @@ export default function PODetailPage() {
             <Badge variant="outline">{po.poType}</Badge>
             {po.method && <Badge variant="outline">{po.method}</Badge>}
             {po.isDropship && <Badge variant="secondary" className="bg-purple-100 text-purple-700">Dropship</Badge>}
+            {po.paymentTerm && <Badge variant="outline">{PAY_TERM_LABEL[po.paymentTerm] || po.paymentTerm}</Badge>}
+            {po.refundStatus === 'pending' && <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">Menunggu refund</Badge>}
           </div>
           <p className="text-muted-foreground text-sm mt-1">{po.supplier?.displayName} · {po.orderDate && format(new Date(po.orderDate), 'dd MMM yyyy')}</p>
           {po.isDropship && po.linkedSalesOrder && (
@@ -142,13 +144,17 @@ export default function PODetailPage() {
         </div>
       </CardContent></Card>
 
+      <RefundBanner po={po} canResolve={['admin', 'supervisor', 'direktur', 'akuntan'].includes(role)} onSaved={mutate} />
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <SummaryCard label="Total PO" value={`Rp ${Number(po.totalAmount).toLocaleString('id-ID')}`} sub={(po.additionalCostBearer !== 'supplier' && (po.additionalCostPayMethod || 'utang') === 'utang' && Number(po.additionalCost) > 0) ? 'Termasuk ongkir (utang)' : 'Barang saja'} />
         <SummaryCard label="Sudah Dibayar" value={`Rp ${Number(po.paidAmount).toLocaleString('id-ID')}`} sub={PAY_LABEL[po.paymentStatus] || po.paymentStatus} color="emerald" />
         <SummaryCard label="Total Retur" value={`Rp ${Number(po.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${po.returns?.length || 0} retur`} color="amber" />
         {billed || po.pipelineStatus === 'Dibatalkan'
-          ? <SummaryCard label="Sisa tagihan supplier" value={`Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')}`} sub={po.paymentTerm || '-'} color={po.outstanding > 0 ? 'red' : 'slate'} />
+          ? <SummaryCard label="Sisa tagihan supplier" value={`Rp ${Math.max(0, Number(po.outstanding || 0)).toLocaleString('id-ID')}`}
+              sub={Number(po.outstanding) < 0 ? `lebih bayar Rp ${Math.abs(Number(po.outstanding)).toLocaleString('id-ID')}` : (PAY_TERM_LABEL[po.paymentTerm] || po.paymentTerm || '-')}
+              color={po.outstanding > 0 ? 'red' : Number(po.outstanding) < 0 ? 'amber' : 'slate'} />
           : <SummaryCard label="Tagihan supplier" value="Belum ditagih" sub={`perkiraan Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')} · muncul setelah barang diterima`} color="slate" />}
       </div>
 
@@ -649,6 +655,7 @@ function PaymentsTab({ po, onSaved, canEdit }) {
     fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
   }, []);
   const accName = (code) => { if (!code) return '-'; const a = accounts.find(x => x.code === code); return a ? `${a.code} · ${a.name}` : code; };
+  const credit = Number(po.supplierCredit || 0);
   const create = async () => {
     if (!form.amount) return toast.error('Nominal wajib diisi');
     setSaving(true);
@@ -677,7 +684,10 @@ function PaymentsTab({ po, onSaved, canEdit }) {
                 <F label="Metode">
                   <Select value={form.method} onValueChange={v => setForm({ ...form, method: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="Transfer">Transfer</SelectItem><SelectItem value="Tunai">Tunai</SelectItem><SelectItem value="QRIS">QRIS</SelectItem></SelectContent>
+                    <SelectContent>
+                      <SelectItem value="Transfer">Transfer</SelectItem><SelectItem value="Tunai">Tunai</SelectItem><SelectItem value="QRIS">QRIS</SelectItem>
+                      {credit > 0 && <SelectItem value="Saldo Supplier">Saldo supplier (Rp {credit.toLocaleString('id-ID')})</SelectItem>}
+                    </SelectContent>
                   </Select>
                 </F>
                 <F label="Nominal (Rp)" className="col-span-2">
@@ -686,14 +696,20 @@ function PaymentsTab({ po, onSaved, canEdit }) {
                     <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, amount: Number(po.outstanding || 0) })}>Lunas</Button>
                   </div>
                 </F>
-                <F label="Dibayar dari Rekening" className="col-span-2">
+                {credit > 0 && form.method !== 'Saldo Supplier' && (
+                  <div className="col-span-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 flex items-center justify-between gap-2">
+                    <span>Supplier ini punya saldo <b>Rp {credit.toLocaleString('id-ID')}</b> dari lebih bayar PO lain.</span>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setForm({ ...form, method: 'Saldo Supplier', accountCode: '', amount: Math.min(credit, Math.max(0, Number(po.outstanding || 0))) })}>Pakai saldo</Button>
+                  </div>
+                )}
+                {form.method !== 'Saldo Supplier' && <F label="Dibayar dari Rekening" className="col-span-2">
                   <Select value={form.accountCode || undefined} onValueChange={v => setForm({ ...form, accountCode: v })}>
                     <SelectTrigger><SelectValue placeholder="Pilih Kas/Bank sumber" /></SelectTrigger>
                     <SelectContent>
                       {accounts.map(a => <SelectItem key={a.code} value={a.code}>{a.code} · {a.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                </F>
+                </F>}
                 <F label="Referensi (no bukti)" className="col-span-2"><Input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} /></F>
                 <F label="Adalah DP?">
                   <Select value={form.isDp ? 'yes' : 'no'} onValueChange={v => setForm({ ...form, isDp: v === 'yes' })}>
@@ -719,8 +735,8 @@ function PaymentsTab({ po, onSaved, canEdit }) {
                   <TableCell>{p.method}</TableCell>
                   <TableCell className="text-xs">{accName(p.accountCode)}</TableCell>
                   <TableCell className="font-mono text-xs">{p.reference || '-'}</TableCell>
-                  <TableCell>{p.isDp ? <Badge variant="outline">DP</Badge> : <Badge variant="secondary">Pelunasan</Badge>}</TableCell>
-                  <TableCell className="text-right font-semibold">Rp {Number(p.amount).toLocaleString('id-ID')}</TableCell>
+                  <TableCell>{Number(p.amount) < 0 ? <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">{p.method === 'Saldo Supplier' ? 'Jadi saldo' : 'Refund'}</Badge> : p.isDp ? <Badge variant="outline">DP</Badge> : <Badge variant="secondary">Pelunasan</Badge>}</TableCell>
+                  <TableCell className={`text-right font-semibold ${Number(p.amount) < 0 ? 'text-amber-700' : ''}`}>{Number(p.amount) < 0 ? '−' : ''}Rp {Math.abs(Number(p.amount)).toLocaleString('id-ID')}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -969,5 +985,93 @@ function CancelPoDialog({ open, onOpenChange, poNumber, onConfirm }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const PAY_TERM_LABEL = { CBD: 'CBD · bayar sebelum kirim', COD: 'COD · bayar saat diterima' };
+
+// Revisi tally membuat PO lebih bayar (biasanya CBD): supplier wajib refund — transfer balik atau jadi saldo.
+function RefundBanner({ po, canResolve, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState('transfer');
+  const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 10), accountCode: '', amount: 0, note: '' });
+  const [file, setFile] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setForm(f => ({ ...f, amount: Math.round(Number(po.refundAmount || 0)) }));
+    fetch('/api/cash-bank-accounts', { credentials: 'include' }).then(r => r.json()).then(j => setAccounts(j.data || [])).catch(() => {});
+  }, [open, po.refundAmount]);
+  if (!po.refundStatus) return null;
+  const rp = (n) => `Rp ${Math.round(Number(n || 0)).toLocaleString('id-ID')}`;
+  if (po.refundStatus !== 'pending') {
+    return (
+      <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <CheckCircle2 className="w-4 h-4" />
+        <b>{po.refundStatus === 'credited' ? 'Lebih bayar sudah dijadikan saldo supplier untuk PO berikutnya.' : 'Refund dari supplier sudah diterima.'}</b>
+        {po.refundResolvedAt && <span>{format(new Date(po.refundResolvedAt), 'dd MMM yyyy')}</span>}
+        {po.refundProofKey && <a href={`/api/purchase-orders/${po.id}/refund-proof`} target="_blank" rel="noreferrer" className="underline">Lihat bukti transfer</a>}
+      </div>
+    );
+  }
+  const save = async () => {
+    if (!(Number(form.amount) > 0)) return toast.error('Isi nominal refund');
+    if (mode === 'transfer' && !form.accountCode) return toast.error('Pilih akun kas/bank penerima');
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append('mode', mode); fd.append('amount', String(form.amount)); fd.append('date', form.date);
+      if (form.accountCode) fd.append('accountCode', form.accountCode);
+      if (form.note) fd.append('note', form.note);
+      if (file && mode === 'transfer') fd.append('file', file);
+      const res = await fetch(`/api/purchase-orders/${po.id}/refund`, { method: 'POST', body: fd, credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
+      toast.success(mode === 'credit' ? 'Lebih bayar dijadikan saldo supplier' : 'Refund dicatat');
+      setOpen(false); setFile(null); onSaved();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-wrap items-center gap-3">
+      <div className="flex-1 min-w-[240px]">
+        <div className="font-bold text-amber-800">Lebih bayar {rp(po.refundAmount)} — perlu refund dari supplier</div>
+        <div className="text-sm text-amber-900/80">Revisi tally menurunkan tagihan, padahal PO sudah dibayar. Detail revisi ada di Riwayat Tally.</div>
+      </div>
+      {canResolve && <Button onClick={() => setOpen(true)} className="bg-emerald-600 hover:bg-emerald-700">Selesaikan refund</Button>}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Selesaikan refund {rp(po.refundAmount)}</DialogTitle><DialogDescription>{po.poNumber} · {po.supplier?.displayName}</DialogDescription></DialogHeader>
+          <div className="flex flex-col gap-2">
+            {[['transfer', 'Transfer balik dari supplier', 'Supplier mengembalikan uang. Catat tanggal, akun, dan bukti transfer.'],
+              ['credit', 'Potong tagihan PO berikutnya', 'Lebih bayar jadi saldo supplier, dipakai saat membayar PO selanjutnya.']].map(([k, t, d]) => (
+              <button key={k} type="button" aria-pressed={mode === k} onClick={() => setMode(k)}
+                className={`flex gap-3 items-start text-left p-3 rounded-lg ${mode === k ? 'bg-emerald-50 border-2 border-emerald-600' : 'border border-slate-300'}`}>
+                <span className={`w-[18px] h-[18px] rounded-full shrink-0 mt-0.5 box-border ${mode === k ? 'border-[5px] border-emerald-600' : 'border-2 border-slate-400'}`} />
+                <span><b className="text-sm">{t}</b><br /><span className="text-[13px] text-muted-foreground">{d}</span></span>
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <F label="Tanggal"><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></F>
+            <F label="Nominal (Rp)"><CurrencyInput value={form.amount} onChange={v => setForm({ ...form, amount: v })} /></F>
+            {mode === 'transfer' && (
+              <>
+                <F label="Masuk ke akun" className="col-span-2">
+                  <Select value={form.accountCode || undefined} onValueChange={v => setForm({ ...form, accountCode: v })}>
+                    <SelectTrigger><SelectValue placeholder="Pilih Kas/Bank penerima" /></SelectTrigger>
+                    <SelectContent>{accounts.map(a => <SelectItem key={a.code} value={a.code}>{a.code} · {a.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </F>
+                <F label="Bukti transfer (opsional)" className="col-span-2"><Input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" onChange={e => setFile(e.target.files?.[0] || null)} /></F>
+              </>
+            )}
+            <F label="Catatan" className="col-span-2"><Input value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} /></F>
+          </div>
+          <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Simpan</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

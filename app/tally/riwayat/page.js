@@ -14,8 +14,8 @@ import { tallyType, kg, periodRange, openBeritaAcara } from '@/lib/tally/history
 const fetcher = (url) => fetch(url).then(r => r.json());
 const TABS = [['all', 'Semua'], ['in', 'Masuk'], ['out', 'Keluar'], ['op', 'Opname']];
 
-function useHistory(type, from, to, enabled) {
-  const { data, isLoading } = useSWR(enabled ? `/api/tally-history?${new URLSearchParams({ type, from, to })}` : null, fetcher);
+function useHistory(type, from, enabled) {
+  const { data, isLoading } = useSWR(enabled ? `/api/tally-history?${new URLSearchParams({ type, from })}` : null, fetcher);
   return { rows: data?.data || [], isLoading: enabled && isLoading };
 }
 
@@ -24,12 +24,12 @@ export default function TallyRiwayatPage() {
   const [tab, setTab] = useState('all');
   const [period, setPeriod] = useState('today');
   const [busy, setBusy] = useState(null);
-  const { from, to } = periodRange(period === 'today' ? 'today' : '7');
+  const { from } = periodRange(period === 'today' ? 'today' : '7');
   const want = (k) => tab === 'all' || tab === k;
-  const hin = useHistory('in', from, to, want('in'));
-  const hout = useHistory('out', from, to, want('out'));
-  const hop = useHistory('op', from, to, want('op'));
-  const hwo = useHistory('wo', from, to, tab === 'all');
+  const hin = useHistory('in', from, want('in'));
+  const hout = useHistory('out', from, want('out'));
+  const hop = useHistory('op', from, want('op'));
+  const hwo = useHistory('wo', from, tab === 'all');
   const loading = hin.isLoading || hout.isLoading || hop.isLoading || hwo.isLoading;
 
   const groups = useMemo(() => {

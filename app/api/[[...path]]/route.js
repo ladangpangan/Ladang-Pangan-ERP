@@ -296,6 +296,7 @@ const TALLY_TX_PATHS = new Set([
 // only the changed rows (concurrency-safe, multi-replica). All 4 tables are hydrated together
 // whenever any of these prefixes is hit (they are tiny, so the extra reads are negligible).
 const MISC_PATHS = new Set([
+  'tally-history', // revisi tally -> notifikasi refund supplier
   'notifications', 'contacts', 'settings',
   'purchase-orders', 'sales-orders', 'tally-outbound', 'tally-sessions',
   'work-orders', 'wo-stages', 'opnames', 'approvals', 'inventory',
@@ -1460,6 +1461,16 @@ async function handleRoute(request, { params }) {
       db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, po.id)).run();
       return p;
     };
+    // Saldo supplier = lebih bayar yang dijadikan saldo (pembayaran negatif "Saldo Supplier") dikurangi
+    // saldo yang sudah dipakai membayar PO lain (pembayaran positif "Saldo Supplier").
+    const supplierCredit = (supplierId) => {
+      if (!supplierId) return 0;
+      const v = db.select({ v: sql`coalesce(sum(${s.purchasePayments.amount}),0)` }).from(s.purchasePayments)
+        .innerJoin(s.purchaseOrder, eq(s.purchaseOrder.id, s.purchasePayments.purchaseOrderId))
+        .where(and(eq(s.purchaseOrder.supplierId, supplierId), eq(s.purchasePayments.method, 'Saldo Supplier'))).get()?.v;
+      return Math.max(0, Math.round(-Number(v || 0)));
+    };
+
     // Sisa tagihan PO terkini = total - dibayar - retur (dibulatkan ke rupiah).
     const poOutstanding = (po) => {
       const ret = db.select({ sum: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, po.id)).get();
@@ -3048,6 +3059,33 @@ async function handleRoute(request, { params }) {
       return Math.round((subtotal + utangFreight) * 100) / 100;
     };
 
+    // Setelah revisi tally: hitung ulang tagihan PO; bila sudah dibayar melebihi tagihan baru (CBD),
+    // tandai "Menunggu refund" dan beri tahu finance (akuntan), direktur & admin.
+    const checkPoRefund = (poId, byEmail, { notify = true } = {}) => {
+      try { computePoInvoice(poId); } catch {}
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, poId)).get();
+      if (!po) return null;
+      const paid = Number(db.select({ v: sql`coalesce(sum(amount),0)` }).from(s.purchasePayments).where(eq(s.purchasePayments.purchaseOrderId, poId)).get()?.v || 0);
+      const ret = Number(db.select({ v: sql`coalesce(sum(total_amount),0)` }).from(s.purchaseReturns).where(eq(s.purchaseReturns.purchaseOrderId, poId)).get()?.v || 0);
+      const net = Number(po.totalAmount || 0) - ret;
+      const over = Math.round(paid - net);
+      const ps = paid >= net && net > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+      if (over >= 1) {
+        const changed = po.refundStatus !== 'pending' || Math.round(Number(po.refundAmount || 0)) !== over;
+        db.update(s.purchaseOrder).set({ refundAmount: over, refundStatus: 'pending', paidAmount: paid, paymentStatus: ps, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, poId)).run();
+        if (changed && notify) createNotification({
+          roles: ['akuntan', 'direktur', 'admin'], type: 'warning', category: 'purchase',
+          title: `${po.poNumber} menunggu refund supplier`,
+          message: `Revisi tally membuat PO lebih bayar Rp ${over.toLocaleString('id-ID')}. Minta supplier mengembalikan dana, lalu selesaikan di detail PO.`,
+          entityType: 'purchase_order', entityId: poId, entityNumber: po.poNumber, linkPath: `/dashboard/purchase-orders/${poId}`, priority: 'high',
+        });
+      } else {
+        const upd = { paidAmount: paid, paymentStatus: ps, updatedAt: new Date() };
+        if (po.refundStatus === 'pending') Object.assign(upd, { refundAmount: null, refundStatus: null });
+        db.update(s.purchaseOrder).set(upd).where(eq(s.purchaseOrder.id, poId)).run();
+      }
+      return over;
+    };
     // GET /purchase-orders - list with filters
     if (route === '/purchase-orders' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -3212,7 +3250,7 @@ async function handleRoute(request, { params }) {
           it.billedBasis = eb;
         }
       }
-      return json({ data: { ...po, items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder, dropshipShipVsRecv } });
+      return json({ data: { ...po, supplierCredit: supplierCredit(po.supplierId), items: enrichedItems, supplier, dropshipCustomer, grn: grnRows, payments, returns, outstanding, totalReturns, totalPlanWeight, totalReceivedWeight, totalTallyWeight, weightConfirmed, weightVariance, tallyWeight, tallyDone, tallyVariance, invoiceWeightBasis, invoiceShippedTotal, invoiceTallyTotal, invoiceGrnTotal, invoiceSoReceiptTotal, linkedSalesOrder, dropshipShipVsRecv } });
     }
 
     // PATCH /purchase-orders/:id - update (method locked once set)
@@ -3533,8 +3571,71 @@ async function handleRoute(request, { params }) {
       if (po.pipelineStatus === 'Dibatalkan') return err('PO sudah dibatalkan — tidak bisa dibayar');
       const body = await request.json();
       if (!body.amount || Number(body.amount) <= 0) return err('amount > 0 required');
+      if (body.method === 'Saldo Supplier' && Number(body.amount) > supplierCredit(po.supplierId)) return err('Saldo supplier tidak cukup', 400);
+      if (body.method === 'Refund Supplier') return err('Refund dicatat lewat tombol "Selesaikan refund"', 400);
       const p = recordPoPayment(po, body, session.user.email);
+      if (po.refundStatus === 'pending') checkPoRefund(id, session.user.email, { notify: false });
       return json({ data: p }, { status: 201 });
+    }
+
+    // POST /purchase-orders/:id/refund (multipart) — selesaikan refund lebih bayar dari supplier.
+    // mode=transfer: supplier mentransfer balik (masuk kas/bank) · mode=credit: jadi saldo supplier untuk PO berikutnya.
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'refund' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const id = path[1];
+      const po = db.select().from(s.purchaseOrder).where(eq(s.purchaseOrder.id, id)).get();
+      if (!po) return err('Not found', 404);
+      if (po.refundStatus !== 'pending' || !(Number(po.refundAmount) > 0)) return err('PO ini tidak sedang menunggu refund', 400);
+      let form; try { form = await request.formData(); } catch { return err('Body harus multipart/form-data', 400); }
+      const mode = String(form.get('mode') || 'transfer') === 'credit' ? 'credit' : 'transfer';
+      const amount = Math.round(Number(form.get('amount') || po.refundAmount));
+      if (!(amount > 0)) return err('Nominal refund tidak valid', 400);
+      if (amount > Math.round(Number(po.refundAmount))) return err('Nominal melebihi lebih bayar PO', 400);
+      const note = form.get('note') ? String(form.get('note')).slice(0, 500) : null;
+      const date = form.get('date') ? String(form.get('date')).slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const accountCode = form.get('accountCode') ? String(form.get('accountCode')) : null;
+      if (mode === 'transfer' && !accountCode) return err('Pilih akun kas/bank penerima refund', 400);
+      const set = {};
+      const file = form.get('file');
+      if (mode === 'transfer' && file && typeof file.arrayBuffer === 'function' && file.size) {
+        const ALLOWED = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+        if (!ALLOWED.includes(file.type)) return err('Bukti hanya PDF, JPG, PNG, atau WEBP', 400);
+        if (file.size > 10 * 1024 * 1024) return err('Ukuran bukti maksimal 10MB', 400);
+        const bytes = Buffer.from(new Uint8Array(await file.arrayBuffer()));
+        const safeName = String(file.name || 'bukti-refund').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 150);
+        const relDir = `po-refund/${id}`;
+        const uploadRoot = nodePath.join(process.cwd(), 'data', 'uploads');
+        fs.mkdirSync(nodePath.join(uploadRoot, relDir), { recursive: true });
+        const storageKey = `${relDir}/${uuidv4()}_${safeName}`;
+        fs.writeFileSync(nodePath.join(uploadRoot, storageKey), bytes);
+        Object.assign(set, { refundProofKey: storageKey, refundProofName: safeName });
+      }
+      // Dicatat sebagai pembayaran negatif agar "sudah dibayar" & sisa tagihan otomatis benar di semua laporan.
+      recordPoPayment(po, {
+        amount: -amount, paymentDate: date, method: mode === 'credit' ? 'Saldo Supplier' : 'Refund Supplier',
+        accountCode: mode === 'credit' ? null : accountCode,
+        notes: `${mode === 'credit' ? 'Lebih bayar jadi saldo supplier' : 'Refund dari supplier'} (revisi tally)${note ? ` — ${note}` : ''}`,
+      }, session.user.email);
+      const rest = Math.round(Number(po.refundAmount) - amount);
+      Object.assign(set, rest >= 1
+        ? { refundAmount: rest, refundStatus: 'pending' }
+        : { refundStatus: mode === 'credit' ? 'credited' : 'received', refundResolvedAt: new Date(), refundNote: note });
+      db.update(s.purchaseOrder).set({ ...set, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      return json({ data: { ok: true, mode, amount, remaining: Math.max(0, rest) } });
+    }
+
+    // GET /purchase-orders/:id/refund-proof — bukti transfer refund supplier
+    if (route.startsWith('/purchase-orders/') && path.length === 3 && path[2] === 'refund-proof' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const po = db.select({ k: s.purchaseOrder.refundProofKey, n: s.purchaseOrder.refundProofName }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, path[1])).get();
+      if (!po?.k) return err('Bukti tidak ada', 404);
+      try {
+        const buf = fs.readFileSync(nodePath.join(process.cwd(), 'data', 'uploads', po.k));
+        const ext = String(po.n || '').split('.').pop().toLowerCase();
+        const type = ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        return new NextResponse(buf, { headers: { 'Content-Type': type, 'Content-Disposition': `inline; filename="${po.n || 'bukti-refund'}"` } });
+      } catch { return err('File bukti tidak ditemukan', 404); }
     }
 
     // POST /purchase-orders/:id/returns - create return (notif supervisor & direktur)
@@ -6793,6 +6894,254 @@ async function handleRoute(request, { params }) {
     const histDay = (d) => { const t = new Date(d); return new Date(t.getTime() + 7 * 3600e3).toISOString().slice(0, 10); }; // tanggal WIB
     const histNum = (v) => Math.round(Number(v || 0) * 10) / 10;
 
+    // ================= TALLY MASUK: KIRIMAN PO + REVISI SUPERVISOR =================
+    // Berita acara Barang Masuk = 1 per PO per kiriman. Tally-tally final untuk PO yang sama digabung
+    // berurutan; kiriman ditutup saat petugas menjawab "masih ada kiriman lanjutan" (delivery_continues).
+    // Sesi revisi (parent_session_id) ikut kiriman sesi asalnya. Tally non-PO = 1 berita acara per sesi.
+    const tallyInGroups = () => {
+      const finals = db.select().from(s.tallySession).where(eq(s.tallySession.status, 'final')).all()
+        .sort((a, b) => new Date(a.finalizedAt || a.updatedAt) - new Date(b.finalizedAt || b.updatedAt));
+      const byId = new Map(finals.map(r => [r.id, r]));
+      const rootOf = (r) => { let x = r, n = 0; while (x.parentSessionId && byId.get(x.parentSessionId) && n++ < 50) x = byId.get(x.parentSessionId); return x; };
+      const keyOfRoot = new Map();
+      const poCount = {};
+      for (const r of finals) {
+        if (r.parentSessionId && byId.get(r.parentSessionId)) continue;
+        if (r.referenceType === 'PO' && r.referenceId) {
+          const c = (poCount[r.referenceId] ||= { k: 1 });
+          keyOfRoot.set(r.id, { key: `po:${r.referenceId}:${c.k}`, kiriman: c.k });
+          if (r.deliveryContinues) c.k++;
+        } else keyOfRoot.set(r.id, { key: `s:${r.id}`, kiriman: null });
+      }
+      const groups = new Map();
+      for (const r of finals) {
+        const root = rootOf(r);
+        const k = keyOfRoot.get(root.id);
+        if (!k) continue;
+        if (!groups.has(k.key)) groups.set(k.key, { key: k.key, kiriman: k.kiriman, refType: root.referenceType, refId: root.referenceId, sessions: [] });
+        groups.get(k.key).sessions.push(r);
+      }
+      for (const g of groups.values()) {
+        g.roots = g.sessions.filter(x => !x.parentSessionId || !byId.get(x.parentSessionId));
+        g.anchor = g.roots[0];
+        g.lastRoot = g.roots[g.roots.length - 1];
+        g.kirimanTotal = g.refType === 'PO' ? Math.max(...[...groups.values()].filter(x => x.refId === g.refId && x.refType === 'PO').map(x => x.kiriman || 1)) : null;
+        g.revisionLog = (() => { try { return JSON.parse(g.anchor.revisionLog || '[]'); } catch { return []; } })();
+      }
+      return groups;
+    };
+    const appendRevisionLog = (sessionId, entry) => {
+      const row = db.select({ l: s.tallySession.revisionLog }).from(s.tallySession).where(eq(s.tallySession.id, sessionId)).get();
+      let log = []; try { log = JSON.parse(row?.l || '[]'); } catch {}
+      log.push({ at: new Date().toISOString(), ...entry });
+      db.update(s.tallySession).set({ revisionLog: JSON.stringify(log), updatedAt: new Date() }).where(eq(s.tallySession.id, sessionId)).run();
+    };
+    // Isi satu kiriman/tally Barang Masuk: karung per produk + tanda revisi.
+    const tallyInGroupDetail = (g, names) => {
+      const who = (e) => (e ? names.get(e) || e : '-');
+      const items = [];
+      for (const sess of g.sessions) {
+        const rows = db.select().from(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, sess.id)).orderBy(s.tallySessionItems.sortOrder).all();
+        const txStocks = sess.transactionId ? db.select({ id: s.inventoryStock.id, kode: s.inventoryStock.kodeSimpan }).from(s.inventoryStock)
+          .where(eq(s.inventoryStock.transactionId, sess.transactionId)).orderBy(sql`rowid`).all() : [];
+        rows.forEach((it, idx) => {
+          const kode = it.kodeSimpan || txStocks[idx]?.kode || null;
+          const stk = kode ? db.select().from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, kode)).get() : null;
+          const allocated = stk ? !!db.select({ id: s.soItemStocks.id }).from(s.soItemStocks).where(eq(s.soItemStocks.stockId, stk.id)).get() : false;
+          const wlog = g.revisionLog.filter(l => l.action === 'weight' && l.kode === kode);
+          items.push({
+            sessionId: sess.id, itemId: it.id, kode, productId: it.productId, weight: Number(it.weight || 0), quantity: Number(it.quantity || 1),
+            packagingType: it.packagingType, expiredDate: it.expiredDate, zoneId: it.zoneId || sess.zoneId,
+            added: !!sess.parentSessionId, weightFrom: wlog.length ? wlog[0].from : null,
+            stockStatus: stk?.status || null,
+            editable: !!stk && stk.status === 'active' && !stk.archivedAt && !allocated && g.refType !== 'WO',
+            lockReason: !stk ? 'Karung tidak ditemukan di stok' : allocated || stk.status === 'allocated' ? 'Sudah dipakai SO' : stk.status !== 'active' ? `Status karung: ${stk.status}` : g.refType === 'WO' ? 'Tally dari WO tidak bisa direvisi di sini' : null,
+          });
+        });
+      }
+      const prodOrder = [];
+      const byProd = new Map();
+      for (const it of items) {
+        if (!byProd.has(it.productId)) { byProd.set(it.productId, []); prodOrder.push(it.productId); }
+        byProd.get(it.productId).push(it);
+      }
+      const prodInfo = (pid) => db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, pid)).get() || {};
+      const dmy = (d) => d ? new Date(new Date(d).getTime() + 7 * 3600e3).toISOString().slice(0, 10).split('-').reverse().join('-') : '-';
+      const products = prodOrder.map((pid, i) => {
+        const list = byProd.get(pid); const p = prodInfo(pid);
+        return { productId: pid, name: p.name || '-', sku: p.sku || null, count: list.length, kg: histNum(list.reduce((a, b) => a + b.weight, 0)), items: list };
+      });
+      const anchor = g.anchor;
+      const cs = anchor.coldStorageId ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, anchor.coldStorageId)).get() : null;
+      const zoneCodes = [...new Set(items.map(i => i.zoneId).filter(Boolean))].map(z => db.select({ c: s.zones.code }).from(s.zones).where(eq(s.zones.id, z)).get()?.c).filter(Boolean);
+      let refLabel = 'Lainnya', supplier = null, refNumber = null;
+      if (g.refType === 'PO' && g.refId) {
+        const po = db.select({ n: s.purchaseOrder.poNumber, sup: s.purchaseOrder.supplierId }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, g.refId)).get();
+        refNumber = po?.n || 'PO'; refLabel = refNumber;
+        supplier = po?.sup ? db.select({ n: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, po.sup)).get()?.n || null : null;
+      } else if (g.refType === 'WO' && g.refId) {
+        refNumber = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, g.refId)).get()?.n || 'WO'; refLabel = refNumber;
+      }
+      const kirimanLabel = g.kiriman ? `Kiriman ke-${g.kiriman}${g.kirimanTotal > 1 ? ` dari ${g.kirimanTotal}` : ''}` : null;
+      const ops = [...new Set(g.sessions.filter(x => !x.parentSessionId).map(x => x.createdBy).filter(Boolean))].map(who);
+      const times = g.sessions.filter(x => !x.parentSessionId).map(x => x.finalizedAt || x.updatedAt);
+      const revCount = g.revisionLog.filter(l => l.action !== 'reopen').length;
+      const totalKg = histNum(items.reduce((a, b) => a + b.weight, 0));
+      const revText = (l) => {
+        const t = new Date(new Date(l.at).getTime() + 7 * 3600e3).toISOString().slice(0, 16).replace('T', ' ').replace(/^(\d+)-(\d+)-(\d+)/, '$3/$2/$1');
+        const act = l.action === 'add' ? `tambah ${l.kode} (${histNum(l.to)} kg)` : l.action === 'weight' ? `ubah berat ${l.kode}: ${histNum(l.from)} → ${histNum(l.to)} kg`
+          : l.action === 'delete' ? `hapus ${l.kode} (${histNum(l.from)} kg)` : l.action === 'reopen' ? 'buka kembali tally di HP' : l.action === 'hp' ? `tambah ${l.count} karung lewat HP` : l.action;
+        return `${t} · ${who(l.by)} · ${act}${l.reason ? ` — ${l.reason}` : ''}`;
+      };
+      return {
+        type: 'in', groupId: g.key, title: 'BERITA ACARA', kind: 'Tally Barang Masuk',
+        at: times[times.length - 1] || anchor.finalizedAt, ref: refLabel, refType: g.refType, refId: g.refId, kiriman: g.kiriman, kirimanLabel,
+        operator: ops.join(', ') || '-', revisions: revCount, supplier,
+        meta: [
+          ...(g.refType === 'PO' ? [['Purchase Order', `${refNumber}${kirimanLabel ? ` · ${kirimanLabel}` : ''}`], ['Supplier', supplier || '-']] : [['Referensi', g.refType === 'WO' ? `WO · ${refNumber}` : 'Manual']]),
+          ['Cold Storage', `${cs ? `${cs.code} ${cs.name}` : '-'}${zoneCodes.length ? ` · Zona ${zoneCodes.join(', ')}` : ''}`],
+          ['Petugas', ops.join(', ') || '-'],
+          ['Tally', `${times.map(t => dmy(t)).filter((v, i, a) => a.indexOf(v) === i).join(', ')} · ${g.roots.length} sesi${revCount ? ` · Revisi ${revCount}` : ''}`],
+        ],
+        columns: ['Kode Simpan', 'Keterangan', 'Berat (kg)', 'Kadaluarsa'],
+        groups: products.map((p, i) => ({
+          title: `${i + 1}. ${p.name}${p.sku ? ` · ${p.sku}` : ''}`, sum: `${p.count} karung · ${p.kg.toLocaleString('id-ID')} kg`,
+          rows: p.items.map(it => [it.kode || '-', it.added ? 'Tambahan revisi' : it.weightFrom != null ? `Berat diubah (${histNum(it.weightFrom).toLocaleString('id-ID')} → ${histNum(it.weight).toLocaleString('id-ID')})` : '', histNum(it.weight), dmy(it.expiredDate)]),
+        })),
+        rows: items.map(it => [it.kode || '-', prodInfo(it.productId).name || '-', it.packagingType || '-', histNum(it.weight), dmy(it.expiredDate)]),
+        products, notes: anchor.notes && anchor.notes !== 'Revisi' ? anchor.notes : null,
+        revisionLines: g.revisionLog.map(revText),
+        total: `${items.length} karung · ${totalKg.toLocaleString('id-ID')} kg`,
+        signatures: g.refType === 'PO' ? ['Dicatat oleh (Petugas Tally)', 'Diperiksa oleh (Supervisor)', 'Diserahkan oleh (Supplier/Sopir)'] : ['Dicatat oleh (Petugas Tally)', 'Diketahui oleh (Supervisor)'],
+        openRevision: db.select({ id: s.tallySession.id }).from(s.tallySession)
+          .where(and(eq(s.tallySession.status, 'draft'), inArray(s.tallySession.parentSessionId, g.sessions.map(x => x.id)))).get()?.id || null,
+      };
+    };
+    const findInGroup = (gid) => tallyInGroups().get(gid) || null;
+
+    // POST /tally-history/in/:groupId/reopen — supervisor membuka kembali tally (karung tertinggal) -> draf revisi di HP petugas
+    if (route.startsWith('/tally-history/in/') && path.length === 4 && path[3] === 'reopen' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Hanya supervisor/admin yang bisa merevisi tally', 403);
+      const g = findInGroup(decodeURIComponent(path[2]));
+      if (!g) return err('Tally tidak ditemukan', 404);
+      const open = db.select({ id: s.tallySession.id }).from(s.tallySession)
+        .where(and(eq(s.tallySession.status, 'draft'), inArray(s.tallySession.parentSessionId, g.sessions.map(x => x.id)))).get();
+      if (open) return json({ data: { sessionId: open.id, already: true } });
+      const r = g.lastRoot;
+      const id = uuidv4();
+      db.insert(s.tallySession).values({
+        id, coldStorageId: r.coldStorageId, zoneId: r.zoneId, referenceType: r.referenceType, referenceId: r.referenceId,
+        notes: 'Revisi', status: 'draft', markTallyComplete: false, parentSessionId: r.id,
+        createdBy: session.user.email, createdAt: new Date(), updatedAt: new Date(),
+      }).run();
+      appendRevisionLog(g.anchor.id, { by: session.user.email, action: 'reopen' });
+      return json({ data: { sessionId: id } }, { status: 201 });
+    }
+
+    // POST /tally-history/in/:groupId/add {productId, weight, kodeSimpan?, packagingType?, expiredDate?, zoneId?, reason}
+    // — supervisor menambah karung tertinggal langsung (tanpa scan di HP)
+    if (route.startsWith('/tally-history/in/') && path.length === 4 && path[3] === 'add' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Hanya supervisor/admin yang bisa merevisi tally', 403);
+      const g = findInGroup(decodeURIComponent(path[2]));
+      if (!g) return err('Tally tidak ditemukan', 404);
+      const body = await request.json();
+      const reason = String(body.reason || '').trim();
+      const weight = Number(body.weight || 0);
+      if (!body.productId) return err('Pilih produk', 400);
+      if (!(weight > 0)) return err('Isi berat karung', 400);
+      if (reason.length < 3) return err('Isi alasan revisi', 400);
+      const r = g.lastRoot;
+      // Kemasan/kadaluarsa/zona mengikuti karung sejenis di kiriman ini
+      const groupItems = g.sessions.flatMap(x => db.select().from(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, x.id)).all());
+      const ref = groupItems.find(i => i.productId === body.productId) || groupItems[0];
+      const item = {
+        productId: body.productId, weight, quantity: 1, packagingType: body.packagingType || ref?.packagingType || 'colly',
+        expiredDate: body.expiredDate || ref?.expiredDate || undefined, kodeSimpan: body.kodeSimpan ? String(body.kodeSimpan).trim() : undefined,
+        zoneId: body.zoneId || ref?.zoneId || r.zoneId || undefined,
+      };
+      let result;
+      try {
+        result = performInbound({ coldStorageId: r.coldStorageId, zoneId: r.zoneId || undefined, referenceType: r.referenceType || 'MANUAL', referenceId: r.referenceId || undefined, notes: `Revisi tally: ${reason}`, items: [item] }, session.user.email);
+      } catch (e) { return err(e.message || 'Gagal menambah karung', e.status || 400); }
+      const kode = result.createdStocks[0]?.kodeSimpan;
+      const sid = uuidv4();
+      db.insert(s.tallySession).values({
+        id: sid, coldStorageId: r.coldStorageId, zoneId: r.zoneId, referenceType: r.referenceType, referenceId: r.referenceId,
+        notes: 'Revisi', status: 'final', markTallyComplete: false, parentSessionId: r.id, transactionId: result.txId,
+        createdBy: session.user.email, createdAt: new Date(), updatedAt: new Date(), finalizedAt: new Date(),
+      }).run();
+      db.insert(s.tallySessionItems).values({
+        id: uuidv4(), sessionId: sid, productId: item.productId, weight, quantity: 1, packagingType: item.packagingType,
+        expiredDate: item.expiredDate ? new Date(item.expiredDate) : null, kodeSimpan: kode, zoneId: item.zoneId || null, sortOrder: 0, createdAt: new Date(),
+      }).run();
+      appendRevisionLog(g.anchor.id, { by: session.user.email, action: 'add', kode, to: weight, reason });
+      const refund = r.referenceType === 'PO' && r.referenceId ? checkPoRefund(r.referenceId, session.user.email) : null;
+      return json({ data: { kodeSimpan: kode, refund } }, { status: 201 });
+    }
+
+    // POST /tally-history/in/:groupId/items/:kode {action:'weight'|'delete', weight?, reason}
+    // — ubah berat / hapus karung yang salah input (selama belum dipakai SO)
+    if (route.startsWith('/tally-history/in/') && path.length === 5 && path[3] === 'items' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor'])) return err('Hanya supervisor/admin yang bisa merevisi tally', 403);
+      const g = findInGroup(decodeURIComponent(path[2]));
+      if (!g) return err('Tally tidak ditemukan', 404);
+      const kode = decodeURIComponent(path[4]);
+      const body = await request.json();
+      const reason = String(body.reason || '').trim();
+      if (reason.length < 3) return err('Isi alasan revisi', 400);
+      const names = await tallyUserNames();
+      const it = tallyInGroupDetail(g, names).products.flatMap(p => p.items).find(x => x.kode === kode);
+      if (!it) return err('Karung tidak ada di tally ini', 404);
+      if (!it.editable) return err(it.lockReason || 'Karung ini tidak bisa diubah', 400);
+      const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, kode)).get();
+      const refNumber = g.refType === 'PO' && g.refId ? db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, g.refId)).get()?.n || null : null;
+      const old = Number(stk.weight || 0);
+      let delta;
+      if (body.action === 'weight') {
+        const w = Number(body.weight || 0);
+        if (!(w > 0)) return err('Isi berat baru', 400);
+        delta = Math.round((w - old) * 1000) / 1000;
+        if (Math.abs(delta) < 0.001) return err('Berat tidak berubah', 400);
+        db.update(s.inventoryStock).set({ weight: w, updatedAt: new Date() }).where(eq(s.inventoryStock.id, stk.id)).run();
+        db.update(s.tallySessionItems).set({ weight: w }).where(eq(s.tallySessionItems.id, it.itemId)).run();
+        recordLedger(db, {
+          productId: stk.productId, coldStorageId: stk.coldStorageId, zoneId: stk.zoneId, movementType: 'ADJ',
+          referenceType: g.refType || 'MANUAL', referenceId: g.refId || null, referenceNumber: refNumber,
+          weightIn: delta > 0 ? delta : 0, weightOut: delta < 0 ? -delta : 0, hppPerKg: stk.hppPerKg, kodeSimpan: kode,
+          transactionId: stk.transactionId, stockId: stk.id, notes: `Revisi tally: ubah berat ${old} → ${w} kg (${reason})`, createdBy: session.user.email,
+        });
+        appendRevisionLog(g.anchor.id, { by: session.user.email, action: 'weight', kode, from: old, to: w, reason });
+      } else if (body.action === 'delete') {
+        delta = -old;
+        // Kode dibebaskan (bisa dipakai lagi) — jejak tetap ada di kartu stok & catatan revisi.
+        db.update(s.inventoryStock).set({ status: 'void', weight: 0, quantity: 0, archivedAt: new Date(), kodeSimpan: `${kode}-BATAL-${stk.id.slice(0, 6)}`, updatedAt: new Date() })
+          .where(eq(s.inventoryStock.id, stk.id)).run();
+        db.delete(s.tallySessionItems).where(eq(s.tallySessionItems.id, it.itemId)).run();
+        recordLedger(db, {
+          productId: stk.productId, coldStorageId: stk.coldStorageId, zoneId: stk.zoneId, movementType: 'ADJ',
+          referenceType: g.refType || 'MANUAL', referenceId: g.refId || null, referenceNumber: refNumber,
+          weightOut: old, qtyOut: Number(stk.quantity || 0), hppPerKg: stk.hppPerKg, kodeSimpan: kode,
+          transactionId: stk.transactionId, stockId: stk.id, notes: `Revisi tally: hapus karung (${reason})`, createdBy: session.user.email,
+        });
+        appendRevisionLog(g.anchor.id, { by: session.user.email, action: 'delete', kode, from: old, reason });
+      } else return err('Aksi tidak dikenal', 400);
+      if (stk.transactionId) {
+        const tx = db.select({ w: s.inventoryTransaction.totalWeight, q: s.inventoryTransaction.totalQuantity }).from(s.inventoryTransaction).where(eq(s.inventoryTransaction.id, stk.transactionId)).get();
+        if (tx) db.update(s.inventoryTransaction).set({ totalWeight: Math.max(0, Number(tx.w || 0) + delta), totalQuantity: body.action === 'delete' ? Math.max(0, Number(tx.q || 0) - Number(stk.quantity || 0)) : tx.q })
+          .where(eq(s.inventoryTransaction.id, stk.transactionId)).run();
+      }
+      let refund = null;
+      if (g.refType === 'PO' && g.refId) {
+        const poi = db.select().from(s.purchaseOrderItems).where(and(eq(s.purchaseOrderItems.purchaseOrderId, g.refId), eq(s.purchaseOrderItems.productId, stk.productId))).get();
+        if (poi) db.update(s.purchaseOrderItems).set({ tallyWeight: Math.max(0, Math.round((Number(poi.tallyWeight || 0) + delta) * 100) / 100) }).where(eq(s.purchaseOrderItems.id, poi.id)).run();
+        refund = checkPoRefund(g.refId, session.user.email);
+      }
+      return json({ data: { ok: true, refund } });
+    }
+
     // GET /tally-history?type=in|out|op|wo&from=YYYY-MM-DD&to=YYYY-MM-DD&cs=<id>&q=<teks>
     if (route === '/tally-history' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
@@ -6812,21 +7161,24 @@ async function handleRoute(request, { params }) {
       let rows = [];
 
       if (type === 'in') {
-        for (const r of db.select().from(s.tallySession).where(eq(s.tallySession.status, 'final')).all()) {
-          const at = r.finalizedAt || r.updatedAt;
+        for (const g of tallyInGroups().values()) {
+          const at = g.sessions.reduce((m, r) => (new Date(r.finalizedAt || r.updatedAt) > m ? new Date(r.finalizedAt || r.updatedAt) : m), new Date(0));
           if (!inRange(at)) continue;
-          const items = db.select({ productId: s.tallySessionItems.productId, weight: s.tallySessionItems.weight, kode: s.tallySessionItems.kodeSimpan })
-            .from(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, r.id)).all();
+          const items = g.sessions.flatMap(r => db.select({ productId: s.tallySessionItems.productId, weight: s.tallySessionItems.weight, kode: s.tallySessionItems.kodeSimpan })
+            .from(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, r.id)).all());
           let ref = 'Lainnya', sub = 'Tanpa referensi';
-          if (r.referenceType === 'PO' && r.referenceId) {
-            const po = db.select({ n: s.purchaseOrder.poNumber, sup: s.purchaseOrder.supplierId }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.referenceId)).get();
+          if (g.refType === 'PO' && g.refId) {
+            const po = db.select({ n: s.purchaseOrder.poNumber, sup: s.purchaseOrder.supplierId }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, g.refId)).get();
             ref = po?.n || 'PO'; sub = contactName(po?.sup) || 'Purchase Order';
-          } else if (r.referenceType === 'WO' && r.referenceId) {
-            ref = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, r.referenceId)).get()?.n || 'WO'; sub = 'Hasil produksi';
+            if (g.kirimanTotal > 1) sub = `Kiriman ke-${g.kiriman} dari ${g.kirimanTotal} · ${sub}`;
+          } else if (g.refType === 'WO' && g.refId) {
+            ref = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, g.refId)).get()?.n || 'WO'; sub = 'Hasil produksi';
           }
           const prods = [...new Set(items.map(i => prodMap.get(i.productId)).filter(Boolean))];
-          rows.push({ id: r.id, type: 'in', at, ref, sub: [sub, prods.join(', ')].filter(Boolean).join(' · '), csId: r.coldStorageId, cs: csMap.get(r.coldStorageId) || null,
-            bags: items.length, kg: histNum(items.reduce((a, b) => a + Number(b.weight || 0), 0)), operator: who(r.createdBy),
+          const ops = [...new Set(g.sessions.filter(x => !x.parentSessionId).map(x => x.createdBy).filter(Boolean))];
+          const revisions = g.revisionLog.filter(l => l.action !== 'reopen').length;
+          rows.push({ id: g.key, type: 'in', at, ref, sub: [sub, prods.join(', ')].filter(Boolean).join(' · '), csId: g.anchor.coldStorageId, cs: csMap.get(g.anchor.coldStorageId) || null,
+            bags: items.length, kg: histNum(items.reduce((a, b) => a + Number(b.weight || 0), 0)), operator: ops.length ? ops.map(who).join(', ') : null, revisions,
             search: [ref, sub, ...items.map(i => i.kode)].join(' ') });
         }
       } else if (type === 'out') {
@@ -6901,18 +7253,14 @@ async function handleRoute(request, { params }) {
       const dmy = (d) => d ? new Date(new Date(d).getTime() + 7 * 3600e3).toISOString().slice(0, 10).split('-').reverse().join('-') : '-';
 
       if (type === 'in') {
-        const r = db.select().from(s.tallySession).where(eq(s.tallySession.id, id)).get();
-        if (!r || r.status !== 'final') return err('Tally tidak ditemukan', 404);
-        const t = enrichTallySession(r, true);
-        return json({ data: {
-          type, title: 'BERITA ACARA', kind: 'Tally Barang Masuk', at: r.finalizedAt || r.updatedAt, ref: t.refNumber ? `${r.referenceType} ${t.refNumber}` : 'Lainnya',
-          refType: r.referenceType, refId: r.referenceId, operator: who(r.createdBy), notes: r.notes || null,
-          meta: [['Cold Storage', `${t.csCode || '-'} ${t.csName || ''}`.trim()], ['Zona', t.zoneCode || '-'], ['Referensi', r.referenceType === 'MANUAL' ? 'Manual' : `${r.referenceType} · ${t.refNumber || '-'}`], ['Petugas', who(r.createdBy)]],
-          columns: ['Kode Simpan', 'Produk', 'Kemasan', 'Berat (kg)', 'Kadaluarsa'],
-          rows: t.items.map(it => [it.kodeSimpan || '-', it.productName || '-', it.packagingType || '-', histNum(it.weight), dmy(it.expiredDate)]),
-          total: `${t.items.length} karung · ${histNum(t.totalWeight).toLocaleString('id-ID')} kg`,
-          signatures: ['Dicatat oleh (Petugas Tally)', 'Diketahui oleh (Supervisor)'],
-        } });
+        // id = kunci kiriman (po:<poId>:<n> / s:<sessionId>) atau id sesi lama (tautan lama)
+        const groups = tallyInGroups();
+        let g = groups.get(id);
+        if (!g) g = [...groups.values()].find(x => x.sessions.some(r => r.id === id));
+        if (!g) return err('Tally tidak ditemukan', 404);
+        const d = tallyInGroupDetail(g, names);
+        d.canRevise = requireRole(session, ['admin', 'supervisor']);
+        return json({ data: d });
       }
       if (type === 'out') {
         const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
@@ -7075,6 +7423,7 @@ async function handleRoute(request, { params }) {
         kodeBase: body.kodeBase || null,
         kodeBaseAt: Number(body.kodeBaseAt || 0),
         markTallyComplete: !!body.markTallyComplete,
+        deliveryContinues: body.deliveryContinues ? 1 : null,
         createdBy: session.user.email,
         createdAt: new Date(), updatedAt: new Date(),
       }).run();
@@ -7110,6 +7459,7 @@ async function handleRoute(request, { params }) {
         kodeBase: body.kodeBase !== undefined ? (body.kodeBase || null) : existing.kodeBase,
         kodeBaseAt: body.kodeBaseAt !== undefined ? Number(body.kodeBaseAt || 0) : existing.kodeBaseAt,
         markTallyComplete: body.markTallyComplete !== undefined ? !!body.markTallyComplete : existing.markTallyComplete,
+        deliveryContinues: body.deliveryContinues !== undefined ? (body.deliveryContinues ? 1 : null) : existing.deliveryContinues,
         updatedAt: new Date(),
       }).where(eq(s.tallySession.id, path[1])).run();
       if (Array.isArray(body.items)) {
@@ -7157,7 +7507,19 @@ async function handleRoute(request, { params }) {
       catch (e) { return err(e.message || 'Gagal finalisasi', e.status || 400); }
       db.update(s.tallySession).set({
         status: 'final', transactionId: result.txId, finalizedAt: new Date(), updatedAt: new Date(),
+        // Sesi revisi tidak menutup kiriman & tidak menandai PO selesai
+        ...(existing.parentSessionId ? { deliveryContinues: null, markTallyComplete: false } : {}),
       }).where(eq(s.tallySession.id, path[1])).run();
+      if (existing.parentSessionId) {
+        // Revisi lewat HP (supervisor membuka kembali): catat di berita acara + cek refund PO
+        const g = [...tallyInGroups().values()].find(x => x.sessions.some(r => r.id === path[1]));
+        if (g) appendRevisionLog(g.anchor.id, { by: session.user.email, action: 'hp', count: itemRows.length, kodes: result.createdStocks.map(c => c.kodeSimpan), reason: 'Karung tertinggal (dibuka kembali)' });
+        if (existing.referenceType === 'PO' && existing.referenceId) checkPoRefund(existing.referenceId, session.user.email);
+      } else if (existing.referenceType === 'PO' && existing.referenceId) {
+        // Kiriman berikutnya menaikkan tagihan: perbarui/hapus status "Menunggu refund" yang sudah tidak berlaku
+        const pr = db.select({ st: s.purchaseOrder.refundStatus }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, existing.referenceId)).get();
+        if (pr?.st === 'pending') checkPoRefund(existing.referenceId, session.user.email, { notify: false });
+      }
       return json({ data: { transactionId: result.txId, stocks: result.createdStocks, stockIds: result.createdStocks.map(s2 => s2.id) } }, { status: 201 });
     }
 
