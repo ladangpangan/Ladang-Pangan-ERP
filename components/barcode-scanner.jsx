@@ -13,6 +13,9 @@ const NATIVE_FORMATS = ['code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'it
 const GUIDE = { x: 0.06, y: 0.24, w: 0.88, h: 0.5 };
 const OCR_IDLE_MS = 1200;   // tulisan dicoba setelah sekian lama tidak ada barcode
 const OCR_EVERY_MS = 1400;  // jeda antar percobaan baca tulisan otomatis
+const OCR_REPEAT_MS = 20000; // tulisan yang sama tidak dibaca ulang otomatis (karung masih di depan kamera)
+// Disimpan di luar komponen karena kamera dibuka-tutup di sekitar layar konfirmasi.
+const recentText = { code: '', at: 0 };
 
 export function BarcodeScanner({ onDetect, onText, continuous = false, accent = '#34D399', height = 200 }) {
   const videoRef = useRef(null);
@@ -45,8 +48,10 @@ export function BarcodeScanner({ onDetect, onText, continuous = false, accent = 
       const r = await readKode(crop, { quick: !manual });
       if (pausedRef.current) return;
       const okAuto = r && r.digits.length >= 8 && r.digits.every(d => d.conf >= 55);
-      if (manual ? (r && r.digits.length >= 4) : (okAuto && r.code === ocrPrev.current)) {
+      const repeat = !manual && r && r.code === recentText.code && Date.now() - recentText.at < OCR_REPEAT_MS;
+      if (!repeat && (manual ? (r && r.digits.length >= 4) : (okAuto && r.code === ocrPrev.current))) {
         ocrPrev.current = '';
+        recentText.code = r.code; recentText.at = Date.now();
         pausedRef.current = true; // tunggu konfirmasi petugas
         try { navigator.vibrate?.(60); } catch {}
         onTextRef.current?.({ ...r, image: crop.toDataURL('image/jpeg', 0.8) });
