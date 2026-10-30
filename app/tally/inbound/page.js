@@ -8,6 +8,7 @@ import { format } from 'date-fns';
 import { useSession } from '@/lib/auth/auth-client';
 import { WeightInput } from '@/components/ui/weight-input';
 import { BarcodeScanner } from '@/components/barcode-scanner';
+import { KodeConfirm } from '@/components/kode-confirm';
 import {
   ArrowLeft, ArrowDownToLine, ChevronDown, ScanLine, Check, AlertCircle, Loader2, Trash2, Download, FileText, Keyboard, Tag, Wifi, WifiOff,
 } from 'lucide-react';
@@ -82,6 +83,7 @@ export default function TallyInboundPage() {
   // Langkah 3: scan
   const [staged, setStaged] = useState([]);
   const [scanning, setScanning] = useState(false);
+  const [textRead, setTextRead] = useState(null); // hasil baca tulisan spidol, menunggu konfirmasi
   const [checking, setChecking] = useState(false);
   const [scanned, setScanned] = useState(null); // { code, auto }
   const [weight, setWeight] = useState(0);
@@ -626,9 +628,13 @@ export default function TallyInboundPage() {
                 placeholder="0,0" className="h-16 text-[32px] font-bold text-center" />
               <button type="button" onClick={saveBag} className={primaryBtn}><Check className="w-6 h-6" /> Simpan</button>
             </div>
+          ) : textRead ? (
+            <KodeConfirm result={textRead} mode="new" sessionId={sessionIdRef.current}
+              onAccept={(c) => { setTextRead(null); handleCode(c); }}
+              onRetake={() => { setTextRead(null); setScanning(true); }} />
           ) : (
             <>
-              {scanning && <BarcodeScanner onDetect={(c) => handleCode(c)} />}
+              {scanning && <BarcodeScanner onDetect={(c) => handleCode(c)} onText={(r) => { setScanning(false); setTextRead(r); }} />}
               <button type="button" onClick={() => { setErrorMsg(null); setScanning(s => !s); }} disabled={checking}
                 className="min-h-[64px] rounded-xl bg-[#117956] text-white text-xl font-bold flex items-center justify-center gap-2.5 disabled:opacity-60">
                 {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}
