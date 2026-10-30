@@ -223,12 +223,14 @@ function recommendStockCombo(lots, targetKg) {
 // per-pod SQLite mirror from Mongo first, otherwise multi-replica pods serve stale per-pod sales
 // numbers. Read-only full-replace hydrate => safe on any path (mutations still persist explicitly).
 const SALES_PATHS = new Set([
+  'tally-history', // Riwayat Tally (baca saja)
   'sales-orders', 'tally-outbound',
   'opnames', // approve opname timbang ulang memperbarui berat alokasi SO Draft
   'dashboard', 'reports', 'accounting', 'sales-reports', 'inventory-reports', 'contacts', 'finance',
 ]);
 
 const INVENTORY_PATHS = new Set([
+  'tally-history', // Riwayat Tally (baca saja)
   'inventory', 'inventory-stocks', 'inventory-reports',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'opnames',
   'accounting', 'dashboard', 'reports',
@@ -243,6 +245,7 @@ const INVENTORY_PATHS = new Set([
 // these tables live under these prefixes (verified: purchase-orders, grns, commissions, approvals,
 // sales-orders dropship, tally-sessions, /inventory inbound-with-PO).
 const POTX_PATHS = new Set([
+  'tally-history', // Riwayat Tally (baca saja)
   'purchase-orders', 'purchase-reports', 'grns', 'commissions', 'contacts',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'inventory', 'inventory-reports',
   'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports', 'finance',
@@ -254,7 +257,7 @@ const POTX_PATHS = new Set([
 // reports/engine read both (depreciation + shrinkage auto journals). Diff-persist, concurrency-safe.
 // tally-outbound: timbang ulang membuat stock opname; sales-orders: konfirmasi SO dicegah selama
 // timbang ulang karungnya masih menunggu persetujuan.
-const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'reports', 'tally-outbound', 'sales-orders']);
+const ASSETS_OPNAME_PATHS = new Set(['tally-history', 'accounting', 'opnames', 'dashboard', 'reports', 'tally-outbound', 'sales-orders']);
 
 // Phase 7: path[0] prefixes that READ or WRITE Work Order (produksi) tables + approvals.
 // WO writers: work-orders, wo-stages, inventory (wo_outputs). Approvals are created via the
@@ -262,6 +265,7 @@ const ASSETS_OPNAME_PATHS = new Set(['accounting', 'opnames', 'dashboard', 'repo
 // /approvals. The accounting engine reads work_order (finalized) for production journals; WO/approvals are
 // also read on report/dashboard paths. Diff-persist, concurrency-safe.
 const WO_APPROVAL_PATHS = new Set([
+  'tally-history', // Riwayat Tally (baca saja)
   'work-orders', 'wo-stages', 'inventory', 'sales-reports', 'production-reports',
   'accounting', 'dashboard', 'reports',
   'approvals', 'purchase-orders', 'sales-orders', 'opnames', 'tally-outbound',
@@ -275,6 +279,7 @@ const WO_APPROVAL_PATHS = new Set([
 // Migrating these to Mongo prevents cross-replica "Sesi tally tidak ditemukan" on finalize and makes
 // inbound tally stock consistent across pods. Diff-persist, concurrency-safe.
 const TALLY_TX_PATHS = new Set([
+  'tally-history', // Riwayat Tally (baca saja)
   'inventory', 'inventory-stocks', 'inventory-reports',
   'tally-sessions', 'tally-outbound', 'sales-orders', 'opnames',
   'purchase-orders', 'accounting', 'dashboard', 'reports',
@@ -4477,7 +4482,7 @@ async function handleRoute(request, { params }) {
         const w = Number(stk.weight || 0), q = Number(stk.quantity || 0);
         db.insert(s.soItemStocks).values({
           id: uuidv4(), salesOrderId: soId, soItemId: itemId, stockId: sid, productId: stk.productId,
-          kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(),
+          kodeSimpan: stk.kodeSimpan, weight: w, quantity: q, hppPerKg: stockHpp(stk), createdAt: new Date(), createdBy: session.user.email,
         }).run();
         // Kunci stok HANYA saat final (Simpan). Draft (Catat) tidak mengunci.
         if (mode === 'final') {
@@ -6773,6 +6778,212 @@ async function handleRoute(request, { params }) {
       }
       return base;
     };
+
+    // ================= RIWAYAT TALLY (Masuk · Keluar · Opname · Produksi) =================
+    // Dipakai Dashboard → Riwayat Tally dan Tally App → Riwayat. Semua role yang login boleh membaca.
+    // Nama petugas diambil dari akun (email → nama); bila tidak ketemu, pakai email-nya.
+    const tallyUserNames = async () => {
+      const g = globalThis;
+      if (g.__tallyUserNames && Date.now() - g.__tallyUserNames.at < 300000) return g.__tallyUserNames.map;
+      const map = new Map();
+      try { for (const u of await authUsers.listUsers('all')) if (u.email) map.set(u.email, u.name || u.email); } catch { /* Mongo tidak tersedia */ }
+      g.__tallyUserNames = { at: Date.now(), map };
+      return map;
+    };
+    const histDay = (d) => { const t = new Date(d); return new Date(t.getTime() + 7 * 3600e3).toISOString().slice(0, 10); }; // tanggal WIB
+    const histNum = (v) => Math.round(Number(v || 0) * 10) / 10;
+
+    // GET /tally-history?type=in|out|op|wo&from=YYYY-MM-DD&to=YYYY-MM-DD&cs=<id>&q=<teks>
+    if (route === '/tally-history' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const u = new URL(request.url);
+      const type = u.searchParams.get('type') || 'in';
+      const from = u.searchParams.get('from') ? new Date(`${u.searchParams.get('from')}T00:00:00+07:00`) : new Date(Date.now() - 7 * 86400e3);
+      const to = u.searchParams.get('to') ? new Date(`${u.searchParams.get('to')}T23:59:59.999+07:00`) : new Date();
+      const csF = u.searchParams.get('cs') || '';
+      const q = String(u.searchParams.get('q') || '').trim().toLowerCase();
+      const names = await tallyUserNames();
+      const who = (e) => (e ? names.get(e) || e : null);
+      const csMap = new Map(db.select({ id: s.coldStorages.id, code: s.coldStorages.code }).from(s.coldStorages).all().map(c => [c.id, c.code]));
+      const zoneMap = new Map(db.select({ id: s.zones.id, code: s.zones.code }).from(s.zones).all().map(z => [z.id, z.code]));
+      const prodMap = new Map(db.select({ id: s.products.id, name: s.products.name }).from(s.products).all().map(p => [p.id, p.name]));
+      const contactName = (id) => id ? db.select({ n: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, id)).get()?.n || null : null;
+      const inRange = (d) => d && new Date(d) >= from && new Date(d) <= to;
+      let rows = [];
+
+      if (type === 'in') {
+        for (const r of db.select().from(s.tallySession).where(eq(s.tallySession.status, 'final')).all()) {
+          const at = r.finalizedAt || r.updatedAt;
+          if (!inRange(at)) continue;
+          const items = db.select({ productId: s.tallySessionItems.productId, weight: s.tallySessionItems.weight, kode: s.tallySessionItems.kodeSimpan })
+            .from(s.tallySessionItems).where(eq(s.tallySessionItems.sessionId, r.id)).all();
+          let ref = 'Lainnya', sub = 'Tanpa referensi';
+          if (r.referenceType === 'PO' && r.referenceId) {
+            const po = db.select({ n: s.purchaseOrder.poNumber, sup: s.purchaseOrder.supplierId }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.referenceId)).get();
+            ref = po?.n || 'PO'; sub = contactName(po?.sup) || 'Purchase Order';
+          } else if (r.referenceType === 'WO' && r.referenceId) {
+            ref = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, r.referenceId)).get()?.n || 'WO'; sub = 'Hasil produksi';
+          }
+          const prods = [...new Set(items.map(i => prodMap.get(i.productId)).filter(Boolean))];
+          rows.push({ id: r.id, type: 'in', at, ref, sub: [sub, prods.join(', ')].filter(Boolean).join(' · '), csId: r.coldStorageId, cs: csMap.get(r.coldStorageId) || null,
+            bags: items.length, kg: histNum(items.reduce((a, b) => a + Number(b.weight || 0), 0)), operator: who(r.createdBy),
+            search: [ref, sub, ...items.map(i => i.kode)].join(' ') });
+        }
+      } else if (type === 'out') {
+        const allocs = db.select().from(s.soItemStocks).all();
+        const bySo = new Map();
+        for (const a of allocs) { if (!bySo.has(a.salesOrderId)) bySo.set(a.salesOrderId, []); bySo.get(a.salesOrderId).push(a); }
+        for (const [soId, list] of bySo) {
+          const so = db.select({ n: s.salesOrder.soNumber, cust: s.salesOrder.customerId, st: s.salesOrder.pipelineStatus }).from(s.salesOrder).where(eq(s.salesOrder.id, soId)).get();
+          if (!so || so.st === 'Cancelled') continue;
+          // Hanya item yang sudah disimpan final lewat Tally (bukan catatan draft)
+          const finalItems = new Set(db.select({ id: s.salesOrderItems.id }).from(s.salesOrderItems)
+            .where(and(eq(s.salesOrderItems.salesOrderId, soId), eq(s.salesOrderItems.outboundTallyStatus, 'final'))).all().map(i => i.id));
+          const done = list.filter(a => finalItems.has(a.soItemId));
+          if (!done.length) continue;
+          const at = done.reduce((m, a) => (new Date(a.createdAt) > m ? new Date(a.createdAt) : m), new Date(0));
+          if (!inRange(at)) continue;
+          const stk = db.select({ cs: s.inventoryStock.coldStorageId }).from(s.inventoryStock).where(eq(s.inventoryStock.id, done[0].stockId)).get();
+          const ops = [...new Set(done.map(a => a.createdBy).filter(Boolean))];
+          rows.push({ id: soId, type: 'out', at, ref: so.n, sub: contactName(so.cust) || '-', csId: stk?.cs || null, cs: csMap.get(stk?.cs) || null,
+            bags: done.length, kg: histNum(done.reduce((a, b) => a + Number(b.weight || 0), 0)), operator: ops.length ? ops.map(who).join(', ') : null,
+            search: [so.n, contactName(so.cust), ...done.map(a => a.kodeSimpan)].join(' ') });
+        }
+      } else if (type === 'op') {
+        const ST = { draft: 'sedang dihitung', submitted: 'menunggu persetujuan', approved: 'disetujui', rejected: 'ditolak' };
+        for (const o of db.select().from(s.stockOpname).all()) {
+          if (o.source !== 'tally' && o.source !== 'reweigh') continue;
+          const at = o.submittedAt || o.createdAt;
+          if (!inRange(at)) continue;
+          const items = db.select({ w: s.stockOpnameItems.physicalWeight, counted: s.stockOpnameItems.counted }).from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, o.id)).all();
+          const counted = o.source === 'tally' ? items.filter(i => i.counted) : items;
+          rows.push({ id: o.id, type: 'op', at, ref: o.opnameNumber,
+            sub: [o.source === 'reweigh' ? 'Timbang ulang' : (o.zoneId ? `Zona ${zoneMap.get(o.zoneId) || '-'}` : 'Satu gudang'), ST[o.status] || o.status].join(' · '),
+            csId: o.coldStorageId, cs: csMap.get(o.coldStorageId) || null, bags: counted.length, kg: histNum(counted.reduce((a, b) => a + Number(b.w || 0), 0)),
+            operator: who(o.createdBy), search: o.opnameNumber });
+        }
+      } else if (type === 'wo') {
+        const stages = new Map(db.select({ id: s.woStages.id, name: s.woStages.name }).from(s.woStages).all().map(x => [x.id, x.name]));
+        const groups = new Map();
+        for (const r of db.select().from(s.woStageRecords).all()) {
+          if (!inRange(r.recordedAt)) continue;
+          const key = `${r.workOrderId}|${histDay(r.recordedAt)}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(r);
+        }
+        for (const [key, list] of groups) {
+          const [woId, day] = key.split('|');
+          const wo = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, woId)).get();
+          const at = list.reduce((m, r) => (new Date(r.recordedAt) > m ? new Date(r.recordedAt) : m), new Date(0));
+          const stageNames = [...new Set(list.map(r => stages.get(r.stageId)).filter(Boolean))];
+          const ops = [...new Set(list.map(r => r.recordedBy).filter(Boolean))];
+          rows.push({ id: `${woId}|${day}`, type: 'wo', at, ref: wo?.n || 'WO', sub: `${stageNames.join(', ') || 'Tahap'} · ${list.length} catatan`,
+            csId: null, cs: null, bags: list.length, kg: null, operator: ops.length ? ops.map(who).join(', ') : null, search: wo?.n || '' });
+        }
+      } else return err('Jenis riwayat tidak dikenal', 400);
+
+      if (csF) rows = rows.filter(r => !r.csId || r.csId === csF);
+      if (q) rows = rows.filter(r => r.search.toLowerCase().includes(q));
+      rows.sort((a, b) => new Date(b.at) - new Date(a.at));
+      return json({ data: rows.map(({ search, ...r }) => r) });
+    }
+
+    // GET /tally-history/:type/:id — isi berita acara (daftar karung / catatan)
+    if (route.startsWith('/tally-history/') && path.length === 3 && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const type = path[1], id = decodeURIComponent(path[2]);
+      const names = await tallyUserNames();
+      const who = (e) => (e ? names.get(e) || e : '-');
+      const prod = (pid) => db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, pid)).get() || {};
+      const csOf = (cid) => cid ? db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, cid)).get() : null;
+      const zoneOf = (zid) => zid ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, zid)).get()?.code || null : null;
+      const dmyT = (d) => d ? new Date(new Date(d).getTime() + 7 * 3600e3).toISOString().slice(0, 16).replace('T', ' ').replace(/^(\d+)-(\d+)-(\d+)/, '$3/$2/$1') : '-';
+      const dmy = (d) => d ? new Date(new Date(d).getTime() + 7 * 3600e3).toISOString().slice(0, 10).split('-').reverse().join('-') : '-';
+
+      if (type === 'in') {
+        const r = db.select().from(s.tallySession).where(eq(s.tallySession.id, id)).get();
+        if (!r || r.status !== 'final') return err('Tally tidak ditemukan', 404);
+        const t = enrichTallySession(r, true);
+        return json({ data: {
+          type, title: 'BERITA ACARA', kind: 'Tally Barang Masuk', at: r.finalizedAt || r.updatedAt, ref: t.refNumber ? `${r.referenceType} ${t.refNumber}` : 'Lainnya',
+          refType: r.referenceType, refId: r.referenceId, operator: who(r.createdBy), notes: r.notes || null,
+          meta: [['Cold Storage', `${t.csCode || '-'} ${t.csName || ''}`.trim()], ['Zona', t.zoneCode || '-'], ['Referensi', r.referenceType === 'MANUAL' ? 'Manual' : `${r.referenceType} · ${t.refNumber || '-'}`], ['Petugas', who(r.createdBy)]],
+          columns: ['Kode Simpan', 'Produk', 'Kemasan', 'Berat (kg)', 'Kadaluarsa'],
+          rows: t.items.map(it => [it.kodeSimpan || '-', it.productName || '-', it.packagingType || '-', histNum(it.weight), dmy(it.expiredDate)]),
+          total: `${t.items.length} karung · ${histNum(t.totalWeight).toLocaleString('id-ID')} kg`,
+          signatures: ['Dicatat oleh (Petugas Tally)', 'Diketahui oleh (Supervisor)'],
+        } });
+      }
+      if (type === 'out') {
+        const so = db.select().from(s.salesOrder).where(eq(s.salesOrder.id, id)).get();
+        if (!so) return err('SO tidak ditemukan', 404);
+        const finalItems = new Set(db.select({ id: s.salesOrderItems.id }).from(s.salesOrderItems)
+          .where(and(eq(s.salesOrderItems.salesOrderId, id), eq(s.salesOrderItems.outboundTallyStatus, 'final'))).all().map(i => i.id));
+        const allocs = db.select().from(s.soItemStocks).where(eq(s.soItemStocks.salesOrderId, id)).all().filter(a => finalItems.has(a.soItemId));
+        const stocks = allocs.map(a => db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, a.stockId)).get() || {});
+        const cs = csOf(stocks[0]?.coldStorageId);
+        const at = allocs.reduce((m, a) => (new Date(a.createdAt) > m ? new Date(a.createdAt) : m), new Date(0));
+        const ops = [...new Set(allocs.map(a => a.createdBy).filter(Boolean))].map(who);
+        const cust = so.customerId ? db.select({ n: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, so.customerId)).get()?.n : null;
+        const totalKg = allocs.reduce((a, b) => a + Number(b.weight || 0), 0);
+        return json({ data: {
+          type, title: 'BERITA ACARA', kind: 'Tally Barang Keluar', at, ref: so.soNumber, refType: 'SO', refId: id, operator: ops.join(', ') || '-', notes: null,
+          meta: [['Sales Order', so.soNumber], ['Pelanggan', cust || '-'], ['Cold Storage', cs ? `${cs.code} ${cs.name}` : '-'], ['Petugas', ops.join(', ') || '-']],
+          columns: ['Kode Simpan', 'Produk', 'Zona', 'Berat (kg)', 'Kadaluarsa'],
+          rows: allocs.map((a, i) => [a.kodeSimpan || stocks[i].kodeSimpan || '-', prod(a.productId).name || '-', zoneOf(stocks[i].zoneId) || '-', histNum(a.weight), dmy(stocks[i].expiredDate)]),
+          total: `${allocs.length} karung · ${histNum(totalKg).toLocaleString('id-ID')} kg`,
+          signatures: ['Dikeluarkan oleh (Petugas Tally)', 'Diketahui oleh (Supervisor)', 'Diterima oleh (Pengirim)'],
+        } });
+      }
+      if (type === 'op') {
+        const o = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+        if (!o) return err('Opname tidak ditemukan', 404);
+        const items = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all();
+        const cs = csOf(o.coldStorageId);
+        const ST = { draft: 'Sedang dihitung', submitted: 'Menunggu persetujuan', approved: 'Disetujui', rejected: 'Ditolak' };
+        const rows = items.map(it => {
+          const stk = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get() || {};
+          const missing = o.source === 'tally' && !it.counted;
+          const moved = !missing && it.foundZoneId && it.foundZoneId !== stk.zoneId;
+          const d = histNum(Number(it.physicalWeight || 0) - Number(it.systemWeight || 0));
+          const ket = missing ? 'Tidak ditemukan' : moved ? `Pindah ke ${zoneOf(it.foundZoneId) || '-'}` : Math.abs(d) >= 0.05 ? 'Berat beda' : 'Cocok';
+          return [stk.kodeSimpan || '-', prod(stk.productId).name || '-', histNum(it.systemWeight), missing ? '-' : histNum(it.physicalWeight), missing ? '-' : (d > 0 ? `+${d}` : String(d)), ket];
+        });
+        const counted = items.filter(i => o.source !== 'tally' || i.counted);
+        return json({ data: {
+          type, title: 'BERITA ACARA', kind: 'Stock Opname (Tally)', at: o.submittedAt || o.createdAt, ref: o.opnameNumber, refType: 'OPNAME', refId: id, operator: who(o.createdBy), notes: o.notes || null,
+          meta: [['Nomor', o.opnameNumber], ['Cold Storage', cs ? `${cs.code} ${cs.name}` : '-'], ['Zona', o.zoneId ? zoneOf(o.zoneId) || '-' : 'Semua zona'], ['Status', ST[o.status] || o.status], ['Petugas', who(o.createdBy)]],
+          columns: ['Kode Simpan', 'Produk', 'Sistem (kg)', 'Hitung (kg)', 'Selisih', 'Keterangan'],
+          rows,
+          total: `${counted.length}/${items.length} karung dihitung · ${histNum(counted.reduce((a, b) => a + Number(b.physicalWeight || 0), 0)).toLocaleString('id-ID')} kg`,
+          signatures: ['Dihitung oleh (Petugas Tally)', 'Disetujui oleh (Admin)'],
+        } });
+      }
+      if (type === 'wo') {
+        const [woId, day] = id.split('|');
+        const wo = db.select().from(s.workOrder).where(eq(s.workOrder.id, woId)).get();
+        if (!wo) return err('WO tidak ditemukan', 404);
+        const stages = new Map(db.select().from(s.woStages).all().map(x => [x.id, x]));
+        const recs = db.select().from(s.woStageRecords).where(eq(s.woStageRecords.workOrderId, woId)).all()
+          .filter(r => !day || histDay(r.recordedAt) === day).sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt));
+        const rows = recs.map(r => {
+          const st = stages.get(r.stageId);
+          let fields = []; try { fields = JSON.parse(st?.fieldsSchema || '[]'); } catch {}
+          let vals = {}; try { vals = JSON.parse(r.fieldValues || '{}'); } catch {}
+          const isi = fields.filter(f => vals[f.key] !== undefined && vals[f.key] !== '').map(f => `${f.label}: ${vals[f.key]}${f.unit ? ` ${f.unit}` : ''}`).join('; ');
+          return [dmyT(r.recordedAt).slice(11), st?.name || '-', isi || '-', who(r.recordedBy)];
+        });
+        const ops = [...new Set(recs.map(r => r.recordedBy).filter(Boolean))].map(who);
+        return json({ data: {
+          type, title: 'BERITA ACARA', kind: 'Tally Produksi', at: recs.length ? recs[recs.length - 1].recordedAt : wo.startDate, ref: wo.woNumber, refType: 'WO', refId: woId, operator: ops.join(', ') || '-', notes: null,
+          meta: [['Work Order', wo.woNumber], ['Tanggal', day ? day.split('-').reverse().join('-') : '-'], ['Mode', wo.mode || '-'], ['Petugas', ops.join(', ') || '-']],
+          columns: ['Jam', 'Tahap', 'Catatan', 'Petugas'],
+          rows, total: `${recs.length} catatan`,
+          signatures: ['Dicatat oleh (Petugas Tally)', 'Diketahui oleh (Supervisor Produksi)'],
+        } });
+      }
+      return err('Jenis riwayat tidak dikenal', 400);
+    }
 
     // GET /tally-sessions?status=draft  (default draft) — list resumable sessions
     if (route === '/tally-sessions' && method === 'GET') {
