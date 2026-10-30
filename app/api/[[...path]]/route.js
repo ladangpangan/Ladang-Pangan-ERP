@@ -245,6 +245,7 @@ const POTX_PATHS = new Set([
   'purchase-orders', 'purchase-reports', 'grns', 'commissions', 'contacts',
   'sales-orders', 'tally-outbound', 'tally-sessions', 'inventory', 'inventory-reports',
   'approvals', 'accounting', 'dashboard', 'reports', 'sales-reports', 'production-reports', 'finance',
+  'opnames', // opname Tally menampilkan asal-usul karung (nomor PO & supplier)
 ]);
 
 // Phase 6: path[0] prefixes that READ or WRITE fixed_assets / stock_opname(+items).
@@ -6340,8 +6341,10 @@ async function handleRoute(request, { params }) {
     const nextOpnameNumber = () => {
       const ym = new Date();
       const p = `OPN/${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, '0')}/`;
-      const row = db.select({ c: sql`count(*)` }).from(s.stockOpname).where(like(s.stockOpname.opnameNumber, `${p}%`)).get();
-      return `${p}${String((Number(row?.c || 0) + 1)).padStart(4, '0')}`;
+      // Ambil nomor terbesar (bukan jumlah baris) agar tidak bentrok setelah draf dihapus
+      const rows = db.select({ n: s.stockOpname.opnameNumber }).from(s.stockOpname).where(like(s.stockOpname.opnameNumber, `${p}%`)).all();
+      const max = rows.reduce((m, r) => Math.max(m, parseInt(String(r.n).slice(p.length), 10) || 0), 0);
+      return `${p}${String(max + 1).padStart(4, '0')}`;
     };
 
     // GET /inventory/stocks - list with filters + FIFO/FEFO
@@ -7210,7 +7213,7 @@ async function handleRoute(request, { params }) {
         const totalDW = Math.round(rows.reduce((a, r) => a + (r.w - Number(r.stk.weight || 0)), 0) * 1000) / 1000;
         db.insert(s.stockOpname).values({
           id, opnameNumber: number, opnameDate: new Date(), coldStorageId: csId,
-          status: 'submitted', totalDeltaWeight: totalDW, totalDeltaQty: 0,
+          status: 'submitted', totalDeltaWeight: totalDW, totalDeltaQty: 0, source: 'reweigh',
           notes: `Timbang ulang Tally Outbound ${so.soNumber}`,
           createdBy: session.user.email, submittedAt: new Date(), createdAt: new Date(),
         }).run();
@@ -7236,6 +7239,163 @@ async function handleRoute(request, { params }) {
         created.push({ id, opnameNumber: number, count: rows.length, totalDeltaWeight: totalDW });
       }
       return json({ data: { opnames: created } }, { status: 201 });
+    }
+
+    // ================= STOCK OPNAME LEWAT TALLY (scan karung) =================
+    // Petugas memilih gudang (+ zona), lalu scan tiap karung. Karung yang menurut sistem ada di
+    // lokasi itu tapi tidak ter-scan ditandai "tidak ditemukan"; admin memutuskan saat menyetujui.
+    const tallyOpnameScope = (csId, zoneId) => {
+      const conds = [eq(s.inventoryStock.coldStorageId, csId), inArray(s.inventoryStock.status, ['active', 'allocated']), isNull(s.inventoryStock.archivedAt), sql`${s.inventoryStock.weight} > 0`];
+      if (zoneId) conds.push(eq(s.inventoryStock.zoneId, zoneId));
+      return db.select().from(s.inventoryStock).where(and(...conds)).all();
+    };
+    const recalcOpnameTotals = (opId) => {
+      const all = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, opId)).all();
+      db.update(s.stockOpname).set({
+        totalDeltaWeight: Math.round(all.reduce((a, b) => a + Number(b.deltaWeight || 0), 0) * 1000) / 1000,
+        totalDeltaQty: all.reduce((a, b) => a + Number(b.deltaQty || 0), 0),
+      }).where(eq(s.stockOpname.id, opId)).run();
+    };
+    // Asal-usul karung (traceability): PO/WO sumber, supplier/tanggal produksi, tanggal masuk, kadaluarsa
+    const stockOrigin = (stk) => {
+      const o = { sourceType: stk.sourceType || null, sourceNumber: null, party: null, partyLabel: null, inDate: stk.createdAt || null, expiredDate: stk.expiredDate || null };
+      if (stk.sourceType === 'PO' && stk.sourceBatch) {
+        const po = db.select({ n: s.purchaseOrder.poNumber, sup: s.purchaseOrder.supplierId }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, stk.sourceBatch)).get();
+        if (po) {
+          o.sourceNumber = po.n; o.partyLabel = 'Supplier';
+          o.party = db.select({ n: s.contacts.displayName }).from(s.contacts).where(eq(s.contacts.id, po.sup)).get()?.n || null;
+        }
+      } else if (stk.sourceType === 'WO' && stk.sourceBatch) {
+        const wo = db.select({ n: s.workOrder.woNumber, d: s.workOrder.startDate }).from(s.workOrder).where(eq(s.workOrder.id, stk.sourceBatch)).get();
+        if (wo) { o.sourceNumber = wo.n; o.partyLabel = 'Tanggal produksi'; o.party = wo.d || null; }
+      }
+      return o;
+    };
+    const zoneCodeOf = (zid) => zid ? (db.select({ c: s.zones.code }).from(s.zones).where(eq(s.zones.id, zid)).get()?.c || null) : null;
+    const tallyOpnameView = (op) => {
+      const items = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, op.id)).all();
+      const cs = db.select({ code: s.coldStorages.code, name: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, op.coldStorageId)).get();
+      const recent = items.filter(i => Number(i.counted || 0) === 1).sort((a, b) => Number(new Date(b.countedAt || 0)) - Number(new Date(a.countedAt || 0))).slice(0, 5).map(i => {
+        const st = db.select({ k: s.inventoryStock.kodeSimpan, p: s.inventoryStock.productId }).from(s.inventoryStock).where(eq(s.inventoryStock.id, i.stockId)).get();
+        const pn = st ? db.select({ n: s.products.name }).from(s.products).where(eq(s.products.id, st.p)).get()?.n : null;
+        return { itemId: i.id, kodeSimpan: st?.k || '-', productName: pn || '-', weight: Number(i.physicalWeight || 0), diff: Math.round(Number(i.deltaWeight || 0) * 1000) / 1000 };
+      });
+      return {
+        id: op.id, opnameNumber: op.opnameNumber, status: op.status, coldStorageId: op.coldStorageId, zoneId: op.zoneId || null,
+        csCode: cs?.code || null, csName: cs?.name || null, zoneCode: zoneCodeOf(op.zoneId),
+        expected: items.filter(i => i.notes !== 'Ditemukan di luar zona opname').length,
+        counted: items.filter(i => Number(i.counted || 0) === 1).length, recent, updatedAt: op.createdAt,
+      };
+    };
+
+    // GET /opnames/tally/active — opname Tally yang masih draft (bisa dilanjutkan)
+    if (route === '/opnames/tally/active' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const rows = db.select().from(s.stockOpname).where(and(eq(s.stockOpname.status, 'draft'), eq(s.stockOpname.source, 'tally'))).orderBy(desc(s.stockOpname.createdAt)).all();
+      return json({ data: rows.map(tallyOpnameView) });
+    }
+    // GET /opnames/tally/expected?coldStorageId=&zoneId= — jumlah karung menurut sistem di lokasi itu
+    if (route === '/opnames/tally/expected' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const u = new URL(request.url);
+      const csId = u.searchParams.get('coldStorageId');
+      if (!csId) return err('coldStorageId required');
+      const rows = tallyOpnameScope(csId, u.searchParams.get('zoneId') || null);
+      return json({ data: { count: rows.length, weight: Math.round(rows.reduce((a, b) => a + Number(b.weight || 0), 0) * 100) / 100 } });
+    }
+    // POST /opnames/tally/start { coldStorageId, zoneId? } — buat (atau lanjutkan) opname Tally
+    if (route === '/opnames/tally/start' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const body = await request.json();
+      if (!body.coldStorageId) return err('Pilih gudang');
+      const zoneId = body.zoneId || null;
+      const existing = db.select().from(s.stockOpname).where(and(eq(s.stockOpname.status, 'draft'), eq(s.stockOpname.source, 'tally'),
+        eq(s.stockOpname.coldStorageId, body.coldStorageId), zoneId ? eq(s.stockOpname.zoneId, zoneId) : isNull(s.stockOpname.zoneId))).get();
+      if (existing) return json({ data: tallyOpnameView(existing) });
+      const id = uuidv4();
+      const zc = zoneCodeOf(zoneId);
+      db.insert(s.stockOpname).values({
+        id, opnameNumber: nextOpnameNumber(), opnameDate: new Date(), coldStorageId: body.coldStorageId, zoneId, source: 'tally',
+        status: 'draft', notes: `Opname Tally${zc ? ` · Zona ${zc}` : ' · semua zona'}`, createdBy: session.user.email, createdAt: new Date(),
+      }).run();
+      for (const st of tallyOpnameScope(body.coldStorageId, zoneId)) {
+        db.insert(s.stockOpnameItems).values({
+          id: uuidv4(), opnameId: id, stockId: st.id,
+          systemQty: Number(st.quantity || 0), systemWeight: Number(st.weight || 0),
+          physicalQty: Number(st.quantity || 0), physicalWeight: Number(st.weight || 0), deltaQty: 0, deltaWeight: 0, counted: 0,
+        }).run();
+      }
+      return json({ data: tallyOpnameView(db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get()) }, { status: 201 });
+    }
+    // POST /opnames/:id/scan { code } — cari karung hasil scan, kembalikan asal-usulnya (belum dihitung)
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'scan' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, path[1])).get();
+      if (!op) return err('Opname tidak ditemukan', 404);
+      if (op.status !== 'draft') return err('Opname ini sudah diajukan');
+      const code = String((await request.json()).code || '').trim();
+      const reject = (reason, message) => json({ data: { ok: false, reason, code, message } });
+      const stk = code ? db.select().from(s.inventoryStock).where(eq(s.inventoryStock.kodeSimpan, code)).get() : null;
+      if (!stk || stk.archivedAt) return reject('not_registered', `${code} tidak terdaftar di stok. Pisahkan karung ini dan laporkan ke admin.`);
+      if (stk.coldStorageId !== op.coldStorageId) {
+        const cs = db.select({ n: s.coldStorages.name }).from(s.coldStorages).where(eq(s.coldStorages.id, stk.coldStorageId)).get();
+        return reject('other_cs', `${code} tercatat di gudang ${cs?.n || 'lain'}. Laporkan ke admin.`);
+      }
+      if (!['active', 'allocated'].includes(stk.status)) return reject('not_in_stock', `${code} tercatat sudah keluar / tidak aktif (status: ${stk.status}). Pisahkan dan laporkan ke admin.`);
+      let item = db.select().from(s.stockOpnameItems).where(and(eq(s.stockOpnameItems.opnameId, op.id), eq(s.stockOpnameItems.stockId, stk.id))).get();
+      if (item && Number(item.counted || 0) === 1) return reject('already', `${code} sudah dihitung. Lanjut ke karung berikutnya.`);
+      if (!item) {
+        // Karung dari zona lain di gudang yang sama: ikut dicatat (pindah zona saat disetujui)
+        item = { id: uuidv4(), opnameId: op.id, stockId: stk.id, systemQty: Number(stk.quantity || 0), systemWeight: Number(stk.weight || 0),
+          physicalQty: Number(stk.quantity || 0), physicalWeight: Number(stk.weight || 0), deltaQty: 0, deltaWeight: 0, counted: 0, notes: 'Ditemukan di luar zona opname' };
+        db.insert(s.stockOpnameItems).values(item).run();
+      }
+      const p = db.select({ name: s.products.name }).from(s.products).where(eq(s.products.id, stk.productId)).get();
+      const moved = !!(op.zoneId && stk.zoneId !== op.zoneId);
+      return json({ data: {
+        ok: true, code, itemId: item.id, productName: p?.name || '-', systemWeight: Number(stk.weight || 0), quantity: Number(stk.quantity || 0),
+        zoneCode: zoneCodeOf(stk.zoneId), moved, allocated: stk.status === 'allocated', origin: stockOrigin(stk),
+      } });
+    }
+    // POST /opnames/:id/count { itemId, weight? } — tandai karung dihitung (berat sama / hasil timbang)
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'count' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, path[1])).get();
+      if (!op) return err('Opname tidak ditemukan', 404);
+      if (op.status !== 'draft') return err('Opname ini sudah diajukan');
+      const body = await request.json();
+      const it = db.select().from(s.stockOpnameItems).where(and(eq(s.stockOpnameItems.id, body.itemId || ''), eq(s.stockOpnameItems.opnameId, op.id))).get();
+      if (!it) return err('Karung tidak ada di opname ini', 404);
+      const w = body.weight != null && body.weight !== '' ? Math.round(Number(body.weight) * 1000) / 1000 : Number(it.systemWeight);
+      if (!(w >= 0)) return err('Berat tidak valid');
+      const stk = db.select({ z: s.inventoryStock.zoneId }).from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+      db.update(s.stockOpnameItems).set({
+        counted: 1, physicalWeight: w, physicalQty: Number(it.systemQty || 0),
+        deltaWeight: Math.round((w - Number(it.systemWeight || 0)) * 1000) / 1000, deltaQty: 0,
+        foundZoneId: op.zoneId || stk?.z || null, countedAt: new Date(), countedBy: session.user.email,
+      }).where(eq(s.stockOpnameItems.id, it.id)).run();
+      recalcOpnameTotals(op.id);
+      return json({ data: tallyOpnameView(db.select().from(s.stockOpname).where(eq(s.stockOpname.id, op.id)).get()) });
+    }
+    // POST /opnames/:id/uncount { itemId } — batalkan hitungan karung (salah scan)
+    if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'uncount' && method === 'POST') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
+      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, path[1])).get();
+      if (!op) return err('Opname tidak ditemukan', 404);
+      if (op.status !== 'draft') return err('Opname ini sudah diajukan');
+      const body = await request.json();
+      const it = db.select().from(s.stockOpnameItems).where(and(eq(s.stockOpnameItems.id, body.itemId || ''), eq(s.stockOpnameItems.opnameId, op.id))).get();
+      if (!it) return err('Karung tidak ada di opname ini', 404);
+      if (it.notes === 'Ditemukan di luar zona opname') db.delete(s.stockOpnameItems).where(eq(s.stockOpnameItems.id, it.id)).run();
+      else db.update(s.stockOpnameItems).set({ counted: 0, physicalWeight: it.systemWeight, physicalQty: it.systemQty, deltaWeight: 0, deltaQty: 0, foundZoneId: null, countedAt: null, countedBy: null }).where(eq(s.stockOpnameItems.id, it.id)).run();
+      recalcOpnameTotals(op.id);
+      return json({ data: tallyOpnameView(db.select().from(s.stockOpname).where(eq(s.stockOpname.id, op.id)).get()) });
     }
 
     if (route === '/opnames' && method === 'POST') {
@@ -7288,16 +7448,24 @@ async function handleRoute(request, { params }) {
       const enrichedItems = items.map(it => {
         const st = db.select().from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
         const p = st ? db.select({ sku: s.products.sku, name: s.products.name, unit: s.products.unit }).from(s.products).where(eq(s.products.id, st.productId)).get() : null;
-        return { ...it, stock: st, product: p };
+        const extra = op.source === 'tally' && st ? {
+          origin: stockOrigin(st), zoneCode: zoneCodeOf(st.zoneId), foundZoneCode: zoneCodeOf(it.foundZoneId),
+          moved: Number(it.counted || 0) === 1 && !!it.foundZoneId && it.foundZoneId !== st.zoneId,
+          missing: Number(it.counted || 0) !== 1,
+        } : {};
+        return { ...it, stock: st, product: p, ...extra };
       });
       const cs = db.select().from(s.coldStorages).where(eq(s.coldStorages.id, op.coldStorageId)).get();
-      return json({ data: { ...op, coldStorage: cs, items: enrichedItems } });
+      return json({ data: { ...op, coldStorage: cs, zoneCode: zoneCodeOf(op.zoneId), items: enrichedItems } });
     }
     // PATCH /opnames/:id/items - update physical count in bulk
     if (route.startsWith('/opnames/') && path.length === 3 && path[2] === 'items' && method === 'POST') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'operator'])) return err('Forbidden', 403);
       const opId = path[1];
+      const opRow = db.select({ source: s.stockOpname.source, status: s.stockOpname.status }).from(s.stockOpname).where(eq(s.stockOpname.id, opId)).get();
+      if (opRow?.source === 'tally') return err('Opname Tally diisi lewat scan di Tally App, tidak bisa diubah manual');
+      if (opRow && opRow.status !== 'draft') return err('Opname sudah diajukan, tidak bisa diubah');
       const body = await request.json();
       if (!Array.isArray(body.items)) return err('items array required');
       for (const it of body.items) {
@@ -7328,9 +7496,23 @@ async function handleRoute(request, { params }) {
       if (!op) return err('Not found', 404);
       if (op.status !== 'draft') return err('Hanya draft yang bisa submit');
       db.update(s.stockOpname).set({ status: 'submitted', submittedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
+      // Opname Tally: karung tidak ditemukan & pindah zona juga perlu keputusan admin
+      let tallyNote = '', tallyNeedsReview = false;
+      if (op.source === 'tally') {
+        const its = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all();
+        const missing = its.filter(i => Number(i.counted || 0) !== 1).length;
+        let moved = 0;
+        for (const i of its) {
+          if (Number(i.counted || 0) !== 1 || !i.foundZoneId) continue;
+          const z = db.select({ z: s.inventoryStock.zoneId }).from(s.inventoryStock).where(eq(s.inventoryStock.id, i.stockId)).get();
+          if (z && z.z !== i.foundZoneId) moved++;
+        }
+        tallyNote = ` · ${its.length - missing} karung dihitung · ${missing} tidak ditemukan · ${moved} pindah zona`;
+        tallyNeedsReview = missing > 0 || moved > 0;
+      }
       // Auto-create approval concern if variance is significant
       const absVarianceKg = Math.abs(Number(op.totalDeltaWeight || 0));
-      if (absVarianceKg > 0.01) {
+      if (absVarianceKg > 0.01 || tallyNeedsReview) {
         const sign = Number(op.totalDeltaWeight || 0) > 0 ? '+' : '';
         createApproval({
           concernType: 'opname_variance',
@@ -7338,7 +7520,7 @@ async function handleRoute(request, { params }) {
           entityId: id,
           entityNumber: op.opnameNumber,
           title: `Stock Opname ${op.opnameNumber} · Variance ${sign}${Number(op.totalDeltaWeight).toFixed(2)} kg`,
-          description: `Selisih fisik vs sistem: ${sign}${Number(op.totalDeltaWeight).toFixed(2)} kg · ${sign}${Number(op.totalDeltaQty || 0)} qty · perlu review sebelum adjustment diterapkan`,
+          description: `Selisih fisik vs sistem: ${sign}${Number(op.totalDeltaWeight).toFixed(2)} kg · ${sign}${Number(op.totalDeltaQty || 0)} qty${tallyNote} · perlu review sebelum adjustment diterapkan`,
           priority: absVarianceKg > 100 ? 'urgent' : absVarianceKg > 20 ? 'high' : 'normal',
           amount: 0,
           metadata: { opnameNumber: op.opnameNumber, totalDeltaWeight: op.totalDeltaWeight, totalDeltaQty: op.totalDeltaQty },
@@ -7352,9 +7534,26 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor'])) return err('Forbidden', 403);
       const id = path[1];
-      const op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+      let op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
       if (!op) return err('Not found', 404);
       if (op.status !== 'submitted') return err('Hanya opname submitted yang bisa di-approve');
+      let approveBody = {};
+      try { approveBody = await request.json(); } catch { /* tanpa body */ }
+      // Opname Tally: karung "tidak ditemukan" yang dipilih admin dianggap hilang (berat jadi 0)
+      const lostIds = new Set(op.source === 'tally' && Array.isArray(approveBody.lostItemIds) ? approveBody.lostItemIds : []);
+      const lostStockIds = [];
+      if (lostIds.size) {
+        for (const it of db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all()) {
+          if (!lostIds.has(it.id)) continue;
+          if (Number(it.counted || 0) === 1) return err('Karung yang sudah di-scan tidak bisa dianggap hilang');
+          const stk = db.select({ st: s.inventoryStock.status, k: s.inventoryStock.kodeSimpan }).from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+          if (stk?.st !== 'active') return err(`Kode ${stk?.k || ''} sedang dialokasikan ke SO / tidak aktif. Lepas alokasinya dulu sebelum dianggap hilang.`);
+          db.update(s.stockOpnameItems).set({ physicalWeight: 0, physicalQty: 0, deltaWeight: -Number(it.systemWeight || 0), deltaQty: -Number(it.systemQty || 0), notes: 'Dianggap hilang saat persetujuan' }).where(eq(s.stockOpnameItems.id, it.id)).run();
+          lostStockIds.push(it.stockId);
+        }
+        recalcOpnameTotals(id);
+        op = db.select().from(s.stockOpname).where(eq(s.stockOpname.id, id)).get();
+      }
       const items = db.select().from(s.stockOpnameItems).where(eq(s.stockOpnameItems.opnameId, id)).all();
       // Create adjustment transaction
       const txId = uuidv4();
@@ -7401,6 +7600,17 @@ async function handleRoute(request, { params }) {
           }).where(eq(s.inventoryStock.id, it.stockId)).run();
         }
       }
+      // Karung hilang: tidak lagi tersedia di stok
+      for (const sid of lostStockIds) db.update(s.inventoryStock).set({ status: 'lost', updatedAt: new Date() }).where(eq(s.inventoryStock.id, sid)).run();
+      // Opname Tally: karung yang ditemukan di zona lain dipindah ke zona tempat ditemukan
+      let movedCount = 0;
+      if (op.source === 'tally') {
+        for (const it of items) {
+          if (Number(it.counted || 0) !== 1 || !it.foundZoneId) continue;
+          const stk = db.select({ z: s.inventoryStock.zoneId }).from(s.inventoryStock).where(eq(s.inventoryStock.id, it.stockId)).get();
+          if (stk && stk.z !== it.foundZoneId) { db.update(s.inventoryStock).set({ zoneId: it.foundZoneId, updatedAt: new Date() }).where(eq(s.inventoryStock.id, it.stockId)).run(); movedCount++; }
+        }
+      }
       db.update(s.stockOpname).set({ status: 'approved', approvedBy: session.user.email, approvedAt: new Date() }).where(eq(s.stockOpname.id, id)).run();
       // Karung yang sudah dialokasikan ke SO Draft (timbang ulang Tally Outbound): berat alokasi &
       // tagihan SO ikut berat baru.
@@ -7422,7 +7632,7 @@ async function handleRoute(request, { params }) {
           try { await salesMongo.persistSalesOrderToMongo(raw, soId); } catch (e) { console.error('persist SO after opname approve', e?.message); }
         }
       }
-      return json({ data: { ok: true, transactionId: txId, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
+      return json({ data: { ok: true, transactionId: txId, lost: lostStockIds.length, moved: movedCount, notification: { to: ['direktur'], subject: `Stock Opname ${op.opnameNumber} disetujui, delta: ${op.totalDeltaWeight}kg` } } });
     }
     // DELETE /opnames/:id — hapus opname yang masih draft (belum diajukan, stok belum berubah)
     if (route.startsWith('/opnames/') && path.length === 2 && method === 'DELETE') {
