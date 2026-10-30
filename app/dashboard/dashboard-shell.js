@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
   FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers,
-  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, Target
+  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, Target, History
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -73,10 +73,10 @@ const NAV = [
     ],
   },
   {
-    section: 'Tally App (Mobile)',
+    section: 'Tally Gudang (HP)',
     items: [
-      { href: '/tally', label: 'Produksi', icon: Smartphone, roles: ['admin','supervisor','operator'] },
-      { href: '/tally/inbound', label: 'Inbound Gudang', icon: Smartphone, roles: ['admin','supervisor','operator'] },
+      { href: '/tally', label: 'Tally App', icon: Smartphone, roles: ['admin','supervisor','operator'] },
+      { href: '/dashboard/tally-history', label: 'Riwayat Tally', icon: History, roles: ['admin','supervisor','direktur','akuntan'] },
     ],
   },
   {

@@ -96,6 +96,20 @@ export default function TallyHomePage() {
         </Card>
       </Link>
 
+      {/* Riwayat Tally — cetak ulang berita acara Masuk/Keluar/Opname/Produksi */}
+      <Link href="/tally/riwayat" className="block mb-4">
+        <Card className="border-slate-300 bg-white hover:shadow-md transition-shadow cursor-pointer">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <div className="w-11 h-11 bg-slate-100 text-slate-700 rounded-lg flex items-center justify-center shrink-0"><History className="w-6 h-6" /></div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold">Riwayat Tally</div>
+              <div className="text-xs text-muted-foreground">Lihat tally yang sudah selesai & cetak ulang berita acara</div>
+            </div>
+            <ChevronRight className="w-5 h-5 shrink-0 text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </Link>
+
       {/* Tally Inbound draft yang bisa dilanjutkan */}
       {drafts.length > 0 && (
         <Card className="mb-4 border-amber-200 bg-amber-50/40">
