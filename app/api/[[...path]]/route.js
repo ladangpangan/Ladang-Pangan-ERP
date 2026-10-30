@@ -6756,12 +6756,19 @@ async function handleRoute(request, { params }) {
       if (r.referenceType === 'PO' && r.referenceId) refNumber = db.select({ n: s.purchaseOrder.poNumber }).from(s.purchaseOrder).where(eq(s.purchaseOrder.id, r.referenceId)).get()?.n || null;
       if (r.referenceType === 'WO' && r.referenceId) refNumber = db.select({ n: s.workOrder.woNumber }).from(s.workOrder).where(eq(s.workOrder.id, r.referenceId)).get()?.n || null;
       const totalWeight = itemRows.reduce((a, b) => a + Number(b.weight || 0), 0);
-      const base = { ...r, csCode: cs?.code || null, csName: cs?.name || null, refNumber, itemCount: itemRows.length, totalWeight };
+      const zoneCode = r.zoneId ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, r.zoneId)).get()?.code || null : null;
+      const base = { ...r, csCode: cs?.code || null, csName: cs?.name || null, zoneCode, refNumber, itemCount: itemRows.length, totalWeight };
       if (withItems) {
-        base.items = itemRows.map(it => {
+        // Sesi final: kode simpan yang dibuat otomatis saat masuk stok diambil dari stok hasil transaksinya
+        // (urutan stok = urutan item, sama seperti hasil finalize).
+        const txStocks = r.status === 'final' && r.transactionId
+          ? db.select({ kode: s.inventoryStock.kodeSimpan }).from(s.inventoryStock)
+            .where(eq(s.inventoryStock.transactionId, r.transactionId)).orderBy(sql`rowid`).all()
+          : [];
+        base.items = itemRows.map((it, idx) => {
           const p = db.select({ name: s.products.name, sku: s.products.sku }).from(s.products).where(eq(s.products.id, it.productId)).get();
           const z = it.zoneId ? db.select({ code: s.zones.code }).from(s.zones).where(eq(s.zones.id, it.zoneId)).get() : null;
-          return { ...it, productName: p?.name || null, productSku: p?.sku || null, zoneCode: z?.code || null };
+          return { ...it, kodeSimpan: it.kodeSimpan || txStocks[idx]?.kode || null, productName: p?.name || null, productSku: p?.sku || null, zoneCode: z?.code || null };
         });
       }
       return base;
@@ -6772,9 +6779,10 @@ async function handleRoute(request, { params }) {
       const { session, error } = await requireAuth(); if (error) return error;
       const u = new URL(request.url);
       const status = u.searchParams.get('status') || 'draft';
+      const limit = Math.min(200, Math.max(1, Number(u.searchParams.get('limit') || 200)));
       const rows = db.select().from(s.tallySession)
         .where(eq(s.tallySession.status, status))
-        .orderBy(desc(s.tallySession.updatedAt)).all();
+        .orderBy(desc(s.tallySession.updatedAt)).limit(limit).all();
       return json({ data: rows.map(r => enrichTallySession(r, false)) });
     }
 

@@ -62,6 +62,9 @@ export default function TallyInboundPage() {
   const { data: poData } = useSWR('/api/purchase-orders', fetcher);
   const { data: woData } = useSWR('/api/work-orders', fetcher);
   const { data: draftData, mutate: mutateDrafts } = useSWR('/api/tally-sessions?status=draft', fetcher);
+  const { data: finalData, mutate: mutateFinals } = useSWR('/api/tally-sessions?status=final&limit=20', fetcher);
+  const finals = finalData?.data || [];
+  const [baLoading, setBaLoading] = useState(null);
   const products = productData?.data || [];
   const coldStorages = csData?.data || [];
   const purchaseOrders = poData?.data || [];
@@ -275,7 +278,7 @@ export default function TallyInboundPage() {
         totalWeight: items.reduce((a, b) => a + Number(b.weight || 0), 0),
       });
       setScreen('done');
-      mutateDrafts();
+      mutateDrafts(); mutateFinals();
     } catch (e) { toast.error(e.message); }
     finally { setFinalizing(false); }
   };
@@ -400,10 +403,31 @@ export default function TallyInboundPage() {
     a.href = url; a.download = `TallyInbound_${format(lastSaved.time, 'yyyyMMdd_HHmm')}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-  const downloadPDF = () => {
-    if (!lastSaved) return;
-    try { pdfPreview.show(generateTallyInboundPDF(lastSaved), `TallyInbound_${format(lastSaved.time, 'yyyyMMdd_HHmm')}.pdf`, 'Laporan Tally Inbound'); }
+  const showBeritaAcara = (r) => {
+    try { pdfPreview.show(generateTallyInboundPDF(r), `BeritaAcaraTally_${format(new Date(r.time), 'yyyyMMdd_HHmm')}.pdf`, 'Berita Acara Tally Masuk'); }
     catch (e) { toast.error('Gagal membuat PDF: ' + e.message); }
+  };
+  const downloadPDF = () => { if (lastSaved) showBeritaAcara(lastSaved); };
+
+  // Cetak ulang berita acara dari tally yang sudah masuk stok.
+  const reprintBeritaAcara = async (id) => {
+    setBaLoading(id);
+    try {
+      const res = await fetch(`/api/tally-sessions/${id}`, { credentials: 'include' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Gagal memuat tally');
+      const t = j.data;
+      showBeritaAcara({
+        time: t.finalizedAt || t.updatedAt,
+        operator: t.createdBy || '-',
+        csCode: t.csCode, csName: t.csName,
+        zoneCode: t.zoneCode || t.items?.[0]?.zoneCode || null,
+        refType: t.referenceType || 'MANUAL', refNumber: t.refNumber,
+        notes: t.notes, items: t.items || [],
+        totalWeight: (t.items || []).reduce((a, b) => a + Number(b.weight || 0), 0),
+      });
+    } catch (e) { toast.error(e.message); }
+    finally { setBaLoading(null); }
   };
 
   return (
@@ -475,6 +499,28 @@ export default function TallyInboundPage() {
           )}
 
           <button type="button" onClick={goSetup} disabled={refType !== 'MANUAL' && !refId} className={`${primaryBtn} mt-auto`}>Lanjut</button>
+
+          {finals.length > 0 && (
+            <div className="flex flex-col gap-2 mt-2">
+              <div className={sectionLabel}>Riwayat · sudah masuk stok</div>
+              <div className={`${card} overflow-hidden`}>
+                {finals.map(f => (
+                  <div key={f.id} className="flex items-center gap-2 pl-3.5 pr-2 py-2.5 border-b border-[#EEF2F6] last:border-b-0">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[15px] font-bold truncate">{f.refNumber ? `${f.referenceType} ${f.refNumber}` : 'Lainnya'}</div>
+                      <div className="text-[13px] text-[#5A687C]">
+                        {(f.finalizedAt || f.updatedAt) ? format(new Date(f.finalizedAt || f.updatedAt), 'dd MMM yyyy HH:mm') : '-'} · {f.itemCount} karung · {kg(f.totalWeight)} kg
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => reprintBeritaAcara(f.id)} disabled={baLoading === f.id}
+                      className="min-h-[44px] px-3 rounded-[10px] border border-[#CBD5E1] bg-white text-sm font-medium flex items-center gap-1.5 shrink-0 disabled:opacity-60">
+                      {baLoading === f.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />} Berita Acara
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -726,7 +772,7 @@ export default function TallyInboundPage() {
             <div className="text-sm text-[#5A687C]">Barang sudah siap dijual.</div>
           </div>
           <div className="grid grid-cols-2 gap-2.5">
-            <button type="button" onClick={downloadPDF} className={outlineBtn}><FileText className="w-5 h-5" /> Laporan PDF</button>
+            <button type="button" onClick={downloadPDF} className={outlineBtn}><FileText className="w-5 h-5" /> Berita Acara (PDF)</button>
             <button type="button" onClick={downloadCSV} className={outlineBtn}><Download className="w-5 h-5" /> CSV</button>
           </div>
           <div className="mt-auto flex flex-col gap-2.5">
