@@ -347,10 +347,12 @@ function OrderScan({ soId, onDone }) {
           onRetake={() => { setTextRead(null); setScanning(true); }} />
       )}
       {scanning && !textRead && <BarcodeScanner continuous accent="#FB923C" height={170} onDetect={handleCode} onText={(r) => { setScanning(false); setTextRead(r); }} />}
-      <button type="button" onClick={() => setScanning(s => !s)} className="min-h-[60px] rounded-xl text-white text-xl font-bold flex items-center justify-center gap-2.5" style={{ background: ORANGE }}>
-        {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}
-        {scanning ? 'Tutup Kamera' : 'Scan Karung'}
-      </button>
+      {!textRead && (
+        <button type="button" onClick={() => setScanning(s => !s)} className="min-h-[60px] rounded-xl text-white text-xl font-bold flex items-center justify-center gap-2.5" style={{ background: ORANGE }}>
+          {checking ? <Loader2 className="w-6 h-6 animate-spin" /> : <ScanLine className="w-[26px] h-[26px]" />}
+          {scanning ? 'Tutup Kamera' : 'Scan Karung'}
+        </button>
+      )}
       {scanning && <div className="text-[13px] text-[#5A687C] text-center -mt-1">Kamera tetap menyala. Scan karung satu per satu.</div>}
 
       {manualOpen ? (
