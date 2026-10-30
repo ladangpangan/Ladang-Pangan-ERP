@@ -36,7 +36,14 @@ export const SO_STATUS_COLOR = {
   'Invoiced': 'bg-emerald-100 text-emerald-700',
   'Cancelled': 'bg-red-100 text-red-700',
 };
-const PAY_COLOR = { unpaid: 'bg-slate-100 text-slate-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700' };
+export const SO_STATUS_LABEL = {
+  'Draft': 'Draf', 'Confirmed': 'Dikonfirmasi', 'Packed': 'Dikemas', 'Shipped': 'Dikirim', 'Invoiced': 'Difaktur', 'Cancelled': 'Dibatalkan',
+};
+const PAY_COLOR = { unpaid: 'bg-red-50 text-red-700', partial: 'bg-amber-100 text-amber-700', paid: 'bg-emerald-100 text-emerald-700', none: 'bg-slate-100 text-slate-500' };
+const PAY_LABEL = { unpaid: 'Belum bayar', partial: 'Sebagian', paid: 'Lunas', none: 'Belum ditagih' };
+// SO dihitung sebagai penjualan bila sudah dikirim/difaktur dan tidak batal (sama dengan Laporan Penjualan)
+const isSold = (r) => r.pipelineStatus !== 'Cancelled' && (!!r.invoiceNumber || ['Shipped', 'Invoiced'].includes(r.pipelineStatus));
+const payKey = (r) => (r.pipelineStatus === 'Cancelled' ? null : (!isSold(r) && (r.paymentStatus || 'unpaid') === 'unpaid') ? 'none' : (r.paymentStatus || 'unpaid'));
 const PAYMENT_TERMS = ['Cash', 'TOP 7', 'TOP 14', 'TOP 30', 'TOP 45', 'TOP 60'];
 
 const emptyItem = () => ({ stockId: '', productId: '', productName: '', packagingType: '', kodeSimpan: '', csLabel: '', availableWeight: 0, quantity: 0, weight: 0, unitPrice: 0, buyPrice: 0, avgHppPerKg: 0, discount: 0, expiredDate: null });
@@ -74,7 +81,12 @@ export default function SOListPage() {
     invoiceNumber: r => r.invoiceNumber, totalAmount: r => r.totalAmount,
     paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
   });
-  const monthTotal = mf.filtered.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
+  const netOf = (r) => Number(r.totalAmount || 0) - Number(r.returnsAmount || 0);
+  const sum = (list) => list.reduce((a, r) => a + netOf(r), 0);
+  const soldRows = mf.filtered.filter(isSold);
+  const openRows = mf.filtered.filter(r => !isSold(r) && r.pipelineStatus !== 'Cancelled');
+  const cancelRows = mf.filtered.filter(r => r.pipelineStatus === 'Cancelled');
+  const soldReturns = soldRows.reduce((a, r) => a + Number(r.returnsAmount || 0), 0);
 
   const doArchive = async (r) => {
     if (!confirm(view === 'archived' ? 'Pulihkan SO ini dari arsip?' : 'Arsipkan SO ini? Data akan disembunyikan dari daftar aktif.')) return;
@@ -89,7 +101,7 @@ export default function SOListPage() {
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
             <TrendingUp className="w-8 h-8 text-emerald-600" /> Sales Orders
           </h1>
-          <p className="text-muted-foreground mt-1">Penjualan B2B: regular customer & subscriber (prepaid)</p>
+          <p className="text-muted-foreground mt-1">Penjualan B2B: pelanggan reguler &amp; subscriber (prepaid)</p>
         </div>
         <div className="flex gap-2">
           <Link href="/dashboard/sales-reports"><Button variant="outline"><BarChart3 className="w-4 h-4 mr-2" />Laporan</Button></Link>
@@ -107,7 +119,7 @@ export default function SOListPage() {
           <Tabs value={statusTab} onValueChange={setStatusTab}>
             <TabsList className="flex-wrap h-auto">
               <TabsTrigger value="all">Semua</TabsTrigger>
-              {SO_STATUSES.map(st => <TabsTrigger key={st} value={st}>{st}</TabsTrigger>)}
+              {SO_STATUSES.map(st => <TabsTrigger key={st} value={st}>{SO_STATUS_LABEL[st]}</TabsTrigger>)}
             </TabsList>
           </Tabs>
           <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
@@ -118,18 +130,31 @@ export default function SOListPage() {
             <MonthYearFilter month={mf.month} setMonth={mf.setMonth} year={mf.year} setYear={mf.setYear} years={mf.years} />
             <ArchiveTabs value={view} onChange={setView} className="sm:ml-auto" />
           </div>
-          <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
-            <span className="text-muted-foreground">Periode <span className="font-medium text-foreground">{mf.label}</span></span>
-            <span><span className="font-semibold">{mf.filtered.length}</span> SO • Total <span className="font-semibold">Rp {monthTotal.toLocaleString('id-ID')}</span></span>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <div className="text-xs font-medium text-emerald-800">Penjualan {mf.label}</div>
+              <div className="text-lg font-bold tabular-nums">Rp {sum(soldRows).toLocaleString('id-ID')}</div>
+              <div className="text-[11px] text-emerald-800">{soldRows.length} SO dikirim/difaktur{soldReturns > 0 ? ` · sudah dikurangi retur Rp ${soldReturns.toLocaleString('id-ID')}` : ''}</div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-xs font-medium text-muted-foreground">Pesanan berjalan</div>
+              <div className="text-lg font-bold tabular-nums">Rp {sum(openRows).toLocaleString('id-ID')}</div>
+              <div className="text-[11px] text-muted-foreground">{openRows.length} SO draf/dikonfirmasi/dikemas · belum dihitung penjualan</div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-xs font-medium text-muted-foreground">Dibatalkan</div>
+              <div className="text-lg font-bold tabular-nums text-muted-foreground line-through">Rp {sum(cancelRows).toLocaleString('id-ID')}</div>
+              <div className="text-[11px] text-muted-foreground">{cancelRows.length} SO · tidak dihitung</div>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader><TableRow>
               <SortHead field="soNumber" sort={sort}>No SO</SortHead>
-              <SortHead field="customer" sort={sort}>Customer</SortHead>
+              <SortHead field="customer" sort={sort}>Pelanggan</SortHead>
               <SortHead field="orderDate" sort={sort}>Tgl Order</SortHead>
-              <SortHead field="invoiceNumber" sort={sort}>Invoice</SortHead>
+              <SortHead field="invoiceNumber" sort={sort}>Faktur</SortHead>
               <SortHead field="totalAmount" sort={sort} className="text-right">Total</SortHead>
               <SortHead field="paymentStatus" sort={sort}>Bayar</SortHead>
               <SortHead field="pipelineStatus" sort={sort}>Status</SortHead>
@@ -138,18 +163,24 @@ export default function SOListPage() {
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={8} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
               {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">Tidak ada SO pada periode {mf.label}</TableCell></TableRow>}
-              {rows.map(r => (
-                <TableRow key={r.id} className="hover:bg-slate-50">
-                  <TableCell className="font-mono font-semibold text-xs">{r.soNumber}</TableCell>
+              {rows.map(r => {
+                const cancelled = r.pipelineStatus === 'Cancelled';
+                const pk = payKey(r);
+                return (
+                <TableRow key={r.id} className={cn('hover:bg-slate-50', cancelled && 'text-muted-foreground')}>
+                  <TableCell className={cn('font-mono font-semibold text-xs', cancelled && 'line-through')}>{r.soNumber}</TableCell>
                   <TableCell>
                     <div className="font-medium">{r.customer?.name}</div>
                     <div className="text-xs text-muted-foreground font-mono">{r.customer?.code} {r.customer?.isSubscriber && <Badge variant="outline" className="ml-1 text-[10px]">Subscriber</Badge>}</div>
                   </TableCell>
                   <TableCell className="text-sm">{r.orderDate && format(new Date(r.orderDate), 'dd MMM yyyy')}</TableCell>
                   <TableCell className="text-xs font-mono">{r.invoiceNumber || '-'}</TableCell>
-                  <TableCell className="text-right font-medium">Rp {Number(r.totalAmount).toLocaleString('id-ID')}</TableCell>
-                  <TableCell><Badge variant="secondary" className={PAY_COLOR[r.paymentStatus]}>{r.paymentStatus}</Badge></TableCell>
-                  <TableCell><Badge className={SO_STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
+                  <TableCell className={cn('text-right font-medium tabular-nums', cancelled && 'line-through')}>
+                    Rp {netOf(r).toLocaleString('id-ID')}
+                    {Number(r.returnsAmount || 0) > 0 && <div className="text-[10px] font-normal text-muted-foreground">retur −Rp {Number(r.returnsAmount).toLocaleString('id-ID')}</div>}
+                  </TableCell>
+                  <TableCell>{pk ? <Badge variant="secondary" className={PAY_COLOR[pk]}>{PAY_LABEL[pk]}</Badge> : <span className="text-xs">–</span>}</TableCell>
+                  <TableCell><Badge className={SO_STATUS_COLOR[r.pipelineStatus]}>{SO_STATUS_LABEL[r.pipelineStatus] || r.pipelineStatus}</Badge></TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Link href={`/dashboard/sales-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
                     {canCreate && (view === 'archived'
@@ -157,7 +188,8 @@ export default function SOListPage() {
                       : <Button size="icon" variant="ghost" title="Arsipkan" onClick={() => doArchive(r)}><Archive className="w-4 h-4 text-amber-600" /></Button>)}
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>

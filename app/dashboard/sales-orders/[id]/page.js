@@ -19,10 +19,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet, Upload, Pencil, Plus } from 'lucide-react';
+import { ArrowLeft, Loader2, Receipt, Truck, CreditCard, RotateCcw, Package, PackageCheck, CheckCircle2, XCircle, Bell, Printer, FileDown, TrendingDown, Trash2, Calculator, Camera, Eye, Wallet, Upload, Pencil, Plus, MoreHorizontal, ChevronDown, Lock } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { SO_STATUS_COLOR } from '../page';
+import { SO_STATUS_COLOR, SO_STATUS_LABEL } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
 import DangerZoneRollback from '@/components/danger-zone-rollback';
@@ -37,6 +39,10 @@ const SO_FLOW = {
   'Invoiced': [], 'Cancelled': [],
 };
 const STEPS = ['Draft', 'Confirmed', 'Packed', 'Shipped', 'Invoiced'];
+// Tombol maju berlabel tindakan (bukan nama status)
+const ACTION_LABEL = { Confirmed: 'Konfirmasi SO', Packed: 'Tandai Dikemas', Shipped: 'Tandai Dikirim', Invoiced: 'Terbitkan Faktur' };
+const PAY_LABEL = { unpaid: 'Belum bayar', partial: 'Sebagian', paid: 'Lunas' };
+const STEP_SHORT = { Draft: 'Draf', Confirmed: 'Konfirm', Packed: 'Kemas', Shipped: 'Kirim', Invoiced: 'Faktur' };
 
 export default function SODetailPage() {
   const { id } = useParams();
@@ -101,18 +107,18 @@ export default function SODetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link href="/dashboard/sales-orders"><Button variant="ghost" size="icon"><ArrowLeft className="w-5 h-5" /></Button></Link>
-        <div className="flex-1">
+      <div className="flex items-start gap-3 flex-wrap">
+        <Link href="/dashboard/sales-orders"><Button variant="ghost" size="icon" aria-label="Kembali ke daftar SO"><ArrowLeft className="w-5 h-5" /></Button></Link>
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-2xl font-bold tracking-tight">{so.soNumber}</h1>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight font-mono break-all">{so.soNumber}</h1>
             {canEdit && <EditSoNumberButton so={so} onSaved={mutate} />}
-            <Badge className={SO_STATUS_COLOR[so.pipelineStatus]}>{so.pipelineStatus}</Badge>
+            <Badge className={SO_STATUS_COLOR[so.pipelineStatus]}>{SO_STATUS_LABEL[so.pipelineStatus] || so.pipelineStatus}</Badge>
             {so.customer?.isSubscriber && <Badge variant="outline">Subscriber</Badge>}
             {so.fulfillmentType === 'dropship' && <Badge variant="secondary" className="bg-purple-100 text-purple-700">Dropship</Badge>}
             {so.invoiceNumber && <Badge variant="secondary" className="font-mono">{so.invoiceNumber}</Badge>}
           </div>
-          <p className="text-muted-foreground text-sm mt-1">{so.customer?.displayName} · {so.orderDate && format(new Date(so.orderDate), 'dd MMM yyyy')}</p>
+          <p className="text-muted-foreground text-sm mt-1">{so.customer?.displayName} · order {so.orderDate && format(new Date(so.orderDate), 'dd MMM yyyy')}{so.dueDate ? ` · jatuh tempo ${format(new Date(so.dueDate), 'dd MMM yyyy')}` : ''}</p>
           {so.fulfillmentType === 'dropship' && so.linkedPurchaseOrder && (
             <Link href={`/dashboard/purchase-orders/${so.linkedPurchaseOrder.id}`} className="inline-flex items-center gap-1.5 mt-1.5 rounded-md border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 transition">
               <Truck className="w-3.5 h-3.5" /> PO Dropship: {so.linkedPurchaseOrder.poNumber}
@@ -121,83 +127,76 @@ export default function SODetailPage() {
             </Link>
           )}
         </div>
-        {canEdit && allowedNext.length > 0 && (
-          <div className="flex gap-2 flex-wrap">
-            {allowedNext.map(a => (
-              <Button key={a} size="sm" variant={a === 'Cancelled' ? 'destructive' : 'default'} data-testid={`so-status-btn-${a}`} onClick={() => openTransition(a)}>
-                {a === 'Cancelled' ? <XCircle className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}{a}
-              </Button>
-            ))}
-          </div>
-        )}
-        <div className="flex gap-2 flex-wrap">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              try {
-                const doc = generateSOPDF(so);
-                pdfPreview.show(doc, `SO-${so.soNumber}.pdf`, `SO ${so.soNumber}`);
-              } catch (e) {
-                console.error('PDF SO error:', e);
-                toast.error('Gagal membuat PDF SO: ' + (e.message || 'unknown'));
-              }
-            }}
-          >
-            <FileDown className="w-4 h-4 mr-1" /> PDF SO
-          </Button>
-          {(so.invoiceNumber || ['Shipped', 'Invoiced'].includes(so.pipelineStatus)) && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => { setPdfBasis(so.invoiceWeightBasis || 'shipped'); setPdfBasisOpen(true); }}
-            >
-              <FileDown className="w-4 h-4 mr-1" /> PDF Faktur (Customer)
+        <div className="flex gap-2 flex-wrap items-center">
+          {canEdit && allowedNext.filter(a => a !== 'Cancelled').map(a => (
+            <Button key={a} size="sm" data-testid={`so-status-btn-${a}`} onClick={() => openTransition(a)} className="bg-emerald-600 hover:bg-emerald-700">
+              <CheckCircle2 className="w-4 h-4 mr-1" />{ACTION_LABEL[a] || a}
             </Button>
-          )}
-          {so.markupEnabled && Number(so.cashbackAmount) > 0 && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-rose-300 text-rose-700 hover:bg-rose-50"
-              onClick={() => {
-                try {
-                  const doc = generateInvoicePDF(so, { variant: 'asli' });
-                  pdfPreview.show(doc, `Faktur-Asli-${so.invoiceNumber || so.soNumber}.pdf`, `Faktur Asli ${so.invoiceNumber || so.soNumber}`);
-                } catch (e) {
-                  console.error('PDF Asli error:', e);
-                  toast.error('Gagal membuat PDF Faktur Asli: ' + (e.message || 'unknown'));
-                }
-              }}
-            >
-              <FileDown className="w-4 h-4 mr-1" /> PDF Faktur Asli
-            </Button>
-          )}
+          ))}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan)"><MoreHorizontal className="w-4 h-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onSelect={() => {
+                try { const doc = generateSOPDF(so); pdfPreview.show(doc, `SO-${so.soNumber}.pdf`, `SO ${so.soNumber}`); }
+                catch (e) { console.error('PDF SO error:', e); toast.error('Gagal membuat PDF SO: ' + (e.message || 'unknown')); }
+              }}><FileDown className="w-4 h-4 mr-2" />Unduh PDF SO</DropdownMenuItem>
+              {(so.invoiceNumber || ['Shipped', 'Invoiced'].includes(so.pipelineStatus)) && (
+                <DropdownMenuItem onSelect={() => { setPdfBasis(so.invoiceWeightBasis || 'shipped'); setPdfBasisOpen(true); }}><FileDown className="w-4 h-4 mr-2" />Unduh PDF Faktur</DropdownMenuItem>
+              )}
+              {so.markupEnabled && Number(so.cashbackAmount) > 0 && (
+                <DropdownMenuItem onSelect={() => {
+                  try { const doc = generateInvoicePDF(so, { variant: 'asli' }); pdfPreview.show(doc, `Faktur-Asli-${so.invoiceNumber || so.soNumber}.pdf`, `Faktur Asli ${so.invoiceNumber || so.soNumber}`); }
+                  catch (e) { console.error('PDF Asli error:', e); toast.error('Gagal membuat PDF Faktur Asli: ' + (e.message || 'unknown')); }
+                }}><FileDown className="w-4 h-4 mr-2" />Unduh PDF Faktur Asli</DropdownMenuItem>
+              )}
+              {canEdit && allowedNext.includes('Cancelled') && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem data-testid="so-status-btn-Cancelled" onSelect={() => openTransition('Cancelled')} className="text-red-600 focus:text-red-700"><XCircle className="w-4 h-4 mr-2" />Batalkan SO…</DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
       <Card><CardContent className="pt-6">
         <div className="flex items-center justify-between gap-2 overflow-x-auto">
           {STEPS.map((step, idx) => (
-            <div key={step} className="flex-1 min-w-[80px]">
+            <div key={step} className="flex-1 min-w-0">
               <div className={`h-2 rounded-full ${idx <= currentStepIdx && so.pipelineStatus !== 'Cancelled' ? 'bg-emerald-500' : 'bg-slate-200'}`} />
-              <div className={`text-xs mt-2 ${idx === currentStepIdx ? 'font-bold text-emerald-700' : 'text-muted-foreground'}`}>{step}</div>
+              <div className={`text-[11px] sm:text-xs leading-tight mt-2 ${idx === currentStepIdx ? 'font-bold text-emerald-700' : 'text-muted-foreground'}`}>
+                <span className="sm:hidden">{STEP_SHORT[step]}</span><span className="hidden sm:inline">{SO_STATUS_LABEL[step]}</span>
+              </div>
             </div>
           ))}
         </div>
       </CardContent></Card>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <SumCard label="Total SO" value={`Rp ${Number(so.totalAmount).toLocaleString('id-ID')}`} sub={`Diskon Rp ${Number(so.discountTotal || 0).toLocaleString('id-ID')}`} />
-        <SumCard label="Sudah Dibayar" value={`Rp ${Number(so.paidAmount).toLocaleString('id-ID')}`} sub={`Status: ${so.paymentStatus}`} color="emerald" />
-        <SumCard label="Total Retur" value={`Rp ${Number(so.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${so.returns?.length || 0} retur`} color="amber" />
+      <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${so.canSeeProfit ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
         <SumCard
-          label={Number(so.totalShrinkageWeight || 0) < -0.001 ? 'Surplus (Kelebihan)' : 'Penyusutan'}
-          value={`${Math.abs(Number(so.totalShrinkageWeight || 0)).toFixed(2)} kg`}
-          sub={`Rp ${Math.abs(Number(so.totalShrinkageValue || 0)).toLocaleString('id-ID')} · ${so.receipts?.length || 0} penerimaan`}
+          label="Tagihan bersih"
+          value={rp(Number(so.totalAmount || 0) + Number(so.cashbackAmount || 0) - Number(so.totalReturns || 0))}
+          sub={Number(so.totalReturns || 0) > 0 ? `${rp(Number(so.totalAmount || 0) + Number(so.cashbackAmount || 0))} − retur ${rp(so.totalReturns)}` : `Diskon ${rp(so.discountTotal || 0)}`}
+        />
+        <SumCard label="Sudah dibayar" value={rp(so.paidAmount)} sub={PAY_LABEL[so.paymentStatus] || so.paymentStatus} color="emerald" />
+        <SumCard label="Sisa tagihan" value={rp(Math.max(0, Number(so.outstanding || 0)))} sub={so.dueDate ? `jatuh tempo ${format(new Date(so.dueDate), 'dd MMM yyyy')}` : (so.paymentTerm || '-')} color={so.outstanding > 0 && so.invoiceNumber ? 'red' : 'slate'} />
+        <SumCard
+          label={Number(so.totalShrinkageWeight || 0) < -0.001 ? 'Kelebihan berat' : 'Susut di pelanggan'}
+          value={`${Math.abs(Number(so.totalShrinkageWeight || 0)).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg`}
+          sub={`${rp(Math.abs(Number(so.totalShrinkageValue || 0)))} · ${so.receipts?.length || 0} penerimaan${so.returns?.length ? ` · ${so.returns.length} retur` : ''}`}
           color={Number(so.totalShrinkageWeight || 0) < -0.001 ? 'emerald' : (Number(so.totalShrinkageWeight || 0) > 0.001 ? 'amber' : 'slate')}
         />
-        <SumCard label="Outstanding" value={`Rp ${Number(so.outstanding || 0).toLocaleString('id-ID')}`} sub={so.paymentTerm || '-'} color={so.outstanding > 0 ? 'red' : 'slate'} />
+        {so.canSeeProfit && (
+          <SumCard
+            label={<span className="inline-flex items-center gap-1"><Lock className="w-3 h-3" />Laba kotor</span>}
+            value={rp(so.grossProfit)}
+            sub={`margin ${Number(so.grossMarginPct || 0).toLocaleString('id-ID')}% · Direktur & Akuntan${Number(so.cogsTotal || 0) === 0 ? ' · HPP belum ada' : ''}`}
+            color={Number(so.grossProfit || 0) >= 0 ? 'emerald' : 'red'}
+          />
+        )}
       </div>
 
       {so.fulfillmentType === 'dropship' && so.dropshipShipVsRecv && (
@@ -213,23 +212,26 @@ export default function SODetailPage() {
         </Card>
       )}
 
-      <CommissionCard so={so} canEdit={canEdit} onSaved={mutate} />
-
-      <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
+      <ExtrasSection so={so}>
+        <CommissionCard so={so} canEdit={canEdit} onSaved={mutate} />
+        <MarkupCard so={so} canEdit={canEdit} onSaved={mutate} />
+      </ExtrasSection>
 
       {so.markupEnabled && Number(so.cashbackAmount) > 0 && (
         <CashbackRefundCard so={so} canRefund={['admin', 'supervisor', 'direktur', 'akuntan'].includes(role)} onSaved={mutate} />
       )}
 
       <Tabs defaultValue="items">
-        <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
-          <TabsTrigger value="info"><Receipt className="w-4 h-4 mr-1" />Info</TabsTrigger>
-          <TabsTrigger value="items"><Package className="w-4 h-4 mr-1" />Items</TabsTrigger>
-          <TabsTrigger value="sj"><Truck className="w-4 h-4 mr-1" />Surat Jalan</TabsTrigger>
-          <TabsTrigger value="receipts"><PackageCheck className="w-4 h-4 mr-1" />Penerimaan</TabsTrigger>
-          <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payment</TabsTrigger>
-          <TabsTrigger value="returns"><RotateCcw className="w-4 h-4 mr-1" />Retur</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-1 px-1">
+          <TabsList className="inline-flex w-max min-w-full md:grid md:w-full md:grid-cols-6">
+            <TabsTrigger value="items"><Package className="w-4 h-4 mr-1" />Barang</TabsTrigger>
+            <TabsTrigger value="sj"><Truck className="w-4 h-4 mr-1" />Surat Jalan</TabsTrigger>
+            <TabsTrigger value="receipts"><PackageCheck className="w-4 h-4 mr-1" />Penerimaan</TabsTrigger>
+            <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Pembayaran</TabsTrigger>
+            <TabsTrigger value="returns"><RotateCcw className="w-4 h-4 mr-1" />Retur{so.returns?.length ? ` (${so.returns.length})` : ''}</TabsTrigger>
+            <TabsTrigger value="info"><Receipt className="w-4 h-4 mr-1" />Info</TabsTrigger>
+          </TabsList>
+        </div>
         <TabsContent value="info"><InfoTab so={so} canEdit={canEdit} onSaved={mutate} /></TabsContent>
         <TabsContent value="items"><ItemsTab so={so} onSaved={mutate} canEdit={canEdit} /></TabsContent>
         <TabsContent value="sj"><SjTab so={so} onSaved={mutate} canOperate={canOperate} pdfShow={pdfPreview.show} /></TabsContent>
@@ -326,11 +328,33 @@ export default function SODetailPage() {
 function SumCard({ label, value, sub, color = 'slate' }) {
   const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-slate-900' }[color] || '';
   return (
-    <Card><CardContent className="pt-6">
-      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
-      <div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{sub}</div>
+    <Card className="min-w-0"><CardContent className="p-3 sm:p-5">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className={`text-lg sm:text-2xl font-bold mt-1 tabular-nums whitespace-nowrap ${c}`}>{value}</div>
+      <div className="text-[11px] sm:text-xs text-muted-foreground mt-1">{sub}</div>
     </CardContent></Card>
+  );
+}
+
+// Komisi dropshipper & Faktur di-up jarang dipakai: dilipat jadi satu baris, terbuka otomatis bila aktif
+function ExtrasSection({ so, children }) {
+  const hasCommission = (so.commissions || []).length > 0;
+  const markup = !!so.markupEnabled;
+  const [open, setOpen] = useState(hasCommission || markup);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <Card>
+        <CollapsibleTrigger asChild>
+          <button type="button" className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left text-sm">
+            <span><b>Komisi &amp; Faktur di-up</b> <span className="text-muted-foreground">· Komisi: {hasCommission ? `${so.commissions.length} tercatat` : 'tidak ada'} · Faktur di-up: {markup ? 'aktif' : 'tidak aktif'}</span></span>
+            <span className="flex items-center gap-1 text-emerald-700 font-medium shrink-0">{open ? 'Tutup' : 'Atur'}<ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} /></span>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t p-3 space-y-3">{children}</div>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   );
 }
 

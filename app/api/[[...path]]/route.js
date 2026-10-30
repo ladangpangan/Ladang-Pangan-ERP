@@ -379,7 +379,7 @@ async function handleRoute(request, { params }) {
     // always available regardless of `only`.
     let only = null;
     if (isRead) {
-      if (route === '/sales-orders') only = new Set(['sales']);                 // reads sales_order + contacts(master)
+      if (route === '/sales-orders') only = new Set(['sales', 'potx']);         // reads sales_order + sales_returns(potx) + contacts(master)
       else if (route === '/purchase-orders') only = new Set(['potx']);          // reads purchase_order + contacts(master)
       else if (route === '/inventory/stocks') only = new Set(['inventory', 'sales']); // reads inventory_stock + Draft SO reservations
     }
@@ -869,6 +869,8 @@ async function handleRoute(request, { params }) {
       // ---- Sales Profit Report (Laporan Laba Penjualan) ----
       if (sub === 'sales-profit' && method === 'GET') {
         autoSync();
+        // HPP retur memakai Kartu Stok (RETURN_IN): segarkan dari Mongo (TTL 60 dtk)
+        if (Date.now() - (g.stockLedger || 0) > 60000) { try { await jmongo.ensureStockLedgerReady(raw); g.stockLedger = Date.now(); } catch { /* best-effort */ } }
         const { from, to } = parseRange(new URL(request.url));
         return json({ data: acct.salesProfitReport(raw, { from, to }) });
       }
@@ -3311,19 +3313,24 @@ async function handleRoute(request, { params }) {
       if (!po) return err('Not found', 404);
       const allowed = PO_FLOW[po.pipelineStatus] || [];
       if (!allowed.includes(target)) return err(`Transisi ${po.pipelineStatus} -> ${target} tidak diizinkan`);
-      db.update(s.purchaseOrder).set({ pipelineStatus: target, updatedAt: new Date() }).where(eq(s.purchaseOrder.id, id)).run();
+      const cancelling = target === 'Dibatalkan' || target === 'Cancelled';
+      const reason = cancelling ? String(body.reason || '').trim() : '';
+      const poUpd = { pipelineStatus: target, updatedAt: new Date() };
+      // Alasan pembatalan disimpan di catatan PO agar terlacak
+      if (reason) poUpd.notes = [po.notes, `Dibatalkan ${new Date().toLocaleDateString('id-ID')}: ${reason}`].filter(Boolean).join('\n');
+      db.update(s.purchaseOrder).set(poUpd).where(eq(s.purchaseOrder.id, id)).run();
       // Auto-create approval concern for PO Cancellation
-      if (target === 'Dibatalkan' || target === 'Cancelled') {
+      if (cancelling) {
         createApproval({
           concernType: 'po_cancel',
           entityType: 'PO',
           entityId: id,
           entityNumber: po.poNumber,
           title: `Pembatalan PO ${po.poNumber}`,
-          description: `Purchase Order dibatalkan dari status ${po.pipelineStatus}. Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}`,
+          description: `Purchase Order dibatalkan dari status ${po.pipelineStatus}. Total Rp ${Number(po.totalAmount || 0).toLocaleString('id-ID')}${reason ? ` · Alasan: ${reason}` : ''}`,
           priority: Number(po.totalAmount || 0) > 10_000_000 ? 'high' : 'normal',
           amount: Number(po.totalAmount || 0),
-          metadata: { previousStatus: po.pipelineStatus, poNumber: po.poNumber },
+          metadata: { previousStatus: po.pipelineStatus, poNumber: po.poNumber, reason: reason || null },
           createdBy: session.user.email,
         });
       }
@@ -3854,7 +3861,11 @@ async function handleRoute(request, { params }) {
       const custIds = [...new Set(rows.map(r => r.customerId).filter(Boolean))];
       const cMap = {};
       if (custIds.length) for (const c of db.select({ id: s.contacts.id, code: s.contacts.code, name: s.contacts.displayName, isSubscriber: s.contacts.isSubscriber }).from(s.contacts).where(inArray(s.contacts.id, custIds)).all()) cMap[c.id] = { code: c.code, name: c.name, isSubscriber: c.isSubscriber };
-      const enriched = rows.map(r => ({ ...r, customer: cMap[r.customerId] || null }));
+      // Retur potong invoice per SO (agar daftar bisa menampilkan total bersih retur)
+      const retMap = {};
+      for (const rr of db.select({ soId: s.salesReturns.salesOrderId, v: sql`coalesce(sum(${s.salesReturns.totalAmount}),0)` }).from(s.salesReturns)
+        .where(eq(s.salesReturns.resolution, 'potong_invoice')).groupBy(s.salesReturns.salesOrderId).all()) retMap[rr.soId] = Number(rr.v || 0);
+      const enriched = rows.map(r => ({ ...r, customer: cMap[r.customerId] || null, returnsAmount: retMap[r.id] || 0 }));
       return json({ data: enriched });
     }
 
@@ -5658,6 +5669,27 @@ async function handleRoute(request, { params }) {
     // =====================================================================
     // SALES REPORTS
     // =====================================================================
+    // GET /sales-reports/overview?from=YYYY-MM-DD&to=YYYY-MM-DD — Laporan Penjualan (satu periode untuk
+    // semua tab). Angka laba (HPP, ongkir, komisi, laba) hanya dikirim ke Direktur & Akuntan.
+    if (route === '/sales-reports/overview' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const url = new URL(request.url);
+      const day = (v, end) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) return null; const t = acct.toSec(v); return t == null ? null : t + (end ? 86399 : 0); };
+      const raw = getRawSqlite();
+      // Kartu Stok (retur kembali ke stok) dibaca untuk HPP retur: segarkan dari Mongo (TTL 60 dtk)
+      const gTs = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      if (Date.now() - (gTs.stockLedger || 0) > 60000) { try { await jmongo.ensureStockLedgerReady(raw); gTs.stockLedger = Date.now(); } catch { /* best-effort */ } }
+      const data = acct.salesOverview(raw, { from: day(url.searchParams.get('from'), false), to: day(url.searchParams.get('to'), true) });
+      const canSeeProfit = ['direktur', 'akuntan'].includes(session.user.role);
+      if (!canSeeProfit) {
+        const PROFIT = ['cogs', 'shipping', 'commission', 'grossProfit', 'netProfit', 'margin', 'netMargin', 'profitPerKg', 'hppMissing'];
+        const strip = (o) => { for (const k of PROFIT) delete o[k]; return o; };
+        strip(data.totals); data.byProduct.forEach(strip); data.byCustomer.forEach(strip); data.orders.forEach(strip);
+      }
+      return json({ data: { ...data, canSeeProfit } });
+    }
+
     if (route === '/sales-reports/daily' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;
       if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);

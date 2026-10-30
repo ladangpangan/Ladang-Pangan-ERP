@@ -99,7 +99,11 @@ export default function POListPage() {
     orderDate: r => r.orderDate, totalAmount: r => r.totalAmount,
     paymentStatus: r => r.paymentStatus, pipelineStatus: r => r.pipelineStatus,
   });
-  const monthTotal = mf.filtered.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
+  // Total tanpa PO yang dibatalkan; draf dipisah agar tidak dikira sudah dibeli
+  const activeRows = mf.filtered.filter(r => r.pipelineStatus !== 'Dibatalkan');
+  const monthTotal = activeRows.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
+  const draftTotal = mf.filtered.filter(r => r.pipelineStatus === 'Draft').reduce((s, r) => s + Number(r.totalAmount || 0), 0);
+  const cancelled = mf.filtered.filter(r => r.pipelineStatus === 'Dibatalkan');
 
   const doArchive = async (r) => {
     if (!confirm(view === 'archived' ? 'Pulihkan PO ini dari arsip?' : 'Arsipkan PO ini? Data akan disembunyikan dari daftar aktif.')) return;
@@ -158,7 +162,13 @@ export default function POListPage() {
           </div>
           <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
             <span className="text-muted-foreground">Periode <span className="font-medium text-foreground">{mf.label}</span></span>
-            <span><span className="font-semibold">{mf.filtered.length}</span> PO • Total <span className="font-semibold">Rp {monthTotal.toLocaleString('id-ID')}</span></span>
+            <span className="text-right">
+              <span className="font-semibold">{activeRows.length}</span> PO • Total <span className="font-semibold">Rp {monthTotal.toLocaleString('id-ID')}</span>
+              <span className="block text-xs text-muted-foreground">
+                {draftTotal > 0 && <>termasuk draf Rp {draftTotal.toLocaleString('id-ID')} · </>}
+                {cancelled.length > 0 ? <>{cancelled.length} PO batal (Rp {cancelled.reduce((s, r) => s + Number(r.totalAmount || 0), 0).toLocaleString('id-ID')}) tidak dihitung</> : 'tanpa PO batal'}
+              </span>
+            </span>
           </div>
         </CardHeader>
         <CardContent className="p-0">

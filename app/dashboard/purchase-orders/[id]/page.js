@@ -17,7 +17,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ArrowLeft, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2, TrendingDown, Pencil } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Loader2, Save, Truck, Receipt, CreditCard, RotateCcw, Calculator, Scale, ShoppingCart, CheckCircle2, XCircle, Bell, FileDown, Upload, FileText, Paperclip, Trash2, TrendingDown, Pencil, MoreHorizontal } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { STATUS_COLOR } from '../page';
@@ -27,6 +28,12 @@ import DangerZoneRollback from '@/components/danger-zone-rollback';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
+// Tombol maju berlabel tindakan (bukan nama status)
+const PO_ACTION_LABEL = {
+  'Menunggu Konfirmasi': 'Ajukan ke Supplier', 'Diproses': 'Tandai Diproses', 'Dikirim': 'Tandai Dikirim',
+  'Tanda Terima': 'Catat Tanda Terima', 'Selesai': 'Tandai Selesai',
+};
+const PAY_LABEL = { unpaid: 'Belum bayar', partial: 'Sebagian', paid: 'Lunas' };
 const PO_FLOW = {
   'Draft': ['Menunggu Konfirmasi', 'Dibatalkan'],
   'Menunggu Konfirmasi': ['Diproses', 'Dibatalkan'],
@@ -47,6 +54,7 @@ export default function PODetailPage() {
   const { data, mutate, isLoading } = useSWR(`/api/purchase-orders/${id}`, fetcher);
   const po = data?.data;
   const pdfPreview = usePdfPreview();
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   if (!po) return <div className="text-center py-20 text-muted-foreground">PO tidak ditemukan</div>;
@@ -54,18 +62,21 @@ export default function PODetailPage() {
   const currentStepIdx = STEPS.indexOf(po.pipelineStatus);
   const allowedNext = PO_FLOW[po.pipelineStatus] || [];
 
-  const transitionStatus = async (target) => {
-    if (!confirm(`Ubah status ke "${target}"?`)) return;
-    const res = await fetch(`/api/purchase-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: target }) });
+  const transitionStatus = async (target, reason) => {
+    if (target !== 'Dibatalkan' && !confirm(`${PO_ACTION_LABEL[target] || target}? Status PO menjadi "${target}".`)) return false;
+    const res = await fetch(`/api/purchase-orders/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: target, ...(reason ? { reason } : {}) }) });
     const j = await res.json();
-    if (res.ok) { toast.success('Status: ' + target); mutate(); } else toast.error(j.error);
+    if (res.ok) { toast.success('Status: ' + target); mutate(); return true; }
+    toast.error(j.error); return false;
   };
+  // Tagihan supplier baru ada setelah barang diterima (Tanda Terima/Selesai) atau sudah ada pembayaran
+  const billed = ['Tanda Terima', 'Selesai'].includes(po.pipelineStatus) || Number(po.paidAmount || 0) > 0;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link href="/dashboard/purchase-orders"><Button variant="ghost" size="icon"><ArrowLeft className="w-5 h-5" /></Button></Link>
-        <div className="flex-1">
+      <div className="flex items-start gap-3 flex-wrap">
+        <Link href="/dashboard/purchase-orders"><Button variant="ghost" size="icon" aria-label="Kembali ke daftar PO"><ArrowLeft className="w-5 h-5" /></Button></Link>
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight">{po.poNumber}</h1>
             {canEdit && <EditPoNumberButton po={po} onSaved={mutate} />}
@@ -83,46 +94,40 @@ export default function PODetailPage() {
             </Link>
           )}
         </div>
-        {canEdit && allowedNext.length > 0 && (
-          <div className="flex gap-2 flex-wrap">
-            {allowedNext.map(a => (
-              <Button key={a} size="sm" variant={a === 'Dibatalkan' ? 'destructive' : 'default'} onClick={() => transitionStatus(a)}>
-                {a === 'Dibatalkan' ? <XCircle className="w-4 h-4 mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}{a}
-              </Button>
-            ))}
-          </div>
-        )}
-        {po.isDropship && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              try {
-                const doc = generatePOPDF(po, { mode: 'po' });
-                pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, `PO ${po.poNumber}`);
-              } catch (e) {
-                toast.error('Gagal membuat PDF: ' + e.message);
-              }
-            }}
-          >
-            <FileDown className="w-4 h-4 mr-1" /> Cetak PO
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            try {
-              const doc = generatePOPDF(po, { mode: po.isDropship ? 'invoice' : 'po' });
-              pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, po.isDropship ? `Invoice Supplier ${po.invoiceNumber || po.poNumber}` : `PO ${po.poNumber}`);
-            } catch (e) {
-              toast.error('Gagal membuat PDF: ' + e.message);
-            }
-          }}
-        >
-          <FileDown className="w-4 h-4 mr-1" /> {po.isDropship ? 'PDF Invoice' : 'PDF PO'}
-        </Button>
+        <div className="flex gap-2 flex-wrap items-center">
+          {canEdit && allowedNext.filter(a => a !== 'Dibatalkan').map(a => (
+            <Button key={a} size="sm" onClick={() => transitionStatus(a)} className="bg-emerald-600 hover:bg-emerald-700">
+              {PO_ACTION_LABEL[a] || a}<ArrowRight className="w-4 h-4 ml-1" />
+            </Button>
+          ))}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan)"><MoreHorizontal className="w-4 h-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {po.isDropship && (
+                <DropdownMenuItem onSelect={() => {
+                  try { const doc = generatePOPDF(po, { mode: 'po' }); pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, `PO ${po.poNumber}`); }
+                  catch (e) { toast.error('Gagal membuat PDF: ' + e.message); }
+                }}><FileDown className="w-4 h-4 mr-2" />Unduh PDF PO</DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => {
+                try {
+                  const doc = generatePOPDF(po, { mode: po.isDropship ? 'invoice' : 'po' });
+                  pdfPreview.show(doc, `PO-${po.poNumber}.pdf`, po.isDropship ? `Invoice Supplier ${po.invoiceNumber || po.poNumber}` : `PO ${po.poNumber}`);
+                } catch (e) { toast.error('Gagal membuat PDF: ' + e.message); }
+              }}><FileDown className="w-4 h-4 mr-2" />{po.isDropship ? 'Unduh PDF Invoice' : 'Unduh PDF PO'}</DropdownMenuItem>
+              {canEdit && allowedNext.includes('Dibatalkan') && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setCancelOpen(true)} className="text-red-600 focus:text-red-700"><XCircle className="w-4 h-4 mr-2" />Batalkan PO…</DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
+      <CancelPoDialog open={cancelOpen} onOpenChange={setCancelOpen} poNumber={po.poNumber} onConfirm={async (reason) => { const ok = await transitionStatus('Dibatalkan', reason); if (ok) setCancelOpen(false); }} />
       {pdfPreview.element}
 
       {/* Pipeline visualization */}
@@ -140,9 +145,11 @@ export default function PODetailPage() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <SummaryCard label="Total PO" value={`Rp ${Number(po.totalAmount).toLocaleString('id-ID')}`} sub={(po.additionalCostBearer !== 'supplier' && (po.additionalCostPayMethod || 'utang') === 'utang' && Number(po.additionalCost) > 0) ? 'Termasuk ongkir (utang)' : 'Barang saja'} />
-        <SummaryCard label="Sudah Dibayar" value={`Rp ${Number(po.paidAmount).toLocaleString('id-ID')}`} sub={`Status: ${po.paymentStatus}`} color="emerald" />
+        <SummaryCard label="Sudah Dibayar" value={`Rp ${Number(po.paidAmount).toLocaleString('id-ID')}`} sub={PAY_LABEL[po.paymentStatus] || po.paymentStatus} color="emerald" />
         <SummaryCard label="Total Retur" value={`Rp ${Number(po.totalReturns || 0).toLocaleString('id-ID')}`} sub={`${po.returns?.length || 0} retur`} color="amber" />
-        <SummaryCard label="Outstanding" value={`Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')}`} sub={po.paymentTerm || '-'} color={po.outstanding > 0 ? 'red' : 'slate'} />
+        {billed || po.pipelineStatus === 'Dibatalkan'
+          ? <SummaryCard label="Sisa tagihan supplier" value={`Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')}`} sub={po.paymentTerm || '-'} color={po.outstanding > 0 ? 'red' : 'slate'} />
+          : <SummaryCard label="Tagihan supplier" value="Belum ditagih" sub={`perkiraan Rp ${Number(po.outstanding || 0).toLocaleString('id-ID')} · muncul setelah barang diterima`} color="slate" />}
       </div>
 
       {po.isDropship && po.dropshipShipVsRecv && (
@@ -935,4 +942,32 @@ function Stat({ label, value, highlight }) {
 
 function F({ label, children, className = '' }) {
   return <div className={`space-y-1.5 ${className}`}><Label className="text-xs">{label}</Label>{children}</div>;
+}
+
+// Pembatalan PO: wajib alasan, tidak sejajar dengan tombol utama
+function CancelPoDialog({ open, onOpenChange, poNumber, onConfirm }) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const ok = reason.trim().length >= 5;
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!busy) { onOpenChange(o); if (!o) setReason(''); } }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Batalkan {poNumber}?</DialogTitle>
+          <DialogDescription>PO tidak bisa dipakai lagi. Supplier tidak otomatis diberi tahu. Pembatalan tercatat di Persetujuan.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor="po-cancel-reason">Alasan pembatalan</Label>
+          <Textarea id="po-cancel-reason" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Contoh: supplier tidak sanggup kirim minggu ini" />
+          {!ok && reason.length > 0 && <p className="text-xs text-muted-foreground">Tulis alasan minimal 5 huruf.</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Jangan batalkan</Button>
+          <Button variant="destructive" disabled={!ok || busy} onClick={async () => { setBusy(true); try { await onConfirm(reason.trim()); setReason(''); } finally { setBusy(false); } }}>
+            {busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Batalkan PO
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
