@@ -89,6 +89,6 @@ export default function ProductionReports() {
 }
 
 function Stat({ label, value, color = 'slate' }) {
-  const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-slate-900' }[color];
-  return <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">{label}</div><div className={`text-lg font-bold ${c}`}>{value}</div></div>;
+  const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-foreground' }[color];
+  return <div className="p-3 rounded-xl bg-muted/60"><div className="text-xs text-muted-foreground">{label}</div><div className={`text-lg font-bold ${c}`}>{value}</div></div>;
 }

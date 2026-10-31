@@ -58,7 +58,7 @@ function RecapPayDialog({ recapId, supplier, accounts, open, onOpenChange, onDon
           <DialogDescription>Semua PO supplier ini di rekap akan tercatat lunas. Jurnal Kas/Bank dibuat otomatis.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <div className="rounded-lg border bg-slate-50 p-3 text-sm space-y-1">
+          <div className="rounded-xl bg-slate-50 p-3 text-sm space-y-1">
             <div className="flex items-center gap-2 font-medium"><Landmark className="w-4 h-4 text-muted-foreground" />Rekening tujuan</div>
             {supplier.bankAccount
               ? <div>{supplier.bankName || '-'} · <span className="font-mono">{supplier.bankAccount}</span> · a/n {supplier.bankHolder || supplier.name}</div>

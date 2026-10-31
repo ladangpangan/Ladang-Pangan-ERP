@@ -66,7 +66,7 @@ export default function WOListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><ClipboardList className="w-8 h-8 text-purple-600" /> Work Order</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ClipboardList className="w-8 h-8 text-purple-600" /> Work Order</h1>
           <p className="text-muted-foreground mt-1">Produksi Internal / Maklon dengan tracking rendemen per stage</p>
         </div>
         <div className="flex gap-2">

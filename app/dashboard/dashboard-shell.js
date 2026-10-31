@@ -6,7 +6,6 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { authClient } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
@@ -14,7 +13,7 @@ import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
   FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers,
-  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, Target, History
+  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, History
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -35,7 +34,6 @@ const NAV = [
     items: [
       { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
       { href: '/dashboard/contacts?type=Customer', label: 'Pelanggan', icon: Users, roles: MGMT },
-      { href: '/dashboard/leads', label: 'Prospek', icon: Target, roles: ALL, hideFor: ['akuntan'] },
     ],
   },
   {
@@ -111,13 +109,7 @@ function pageTitle(pathname) {
 }
 const NAV_PATHS = NAV.flatMap(n => n.items ? n.items.flatMap(i => i.children ? i.children.map(c => c.href) : [i.href.split('?')[0]]) : [n.href]);
 
-const ROLE_COLOR = {
-  admin: 'bg-red-100 text-red-700 border-red-200',
-  supervisor: 'bg-blue-100 text-blue-700 border-blue-200',
-  direktur: 'bg-purple-100 text-purple-700 border-purple-200',
-  operator: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  akuntan: 'bg-amber-100 text-amber-700 border-amber-200',
-};
+const ROLE_LABEL = { admin: 'Admin', supervisor: 'Supervisor', direktur: 'Direktur', operator: 'Operator', akuntan: 'Akuntan' };
 
 export default function DashboardShell({ user, children }) {
   const pathname = usePathname();
@@ -162,14 +154,14 @@ export default function DashboardShell({ user, children }) {
   // Akuntan memiliki akses setara Admin: cocokkan item yang mengizinkan 'admin'.
   const roleCan = (it) => !(it.hideFor || []).includes(role) && ((it.roles || []).includes(role) || (role === 'akuntan' && (it.roles || []).includes('admin')));
   const renderNav = () => (
-    <nav className="space-y-5">
+    <nav className="space-y-4">
       {NAV.map((item, i) => {
         if (item.section) {
           const visible = item.items.filter(roleCan);
           if (visible.length === 0) return null;
           return (
             <div key={i}>
-              <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1.5">{item.section}</div>
+              <div className="text-xs text-muted-foreground font-medium px-3 mb-1">{item.section}</div>
               <div className="space-y-0.5">
                 {visible.map(it => it.children
                   ? <NavGroup key={it.label} item={it} pathname={pathname} isActive={isActive} />
@@ -185,37 +177,34 @@ export default function DashboardShell({ user, children }) {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50/70">
+    <div className="min-h-screen bg-canvas">
       {/* Sidebar */}
       <aside className={cn(
-        'fixed inset-y-0 left-0 z-50 w-72 bg-sidebar border-r flex flex-col transition-transform lg:translate-x-0',
-        open ? 'translate-x-0' : '-translate-x-full'
-      )}>
-        <div className="flex items-center justify-between p-4 border-b">
+ 'fixed inset-y-0 left-0 z-50 w-64 bg-canvas flex flex-col transition-transform lg:translate-x-0',
+ open ? 'translate-x-0' : '-translate-x-full'
+ )}>
+        <div className="flex items-center justify-between px-5 pt-6 pb-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-primary-foreground shadow-sm">
-              <Wheat className="w-5 h-5" />
+            <div className="w-9 h-9 bg-primary rounded-[10px] flex items-center justify-center text-primary-foreground">
+              <Wheat className="w-[18px] h-[18px]" />
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">Ladang Pangan</div>
-              <div className="text-xs text-muted-foreground">PT Ladang Pangan Indonesia</div>
+              <div className="text-xs text-muted-foreground">ERP</div>
             </div>
           </div>
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(false)}><X className="w-5 h-5" /></Button>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 thin-scrollbar">{renderNav()}</div>
-        <div className="border-t p-3 space-y-3">
-          <div className="flex items-center gap-3 px-2">
-            <Avatar className="w-9 h-9"><AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">{initials}</AvatarFallback></Avatar>
+        <div className="flex-1 overflow-y-auto px-4 py-2 thin-scrollbar">{renderNav()}</div>
+        <div className="p-4">
+          <div className="flex items-center gap-3 rounded-2xl bg-card shadow-soft p-2.5">
+            <Avatar className="w-9 h-9"><AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">{initials}</AvatarFallback></Avatar>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm truncate">{user?.name}</div>
-              <div className="text-xs text-muted-foreground truncate">{user?.email}</div>
+              <div className="text-xs text-muted-foreground truncate">{ROLE_LABEL[role] || role}</div>
             </div>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" onClick={handleLogout} aria-label="Keluar" title="Keluar"><LogOut className="w-4 h-4" /></Button>
           </div>
-          <div className="px-2">
-            <Badge variant="outline" className={cn('text-[10px] uppercase', ROLE_COLOR[role])}>{role}</Badge>
-          </div>
-          <Button variant="outline" size="sm" className="w-full" onClick={handleLogout}><LogOut className="w-4 h-4 mr-2" />Keluar</Button>
         </div>
       </aside>
 
@@ -223,8 +212,8 @@ export default function DashboardShell({ user, children }) {
       {open && <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setOpen(false)} />}
 
       {/* Main */}
-      <div className="lg:pl-72">
-        <header className="sticky top-0 z-30 bg-background/80 backdrop-blur border-b h-16 flex items-center px-4 md:px-8 gap-3">
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-30 bg-canvas/85 backdrop-blur h-16 flex items-center px-4 md:px-8 gap-3">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(true)}><Menu className="w-5 h-5" /></Button>
           <div className="flex-1">
             <div className="text-sm font-medium text-foreground">{pageTitle(pathname)}</div>
@@ -232,7 +221,7 @@ export default function DashboardShell({ user, children }) {
           {['admin', 'supervisor', 'direktur', 'akuntan'].includes(role) && pathname !== '/dashboard/ai-assistant' && <FloatingAIAssistant />}
           <NotificationBell />
         </header>
-        <main className="p-4 md:p-8">{children}</main>
+        <main className="px-4 pb-8 pt-2 md:px-8 md:pb-10">{children}</main>
       </div>
 
     </div>
@@ -312,9 +301,9 @@ function NotificationBell() {
               key={n.id}
               onClick={() => openItem(n)}
               className={cn(
-                'w-full text-left p-3 border-b hover:bg-slate-50 flex gap-2',
-                !n.isRead && 'bg-emerald-50/40'
-              )}
+ 'w-full text-left p-3 border-b hover:bg-slate-50 flex gap-2',
+ !n.isRead && 'bg-emerald-50/40'
+ )}
             >
               <div className="mt-0.5">{iconFor(n)}</div>
               <div className="flex-1 min-w-0">
@@ -354,14 +343,14 @@ function NavGroup({ item, pathname, isActive }) {
   return (
     <div>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        className={cn('w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors', inside ? 'text-primary font-semibold' : 'text-foreground/70 hover:bg-muted')}>
+        className={cn('w-full flex items-center gap-3 px-3 py-2 rounded-[10px] text-sm transition-colors', inside ? 'text-primary font-semibold' : 'text-foreground/75 hover:bg-card/60')}>
         <Icon className="w-4 h-4" /><span>{item.label}</span>
         <ChevronRight className={cn('w-4 h-4 ml-auto transition-transform', open && 'rotate-90')} />
       </button>
       {open && (
-        <div className="ml-5 pl-2 border-l space-y-0.5 mt-0.5">
+        <div className="ml-5 pl-2 border-l border-foreground/10 space-y-0.5 mt-0.5">
           {item.children.map(c => (
-            <Link key={c.href} href={c.href} className={cn('block px-3 py-1.5 rounded-md text-sm transition-colors', isActive(c.href) ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground/70 hover:bg-muted')}>{c.label}</Link>
+            <Link key={c.href} href={c.href} className={cn('block px-3 py-1.5 rounded-md text-sm transition-colors', isActive(c.href) ? 'bg-card text-primary font-semibold shadow-sm' : 'text-foreground/75 hover:bg-card/60')}>{c.label}</Link>
           ))}
         </div>
       )}
@@ -375,15 +364,15 @@ function NavLink({ item, active }) {
     return (
       <div className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted-foreground cursor-not-allowed opacity-60">
         <Icon className="w-4 h-4" /><span>{item.label}</span>
-        <span className="ml-auto text-[10px] uppercase tracking-wide bg-slate-100 px-1.5 py-0.5 rounded">soon</span>
+        <span className="ml-auto text-[10px] bg-slate-100 px-1.5 py-0.5 rounded">soon</span>
       </div>
     );
   }
   return (
     <Link href={item.href} className={cn(
-      'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-      active ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground/70 hover:bg-muted'
-    )}>
+ 'flex items-center gap-3 px-3 py-2 rounded-[10px] text-sm transition-colors',
+ active ? 'bg-card text-primary font-semibold shadow-sm' : 'text-foreground/75 hover:bg-card/60'
+ )}>
       <Icon className="w-4 h-4" /><span>{item.label}</span>
       {active && <ChevronRight className="w-4 h-4 ml-auto" />}
     </Link>

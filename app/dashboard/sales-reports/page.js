@@ -82,7 +82,7 @@ export default function SalesReportsPage() {
         <div className="flex items-start gap-3 min-w-0">
           <Link href="/dashboard/sales-orders"><Button variant="ghost" size="icon" aria-label="Kembali ke Sales Order"><ArrowLeft className="w-5 h-5" /></Button></Link>
           <div className="min-w-0">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight flex items-center gap-2"><BarChart3 className="w-7 h-7 text-emerald-600" /> Laporan Penjualan</h1>
+            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><BarChart3 className="w-7 h-7 text-emerald-600" /> Laporan Penjualan</h1>
             <p className="text-muted-foreground text-sm mt-1">Penjualan = SO yang sudah dikirim atau difaktur, tanpa yang dibatalkan, bersih retur. Tanggal mengikuti tanggal faktur.</p>
           </div>
         </div>

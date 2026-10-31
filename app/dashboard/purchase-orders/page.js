@@ -126,7 +126,7 @@ export default function POListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <ShoppingCart className="w-8 h-8 text-blue-600" /> Purchase Order
           </h1>
           <p className="text-muted-foreground mt-1">Pembelian: Live Bird, Packaging, Bahan Baku, Produk Jadi, Operasional</p>

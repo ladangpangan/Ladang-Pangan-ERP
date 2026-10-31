@@ -60,7 +60,7 @@ export default function PurchaseReports() {
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                     {Object.entries(aging.data.data.buckets).map(([b, v]) => (
                       <div key={b} className={`p-3 rounded-lg border ${b === '90+' ? 'bg-red-50 border-red-200' : b === '61-90' ? 'bg-amber-50 border-amber-200' : 'bg-slate-50'}`}>
-                        <div className="text-xs uppercase text-muted-foreground">{b} hari</div>
+                        <div className="text-xs text-muted-foreground">{b} hari</div>
                         <div className="font-bold">Rp {Number(v).toLocaleString('id-ID')}</div>
                       </div>
                     ))}
@@ -91,9 +91,9 @@ export default function PurchaseReports() {
               {susut.isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> : susut.data?.data && (
                 <>
                   <div className="grid grid-cols-3 gap-3 mb-4">
-                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Total Susut</div><div className="text-2xl font-bold text-red-600">{fmtNum(susut.data.data.summary.totalSusut, 2)} kg</div></div>
-                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Nilai Susut</div><div className="text-2xl font-bold text-red-600">Rp {Number(susut.data.data.summary.totalValue).toLocaleString('id-ID')}</div></div>
-                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs text-muted-foreground uppercase">Kejadian</div><div className="text-2xl font-bold">{susut.data.data.summary.count}</div></div>
+                    <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground ">Total Susut</div><div className="text-2xl font-bold text-red-600">{fmtNum(susut.data.data.summary.totalSusut, 2)} kg</div></div>
+                    <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground ">Nilai Susut</div><div className="text-2xl font-bold text-red-600">Rp {Number(susut.data.data.summary.totalValue).toLocaleString('id-ID')}</div></div>
+                    <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground ">Kejadian</div><div className="text-2xl font-bold">{susut.data.data.summary.count}</div></div>
                   </div>
                   <Table><TableHeader><TableRow><TableHead>PO</TableHead><TableHead>Metode</TableHead><TableHead>Supplier</TableHead><TableHead>Produk</TableHead><TableHead className="text-right">Kandang</TableHead><TableHead className="text-right">RPH</TableHead><TableHead className="text-right">Susut</TableHead><TableHead className="text-right">Nilai</TableHead></TableRow></TableHeader>
                     <TableBody>

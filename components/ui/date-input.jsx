@@ -54,7 +54,7 @@ export const DateInput = React.forwardRef(function DateInput(
       <input
         ref={ref} id={id} type="text" inputMode="numeric" autoComplete="off"
         value={text} onChange={onType} onBlur={onBlur} disabled={disabled} placeholder={placeholder}
-        className="flex h-9 w-full rounded-md border border-input bg-transparent pl-3 pr-9 py-1 text-base shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm tabular-nums"
+        className="flex h-9 w-full rounded-lg border border-input bg-transparent pl-3 pr-9 py-1 text-base shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm tabular-nums"
         {...props}
       />
       <Popover open={open} onOpenChange={setOpen}>

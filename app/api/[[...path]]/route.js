@@ -8319,6 +8319,162 @@ async function handleRoute(request, { params }) {
       } });
     }
 
+    // GET /dashboard/home - Beranda per peran: "Perlu tindakan" + angka bulan ini + uang + stok.
+    // Utang/piutang memakai satu definisi untuk semua peran:
+    //   piutang = SO Difaktur yang belum lunas (total - bayar - retur); jatuh tempo = due_date, atau tgl faktur + termin.
+    //   utang sudah ditagih = PO Tanda Terima/Selesai belum lunas; akan ditagih = PO lain yang barangnya sudah ditally.
+    if (route === '/dashboard/home' && method === 'GET') {
+      const { session, error } = await requireAuth(); if (error) return error;
+      const role = session.user.role;
+      if (!requireRole(session, ['admin', 'supervisor', 'direktur', 'akuntan'])) return err('Forbidden', 403);
+      const raw = getRawSqlite();
+      const gTs = (globalThis.__hydrateTs = globalThis.__hydrateTs || {});
+      if (Date.now() - (gTs.stockLedger || 0) > 60000) { try { await jmongo.ensureStockLedgerReady(raw); gTs.stockLedger = Date.now(); } catch { /* best-effort */ } }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const DAY = 86400;
+      // Batas bulan & hari dalam WIB (UTC+7)
+      const wib = new Date(Date.now() + 7 * 3600e3);
+      const y = wib.getUTCFullYear(), m = wib.getUTCMonth();
+      const monthStart = Math.floor(Date.UTC(y, m, 1) / 1000) - 7 * 3600;
+      const prevStart = Math.floor(Date.UTC(y, m - 1, 1) / 1000) - 7 * 3600;
+      const todayStart = Math.floor(Date.UTC(y, m, wib.getUTCDate()) / 1000) - 7 * 3600;
+      const termDays = (t) => { const mt = /(\d+)/.exec(String(t || '')); return mt ? Number(mt[1]) : 0; };
+      const all = (q, ...a) => raw.prepare(q).all(...a);
+      const one = (q, ...a) => raw.prepare(q).get(...a) || {};
+      const canProfit = ['direktur', 'akuntan'].includes(role);
+
+      // ---- Bulan ini ----
+      const sales = acct.salesOverview(raw, { from: monthStart, to: nowSec }).totals;
+      const salesPrev = acct.salesOverview(raw, { from: prevStart, to: monthStart - 1 }).totals;
+      const buy = one(`SELECT COUNT(*) c, COALESCE(SUM(total_amount),0) t FROM purchase_order WHERE pipeline_status NOT IN ('Dibatalkan','Draft') AND order_date >= ?`, monthStart);
+      const buyKg = one(`SELECT COALESCE(SUM(i.received_weight),0) sj, COALESCE(SUM(i.tally_weight),0) tw,
+          COALESCE(SUM(CASE WHEN i.tally_weight > 0 THEN i.received_weight ELSE 0 END),0) sjt
+        FROM purchase_order_items i JOIN purchase_order p ON p.id = i.purchase_order_id
+        WHERE p.pipeline_status != 'Dibatalkan' AND p.order_date >= ?`, monthStart);
+      const susutKg = Math.max(0, Number(buyKg.sjt) - Number(buyKg.tw));
+      const month = {
+        revenue: sales.revenue, orders: sales.orders, weight: sales.weight,
+        revenuePrev: salesPrev.revenue,
+        ...(canProfit ? { grossProfit: sales.grossProfit, margin: sales.margin } : {}),
+        purchase: Number(buy.t), purchaseCount: Number(buy.c), purchaseKg: Number(buyKg.tw),
+        susutKg, susutPct: Number(buyKg.sjt) > 0 ? Math.round(susutKg / Number(buyKg.sjt) * 1000) / 10 : null,
+      };
+
+      // ---- Piutang ----
+      const arAging = { notDue: 0, d1_7: 0, d8_30: 0, d30p: 0 };
+      const arOverdue = [];
+      let arTotal = 0;
+      for (const so of all(`SELECT so.id, so.so_number, so.total_amount, so.paid_amount, so.invoice_date, so.due_date, so.payment_term, c.display_name cust,
+          (SELECT COALESCE(SUM(total_amount),0) FROM sales_returns r WHERE r.sales_order_id = so.id) ret
+        FROM sales_order so LEFT JOIN contacts c ON c.id = so.customer_id WHERE so.pipeline_status = 'Invoiced'`)) {
+        const out = Number(so.total_amount) - Number(so.paid_amount || 0) - Number(so.ret || 0);
+        if (out <= 0.5) continue;
+        arTotal += out;
+        const due = so.due_date || ((so.invoice_date || nowSec) + termDays(so.payment_term) * DAY);
+        const late = Math.floor((nowSec - due) / DAY);
+        if (late <= 0) arAging.notDue += out; else if (late <= 7) arAging.d1_7 += out; else if (late <= 30) arAging.d8_30 += out; else arAging.d30p += out;
+        if (late > 0) arOverdue.push({ id: so.id, number: so.so_number, customer: so.cust, amount: Math.round(out), daysLate: late });
+      }
+      arOverdue.sort((a, b) => b.daysLate - a.daysLate);
+
+      // ---- Utang ----
+      const apAging = { notDue: 0, d1_7: 0, d8_30: 0, d30p: 0 };
+      let apBilled = 0, apPending = 0;
+      const apDueSoon = [];
+      for (const po of all(`SELECT p.id, p.po_number, p.pipeline_status st, p.total_amount, p.paid_amount, p.invoice_date, p.order_date, p.due_date, p.payment_term, c.display_name sup,
+          (SELECT COALESCE(SUM(total_amount),0) FROM purchase_returns r WHERE r.purchase_order_id = p.id) ret,
+          (SELECT COALESCE(SUM(tally_weight),0) FROM purchase_order_items i WHERE i.purchase_order_id = p.id) tw
+        FROM purchase_order p LEFT JOIN contacts c ON c.id = p.supplier_id
+        WHERE p.pipeline_status NOT IN ('Dibatalkan','Draft') AND p.payment_status != 'paid'`)) {
+        const out = Number(po.total_amount) - Number(po.paid_amount || 0) - Number(po.ret || 0);
+        if (out <= 0.5) continue;
+        const billed = ['Tanda Terima', 'Selesai'].includes(po.st);
+        if (!billed) { if (Number(po.tw) > 0) apPending += out; continue; }
+        apBilled += out;
+        const due = po.due_date || ((po.invoice_date || po.order_date || nowSec) + termDays(po.payment_term) * DAY);
+        const late = Math.floor((nowSec - due) / DAY);
+        if (late <= 0) apAging.notDue += out; else if (late <= 7) apAging.d1_7 += out; else if (late <= 30) apAging.d8_30 += out; else apAging.d30p += out;
+        if (late > -7) apDueSoon.push({ id: po.id, number: po.po_number, supplier: po.sup, amount: Math.round(out), dueDate: due, daysLate: late });
+      }
+      apDueSoon.sort((a, b) => a.dueDate - b.dueDate);
+
+      // ---- Perlu tindakan ----
+      const actions = [];
+      const push = (a) => actions.push(a);
+      if (['direktur', 'supervisor'].includes(role)) {
+        const need = role === 'direktur' ? ['direktur', 'both'] : ['supervisor', 'both'];
+        const rows = all(`SELECT title, entity_number FROM approvals WHERE status = 'pending' AND required_role IN (${need.map(() => '?').join(',')}) ORDER BY created_at DESC`, ...need);
+        if (rows.length) push({ key: 'approvals', level: 'high', count: rows.length, title: `${rows.length} persetujuan menunggu`,
+          detail: rows.slice(0, 2).map(r => r.title).join(', ') + (rows.length > 2 ? `, dan ${rows.length - 2} lainnya` : ''), href: '/dashboard/approvals', cta: 'Periksa' });
+      }
+      if (['admin', 'supervisor'].includes(role)) {
+        const ops = all(`SELECT id, opname_number, total_delta_weight FROM stock_opname WHERE status = 'submitted' ORDER BY submitted_at`);
+        if (ops.length) push({ key: 'opname', level: 'high', count: ops.length, title: ops.length > 1 ? `${ops.length} opname menunggu persetujuan` : 'Opname menunggu persetujuan',
+          detail: ops.slice(0, 2).map(o => `${o.opname_number} (selisih ${Number(o.total_delta_weight).toLocaleString('id-ID', { maximumFractionDigits: 1 })} kg)`).join(', '), href: '/dashboard/inventory/opnames', cta: 'Setujui' });
+        const unalloc = all(`SELECT so.id, so.so_number, c.display_name cust,
+            (SELECT COALESCE(SUM(weight),0) FROM sales_order_items i WHERE i.sales_order_id = so.id) need,
+            (SELECT COALESCE(SUM(weight),0) FROM so_item_stocks k WHERE k.sales_order_id = so.id) got
+          FROM sales_order so LEFT JOIN contacts c ON c.id = so.customer_id
+          WHERE so.pipeline_status IN ('Draft','Confirmed') AND COALESCE(so.fulfillment_type,'') != 'dropship'`).filter(r => Number(r.got) + 0.01 < Number(r.need));
+        if (unalloc.length) push({ key: 'alloc', level: 'medium', count: unalloc.length, title: `${unalloc.length} SO belum dialokasi kode simpan`,
+          detail: unalloc.slice(0, 2).map(r => `${r.so_number}${r.cust ? ' ' + r.cust : ''}`).join(', '), href: unalloc.length === 1 ? `/dashboard/sales-orders/${unalloc[0].id}` : '/dashboard/sales-orders', cta: 'Alokasi' });
+        const packed = all(`SELECT so.id, so.so_number FROM sales_order so WHERE so.pipeline_status = 'Packed'
+          AND NOT EXISTS (SELECT 1 FROM surat_jalan j WHERE j.sales_order_id = so.id)`);
+        if (packed.length) push({ key: 'sj', level: 'medium', count: packed.length, title: `${packed.length} SO siap kirim, Surat Jalan belum dibuat`,
+          detail: packed.slice(0, 3).map(r => r.so_number).join(', '), href: packed.length === 1 ? `/dashboard/sales-orders/${packed[0].id}` : '/dashboard/sales-orders', cta: 'Buat Surat Jalan' });
+        const open = all(`SELECT t.id, t.created_by, t.created_at, p.po_number,
+            (SELECT COUNT(*) FROM tally_session_items i WHERE i.session_id = t.id) n,
+            (SELECT COALESCE(SUM(weight),0) FROM tally_session_items i WHERE i.session_id = t.id) w
+          FROM tally_session t LEFT JOIN purchase_order p ON p.id = t.reference_id AND t.reference_type = 'PO'
+          WHERE t.status = 'draft'`).filter(r => Number(r.n) > 0);
+        if (open.length) push({ key: 'tally', level: 'info', count: open.length, title: open.length > 1 ? `${open.length} tally masuk belum difinalisasi` : 'Tally masuk belum difinalisasi',
+          detail: open.slice(0, 2).map(r => `${r.po_number || 'Manual'} · ${r.n} karung · ${Number(r.w).toLocaleString('id-ID', { maximumFractionDigits: 1 })} kg`).join(', '), href: '/dashboard/tally-history', cta: 'Lihat' });
+      }
+      if (['direktur', 'akuntan'].includes(role)) {
+        const refunds = all(`SELECT p.id, p.po_number, p.refund_amount, c.display_name sup FROM purchase_order p LEFT JOIN contacts c ON c.id = p.supplier_id WHERE p.refund_status = 'pending'`);
+        const tot = refunds.reduce((a, r) => a + Number(r.refund_amount || 0), 0);
+        if (refunds.length) push({ key: 'refund', level: 'medium', count: refunds.length, amount: Math.round(tot),
+          title: role === 'akuntan' ? 'Refund supplier harus ditagih' : 'Refund supplier belum diterima',
+          detail: refunds.slice(0, 2).map(r => `${r.po_number}${r.sup ? ' · ' + r.sup : ''}`).join(', '), href: refunds.length === 1 ? `/dashboard/purchase-orders/${refunds[0].id}` : '/dashboard/purchase-orders', cta: role === 'akuntan' ? 'Catat' : 'Lihat' });
+        if (arOverdue.length) {
+          const custs = new Set(arOverdue.map(r => r.customer)).size;
+          push({ key: 'arOverdue', level: role === 'akuntan' ? 'high' : 'medium', count: arOverdue.length, amount: Math.round(arOverdue.reduce((a, r) => a + r.amount, 0)),
+            title: 'Piutang lewat jatuh tempo', detail: `${custs} pelanggan · paling lama ${arOverdue[0].daysLate} hari${arOverdue[0].customer ? ' (' + arOverdue[0].customer + ')' : ''}`,
+            href: '/dashboard/finance', cta: 'Tagih' });
+        }
+      }
+      if (role === 'akuntan') {
+        const soon = apDueSoon.filter(r => r.daysLate > -7);
+        if (soon.length) push({ key: 'apDue', level: 'medium', count: soon.length, amount: soon.reduce((a, r) => a + r.amount, 0), title: 'Utang jatuh tempo minggu ini',
+          detail: soon.slice(0, 2).map(r => r.number).join(', '), href: '/dashboard/finance', cta: 'Lihat' });
+      }
+      if (['admin', 'supervisor'].includes(role)) {
+        const ne = one(`SELECT COUNT(*) c, COALESCE(SUM(weight),0) w FROM inventory_stock WHERE status = 'active' AND archived_at IS NULL AND expired_date IS NOT NULL AND expired_date < ?`, nowSec + 7 * DAY);
+        if (Number(ne.c) > 0) push({ key: 'expiry', level: 'info', count: Number(ne.c), title: 'Stok hampir kadaluarsa',
+          detail: `${ne.c} karung · ${Number(ne.w).toLocaleString('id-ID', { maximumFractionDigits: 1 })} kg · ≤7 hari, jual dulu (FEFO)`, href: '/dashboard/inventory-reports', cta: 'Lihat' });
+      }
+      const rank = { high: 0, medium: 1, info: 2 };
+      actions.sort((a, b) => rank[a.level] - rank[b.level]);
+
+      // ---- Stok ----
+      const byProduct = all(`SELECT p.name, COUNT(*) c, COALESCE(SUM(s.weight),0) w, COALESCE(SUM(s.weight * s.hpp_per_kg),0) v
+        FROM inventory_stock s JOIN products p ON p.id = s.product_id WHERE s.status = 'active' AND s.archived_at IS NULL
+        GROUP BY s.product_id ORDER BY w DESC`).map(r => ({ name: r.name, bags: Number(r.c), weight: Number(r.w), value: Number(r.v) }));
+      const nearExp = one(`SELECT COUNT(*) c, COALESCE(SUM(weight),0) w FROM inventory_stock WHERE status = 'active' AND archived_at IS NULL AND expired_date IS NOT NULL AND expired_date < ?`, nowSec + 7 * DAY);
+      const stock = { byProduct, bags: byProduct.reduce((a, r) => a + r.bags, 0), weight: byProduct.reduce((a, r) => a + r.weight, 0),
+        value: byProduct.reduce((a, r) => a + r.value, 0), nearExpiryBags: Number(nearExp.c), nearExpiryKg: Number(nearExp.w) };
+      const tx = (type) => one(`SELECT COALESCE(SUM(total_weight),0) w, COALESCE(SUM(total_quantity),0) q FROM inventory_transaction WHERE transaction_type = ? AND transaction_date >= ?`, type, todayStart);
+      const tin = tx('IN'), tout = tx('OUT');
+      const today = { inKg: Number(tin.w), inBags: Number(tin.q), outKg: Number(tout.w), outBags: Number(tout.q) };
+      const woMonth = Number(one(`SELECT COUNT(*) c FROM work_order WHERE created_at >= ?`, monthStart).c || 0);
+
+      return json({ data: {
+        role, month, actions, stock, today, woMonth,
+        money: { arTotal: Math.round(arTotal), arOverdue: Math.round(arOverdue.reduce((a, r) => a + r.amount, 0)), apBilled: Math.round(apBilled), apPending: Math.round(apPending) },
+        aging: role === 'akuntan' || role === 'direktur' ? { ar: arAging, ap: apAging } : undefined,
+      } });
+    }
+
     // GET /dashboard/supplier-shrinkage - rekap susut (Surat Jalan vs Tally) per supplier
     if (route === '/dashboard/supplier-shrinkage' && method === 'GET') {
       const { session, error } = await requireAuth(); if (error) return error;

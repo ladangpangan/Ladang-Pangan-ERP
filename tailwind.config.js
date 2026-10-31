@@ -18,9 +18,13 @@ module.exports = {
       },
       extend: {
         fontFamily: {
-          sans: ['Roboto', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Helvetica Neue', 'sans-serif'],
+          sans: ['Plus Jakarta Sans', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Helvetica Neue', 'sans-serif'],
+        },
+        boxShadow: {
+          soft: '0 1px 2px rgba(16,35,27,.05), 0 6px 20px rgba(16,35,27,.04)',
         },
         colors: {
+          canvas: 'hsl(var(--canvas))',
           border: 'hsl(var(--border))',
           input: 'hsl(var(--input))',
           ring: 'hsl(var(--ring))',

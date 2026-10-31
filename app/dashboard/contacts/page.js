@@ -165,7 +165,7 @@ export default function ContactsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Users className="w-8 h-8 text-emerald-600" /> {type === 'Customer' ? 'Pelanggan' : type === 'Supplier' ? 'Supplier' : 'Kontak'}
           </h1>
           <p className="text-muted-foreground mt-1">
@@ -359,11 +359,11 @@ function ContactDetailSheet({ id, onClose }) {
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
-                      <div className="text-emerald-700 text-xs font-semibold uppercase tracking-wide">Total Penjualan</div>
+                      <div className="text-emerald-700 text-xs font-semibold ">Total Penjualan</div>
                       <div className="text-lg font-bold mt-1">Rp {Number(d.summary.totalSalesAmount).toLocaleString('id-ID')}</div>
                     </div>
                     <div className="p-3 rounded-lg bg-blue-50 border border-blue-100">
-                      <div className="text-blue-700 text-xs font-semibold uppercase tracking-wide">Total Pembelian</div>
+                      <div className="text-blue-700 text-xs font-semibold ">Total Pembelian</div>
                       <div className="text-lg font-bold mt-1">Rp {Number(d.summary.totalPurchaseAmount).toLocaleString('id-ID')}</div>
                     </div>
                   </div>
@@ -414,15 +414,15 @@ function CashbackHistoryList({ items, summary }) {
       </div>
       <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
         <div className="p-2 rounded-lg bg-rose-50 border border-rose-100">
-          <div className="text-rose-700 text-[10px] font-semibold uppercase tracking-wide">Total Cashback</div>
+          <div className="text-rose-700 text-[10px] font-semibold ">Total Cashback</div>
           <div className="font-bold mt-0.5">{rp(summary?.totalCashback)}</div>
         </div>
         <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100">
-          <div className="text-emerald-700 text-[10px] font-semibold uppercase tracking-wide">Sudah Dikembalikan</div>
+          <div className="text-emerald-700 text-[10px] font-semibold ">Sudah Dikembalikan</div>
           <div className="font-bold mt-0.5">{rp(summary?.totalCashbackRefunded)}</div>
         </div>
         <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
-          <div className="text-amber-700 text-[10px] font-semibold uppercase tracking-wide">Belum</div>
+          <div className="text-amber-700 text-[10px] font-semibold ">Belum</div>
           <div className="font-bold mt-0.5">{rp(summary?.totalCashbackPending)}</div>
         </div>
       </div>
@@ -509,8 +509,8 @@ function DocumentsTab({ contactId, canManage }) {
       <p className="text-sm text-muted-foreground">Dokumen legal kontak (opsional): NPWP, Akta, SK Perusahaan, atau KTP. Maks 10MB per file.</p>
 
       {canManage && (
-        <div className="p-3 rounded-lg border bg-slate-50 space-y-3">
-          <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Unggah Dokumen</div>
+        <div className="p-3 rounded-xl bg-slate-50 space-y-3">
+          <div className="text-xs text-muted-foreground font-semibold">Unggah Dokumen</div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div>
               <Label className="text-xs">Jenis Dokumen</Label>
@@ -950,7 +950,7 @@ function CommissionTab({ contactId, contact, canManage }) {
 function InfoGroup({ title, children }) {
   return (
     <div>
-      <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold mb-2">{title}</div>
+      <div className="text-xs text-muted-foreground font-semibold mb-2">{title}</div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 p-3 rounded-lg bg-slate-50 border">{children}</div>
     </div>
   );
@@ -965,11 +965,11 @@ function InfoRow({ label, value }) {
 }
 function StatCard({ label, value, icon: Icon, color }) {
   return (
-    <div className="p-3 rounded-lg border bg-white">
-      <div className={`w-8 h-8 rounded-md bg-gradient-to-br ${color} flex items-center justify-center text-white mb-2`}>
+    <div className="p-3 rounded-xl bg-muted/60">
+      <div className="w-8 h-8 rounded-[10px] bg-primary/10 text-primary flex items-center justify-center mb-2">
         <Icon className="w-4 h-4" />
       </div>
-      <div className="text-2xl font-bold">{value}</div>
+      <div className="text-xl font-bold">{value}</div>
       <div className="text-xs text-muted-foreground">{label}</div>
     </div>
   );
@@ -1076,8 +1076,8 @@ function ContactDialog({ form, setForm, onSave, saving, editing }) {
           </>
         )}
         {(cats.includes('Agen') || cats.includes('Dropshipper')) && (
-          <div className="sm:col-span-2 p-3 rounded-lg border bg-slate-50 space-y-3">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Pengaturan Peran</div>
+          <div className="sm:col-span-2 p-3 rounded-xl bg-slate-50 space-y-3">
+            <div className="text-xs text-muted-foreground font-semibold">Pengaturan Peran</div>
             {cats.includes('Agen') && (
               <div>
                 <Label className="text-xs">Diskon Khusus Agen (%)</Label>
