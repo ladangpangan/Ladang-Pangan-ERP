@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -23,7 +24,7 @@ export default function InventoryDetailPage() {
         <Link href="/dashboard/inventory"><Button variant="ghost" size="icon"><ArrowLeft className="w-5 h-5" /></Button></Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold tracking-tight font-mono">{stk.kodeSimpan}</h1>
-          <p className="text-muted-foreground text-sm mt-1">{stk.product?.name} · {Number(stk.weight).toFixed(2)} kg · {stk.quantity} {stk.product?.unit}</p>
+          <p className="text-muted-foreground text-sm mt-1">{stk.product?.name} · {fmtNum(stk.weight, 2)} kg · {stk.quantity} {stk.product?.unit}</p>
         </div>
         <Badge className={stk.status === 'active' ? 'bg-emerald-100 text-emerald-700' : stk.status === 'damaged' ? 'bg-red-100 text-red-700' : stk.status === 'opened' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}>{stk.status}</Badge>
         <Badge variant="outline">{stk.packagingType}</Badge>
@@ -35,7 +36,7 @@ export default function InventoryDetailPage() {
           <CardContent className="space-y-2 text-sm">
             <Row label="Produk" value={<><b>{stk.product?.name}</b><div className="text-xs text-muted-foreground font-mono">{stk.product?.sku}</div></>} />
             <Row label="Kategori" value={stk.product?.category} />
-            <Row label="Berat" value={`${Number(stk.weight).toFixed(2)} kg`} />
+            <Row label="Berat" value={`${fmtNum(stk.weight, 2)} kg`} />
             <Row label="Quantity" value={`${stk.quantity} ${stk.product?.unit}`} />
             <Row label="Expired Date" value={stk.expiredDate ? format(new Date(stk.expiredDate), 'dd MMM yyyy') : '-'} />
             <Row label="Kode Simpan" value={<span className="font-mono font-bold text-emerald-700">{stk.kodeSimpan}</span>} />
@@ -88,7 +89,7 @@ export default function InventoryDetailPage() {
                 {stk.children.map(c => (
                   <Link key={c.id} href={`/dashboard/inventory/${c.id}`} className="p-2 border rounded hover:bg-slate-50 text-sm">
                     <div className="font-mono font-bold">{c.kodeSimpan}</div>
-                    <div className="text-xs text-muted-foreground">{Number(c.weight).toFixed(2)} kg · {c.status}</div>
+                    <div className="text-xs text-muted-foreground">{fmtNum(c.weight, 2)} kg · {c.status}</div>
                   </Link>
                 ))}
               </div>

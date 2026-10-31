@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory, TrendingDown, ChevronRight } from 'lucide-react';
+import { fmtNum } from '@/lib/format';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -27,17 +28,17 @@ export default function DashboardHome() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-1">Ringkasan operasional PT Ladang Pangan Indonesia — update otomatis 30 detik</p>
+        <h1 className="text-3xl font-bold tracking-tight">Beranda</h1>
+        <p className="text-muted-foreground mt-1">Ringkasan operasional PT Ladang Pangan Indonesia — diperbarui otomatis tiap 30 detik</p>
       </div>
 
       {!s ? <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin inline" /></div> : (
         <>
           {/* Top KPIs */}
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <KPI icon={Factory} color="from-purple-500 to-purple-600" label="Produksi Hari Ini" value={`${s.todayProduction.count} WO`} sub={`${Number(s.todayProduction.rendemenWeight).toFixed(1)} kg · Efisiensi ${s.todayProduction.efficiency.toFixed(1)}%`} href="/dashboard/work-orders" />
+            <KPI icon={Factory} color="from-purple-500 to-purple-600" label="Produksi Hari Ini" value={`${s.todayProduction.count} WO`} sub={`${fmtNum(s.todayProduction.rendemenWeight, 1)} kg · Efisiensi ${fmtNum(s.todayProduction.efficiency, 1)}%`} href="/dashboard/work-orders" />
             <KPI icon={Wallet} color="from-blue-500 to-blue-600" label="Piutang (AR)" value={`Rp ${Number(s.finance.totalAR).toLocaleString('id-ID')}`} sub={`Utang: Rp ${Number(s.finance.totalAP).toLocaleString('id-ID')}`} href="/dashboard/sales-reports" />
-            <KPI icon={Package} color="from-cyan-500 to-cyan-600" label="Nilai Inventory" value={`Rp ${Number(s.inventoryValue).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} sub={`Aktif dalam stok`} href="/dashboard/inventory" />
+            <KPI icon={Package} color="from-cyan-500 to-cyan-600" label="Nilai Stok" value={`Rp ${Number(s.inventoryValue).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} sub="Karung tersedia di gudang" href="/dashboard/inventory" />
           </div>
 
           {/* Active WO + Alerts */}
@@ -61,7 +62,7 @@ export default function DashboardHome() {
               <CardContent className="space-y-2">
                 <AlertRow color="amber" label="Stok mendekati expired (≤7 hari)" value={s.alerts.nearExpired} href="/dashboard/inventory-reports" />
                 <AlertRow color="red" label="Stok sudah expired" value={s.alerts.expired} href="/dashboard/inventory-reports" />
-                <AlertRow color="slate" label="Rusak / Susut" value={`${s.alerts.damaged.count} rows · ${Number(s.alerts.damaged.weight).toFixed(2)} kg`} href="/dashboard/inventory-reports" />
+                <AlertRow color="slate" label="Rusak / Susut" value={`${s.alerts.damaged.count} karung · ${fmtNum(s.alerts.damaged.weight, 2)} kg`} href="/dashboard/inventory-reports" />
               </CardContent>
             </Card>
           </div>
@@ -133,7 +134,7 @@ export default function DashboardHome() {
               <Link href="/dashboard/sales-reports" className="p-4 border rounded-lg hover:bg-slate-50"><TrendingUp className="w-5 h-5 text-emerald-600 mb-2" /><div className="font-semibold">Penjualan</div><div className="text-xs text-muted-foreground">SO, per customer/produk, AR</div></Link>
               <Link href="/dashboard/purchase-reports" className="p-4 border rounded-lg hover:bg-slate-50"><ShoppingCart className="w-5 h-5 text-blue-600 mb-2" /><div className="font-semibold">Pembelian</div><div className="text-xs text-muted-foreground">PO, per supplier, AP, susut</div></Link>
               <Link href="/dashboard/production-reports" className="p-4 border rounded-lg hover:bg-slate-50"><ClipboardList className="w-5 h-5 text-purple-600 mb-2" /><div className="font-semibold">Produksi</div><div className="text-xs text-muted-foreground">Batch, rendemen, HPP, efisiensi</div></Link>
-              <Link href="/dashboard/inventory-reports" className="p-4 border rounded-lg hover:bg-slate-50"><Boxes className="w-5 h-5 text-cyan-600 mb-2" /><div className="font-semibold">Inventory</div><div className="text-xs text-muted-foreground">Per CS/produk, expired, rusak</div></Link>
+              <Link href="/dashboard/inventory-reports" className="p-4 border rounded-lg hover:bg-slate-50"><Boxes className="w-5 h-5 text-cyan-600 mb-2" /><div className="font-semibold">Stok</div><div className="text-xs text-muted-foreground">Per gudang/produk, kadaluarsa, rusak</div></Link>
             </CardContent>
           </Card>
         </>

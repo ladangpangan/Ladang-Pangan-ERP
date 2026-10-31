@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Pencil, Trash2, Warehouse, MapPin, Loader2, Snowflake, Archive, ArchiveRestore } from 'lucide-react';
 import { ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -69,11 +70,11 @@ export default function ColdStoragePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Warehouse className="w-8 h-8 text-emerald-600" /> Cold Storage & Zones</h1>
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Warehouse className="w-8 h-8 text-emerald-600" /> Gudang & Zona</h1>
           <p className="text-muted-foreground mt-1">Kelola gudang beku dan zona penyimpanan untuk stok</p>
         </div>
         <Dialog open={csOpen} onOpenChange={setCsOpen}>
-          <DialogTrigger asChild><Button onClick={openCreateCs}><Plus className="w-4 h-4 mr-2" />Tambah Cold Storage</Button></DialogTrigger>
+          <DialogTrigger asChild><Button onClick={openCreateCs}><Plus className="w-4 h-4 mr-2" />Tambah Gudang</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>{csEditing ? 'Edit Cold Storage' : 'Tambah Cold Storage'}</DialogTitle>
@@ -88,7 +89,7 @@ export default function ColdStoragePage() {
               <F label="Status">
                 <Select value={csForm.status} onValueChange={v => setCsForm({ ...csForm, status: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+                  <SelectContent><SelectItem value="active">Aktif</SelectItem><SelectItem value="inactive">Nonaktif</SelectItem></SelectContent>
                 </Select>
               </F>
               <F label="Catatan" className="col-span-2"><Textarea value={csForm.notes || ''} onChange={e => setCsForm({ ...csForm, notes: e.target.value })} rows={2} /></F>
@@ -113,7 +114,7 @@ export default function ColdStoragePage() {
 
       <div className="grid lg:grid-cols-3 gap-4">
         {isLoading && <div className="col-span-3 text-center py-12"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
-        {!isLoading && rows.length === 0 && <div className="col-span-3 text-center py-12 text-muted-foreground">Belum ada cold storage</div>}
+        {!isLoading && rows.length === 0 && <div className="col-span-3"><EmptyState icon={Warehouse} title="Belum ada gudang" hint="Tambahkan gudang/cold storage dulu, lalu buat zona penyimpanannya." action={{ label: 'Tambah Gudang', onClick: openCreateCs }} /></div>}
         {rows.map(cs => (
           <Card key={cs.id} className={`cursor-pointer transition-all ${selected?.id === cs.id ? 'ring-2 ring-emerald-500' : 'hover:shadow-md'}`} onClick={() => setSelected(cs)}>
             <CardHeader className="pb-3">
@@ -141,7 +142,7 @@ export default function ColdStoragePage() {
               {cs.temperatureRange && <div className="text-muted-foreground">🌡️ {cs.temperatureRange}</div>}
               <div className="flex items-center justify-between pt-2">
                 <span className="text-muted-foreground">Kapasitas</span>
-                <span className="font-semibold">{Number(cs.capacityKg).toLocaleString('id-ID')} kg</span>
+                <span className="font-semibold">{Number(cs.capacityKg) > 0 ? `${Number(cs.capacityKg).toLocaleString('id-ID')} kg` : <span className="text-muted-foreground font-normal">Belum diisi</span>}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Zona</span>
@@ -212,7 +213,7 @@ function ZonesSection({ coldStorage, onRefresh }) {
                 <F label="Status">
                   <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+                    <SelectContent><SelectItem value="active">Aktif</SelectItem><SelectItem value="inactive">Nonaktif</SelectItem></SelectContent>
                   </Select>
                 </F>
               </div>

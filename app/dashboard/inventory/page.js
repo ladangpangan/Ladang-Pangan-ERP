@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
@@ -21,10 +22,12 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { pkgLabel } from '@/lib/constants';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
+import { DateInput } from '@/components/ui/date-input';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
-const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const rupiah = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
 const HppInfo = ({ r }) => (
   Number(r.hppPerKg) > 0 ? (
     <div className="font-sans font-normal text-[10px] text-muted-foreground mt-0.5 leading-tight">
@@ -77,7 +80,7 @@ export default function InventoryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Boxes className="w-8 h-8 text-cyan-600" /> Inventory</h1>
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Boxes className="w-8 h-8 text-cyan-600" /> Stok</h1>
           <p className="text-muted-foreground mt-1">Stok cold storage dengan FIFO/FEFO, kode simpan tracking, traceability ke PO/WO</p>
         </div>
         <div className="flex gap-2">
@@ -87,11 +90,11 @@ export default function InventoryPage() {
 
       {/* Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <Stat label="Total Rows" value={summary.totalRows || 0} />
+        <Stat label="Jumlah karung" value={summary.totalRows || 0} />
         <Stat label="Total Berat" value={`${Number(summary.totalWeight || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg`} color="emerald" />
         <Stat label="Nilai Stok (HPP)" value={rupiah(summary.totalValue || 0)} color="emerald" />
-        <Stat label="Near Expiry (≤7d)" value={summary.nearExpiry || 0} color={summary.nearExpiry > 0 ? 'amber' : 'slate'} />
-        <Stat label="Expired" value={summary.expired || 0} color={summary.expired > 0 ? 'red' : 'slate'} />
+        <Stat label="Hampir kadaluarsa (≤7 hari)" value={summary.nearExpiry || 0} color={summary.nearExpiry > 0 ? 'amber' : 'slate'} />
+        <Stat label="Sudah kadaluarsa" value={summary.expired || 0} color={summary.expired > 0 ? 'red' : 'slate'} />
       </div>
 
       <Card>
@@ -115,7 +118,7 @@ export default function InventoryPage() {
             </Select>
             <Select value={filter.status} onValueChange={v => setFilter({ ...filter, status: v })}>
               <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="opened">Opened</SelectItem><SelectItem value="used">Used</SelectItem><SelectItem value="damaged">Damaged</SelectItem><SelectItem value="all">Semua</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="active">Tersedia</SelectItem><SelectItem value="opened">Dibuka</SelectItem><SelectItem value="used">Terpakai</SelectItem><SelectItem value="damaged">Rusak</SelectItem><SelectItem value="all">Semua</SelectItem></SelectContent>
             </Select>
             <div className="flex gap-1 border rounded-md p-1">
               <Button
@@ -151,7 +154,7 @@ export default function InventoryPage() {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading && <div className="p-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>}
-          {!isLoading && rows.length === 0 && <div className="p-8 text-center text-muted-foreground">Belum ada stock</div>}
+          {!isLoading && rows.length === 0 && <EmptyState icon={Boxes} title="Belum ada stok" hint="Stok bertambah saat barang masuk dicatat lewat Tally App (Barang Masuk) dari Purchase Order, atau dari hasil Work Order." action={{ label: 'Lihat Purchase Order', href: '/dashboard/purchase-orders' }} />}
           {!isLoading && rows.length > 0 && viewMode === 'grouped' && (
             <GroupedView rows={rows} selected={selected} toggle={toggle} canOperate={canOperate} canManage={canManage} products={prods?.data || []} mutate={mutate} expandedGroups={expandedGroups} setExpandedGroups={setExpandedGroups} />
           )}
@@ -175,7 +178,7 @@ export default function InventoryPage() {
                   <TableCell><div className="font-medium">{r.product?.name}</div><div className="text-xs text-muted-foreground font-mono">{r.product?.sku}</div></TableCell>
                   <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
                   <TableCell><Badge variant="outline" className="text-xs">{pkgLabel(r.packagingType)}</Badge></TableCell>
-                  <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
+                  <TableCell className="text-right font-medium">{fmtNum(r.weight, 2)} kg</TableCell>
                   <TableCell className="text-right">{r.quantity}</TableCell>
                   <TableCell className="text-sm">{r.expiredDate ? <><div>{format(new Date(r.expiredDate), 'dd MMM yyyy')}</div>{r.daysToExpire !== null && <div className={`text-xs ${r.daysToExpire < 0 ? 'text-red-600 font-bold' : r.daysToExpire <= 7 ? 'text-amber-600' : 'text-muted-foreground'}`}>{r.daysToExpire < 0 ? `Expired ${-r.daysToExpire}d` : `${r.daysToExpire}d`}</div>}</> : '-'}</TableCell>
                   <TableCell className="text-xs">{r.source?.number ? <Badge variant="secondary" className="font-mono">{r.sourceType} · {r.source.number}</Badge> : (r.sourceType ? <Badge variant="secondary">{r.sourceType}</Badge> : '-')}</TableCell>
@@ -303,7 +306,7 @@ function GroupedView({ rows, selected, toggle, canOperate, canManage, products, 
                 )}
               </div>
               <div className="text-right">
-                <div className="text-lg font-bold text-emerald-700">{g.totalWeight.toFixed(1)} kg</div>
+                <div className="text-lg font-bold text-emerald-700">{fmtNum(g.totalWeight, 1)} kg</div>
                 <div className="text-[10px] text-muted-foreground uppercase">total</div>
               </div>
             </button>
@@ -334,7 +337,7 @@ function GroupedView({ rows, selected, toggle, canOperate, canManage, products, 
                         </TableCell>
                         <TableCell className="text-xs">{r.coldStorage?.code}{r.zone && <div>{r.zone.code}</div>}</TableCell>
                         <TableCell><Badge variant="outline" className="text-xs">{pkgLabel(r.packagingType)}</Badge></TableCell>
-                        <TableCell className="text-right font-medium">{Number(r.weight).toFixed(2)} kg</TableCell>
+                        <TableCell className="text-right font-medium">{fmtNum(r.weight, 2)} kg</TableCell>
                         <TableCell className="text-sm">
                           {r.expiredDate ? (
                             <>
@@ -388,9 +391,9 @@ function TransferCsDialog({ stockIds, onDone, cs }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button size="sm" variant="outline"><ArrowRightLeft className="w-4 h-4 mr-1" />Transfer CS</Button></DialogTrigger>
       <DialogContent>
-        <DialogHeader><DialogTitle>Transfer antar Cold Storage</DialogTitle><DialogDescription>Berita Acara otomatis dibuat.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Pindah antar Gudang</DialogTitle><DialogDescription>Berita Acara otomatis dibuat.</DialogDescription></DialogHeader>
         <div className="space-y-3">
-          <div><Label className="text-xs">Cold Storage Tujuan *</Label><Select value={toCs} onValueChange={setToCs}><SelectTrigger><SelectValue placeholder="Pilih" /></SelectTrigger><SelectContent>{cs.map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.name}</SelectItem>)}</SelectContent></Select></div>
+          <div><Label className="text-xs">Gudang Tujuan *</Label><Select value={toCs} onValueChange={setToCs}><SelectTrigger><SelectValue placeholder="Pilih" /></SelectTrigger><SelectContent>{cs.map(c => <SelectItem key={c.id} value={c.id}>{c.code} - {c.name}</SelectItem>)}</SelectContent></Select></div>
           <div><Label className="text-xs">Notes</Label><Textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></div>
         </div>
         <DialogFooter><Button onClick={save} disabled={saving}>{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Transfer</Button></DialogFooter>
@@ -478,7 +481,7 @@ function SplitKarungButton({ stock, onDone }) {
   const add = () => setPacks([...packs, { weight: 0, quantity: 1, packagingType: 'karung' }]);
   const remove = (i) => setPacks(packs.filter((_, idx) => idx !== i));
   const totalW = packs.reduce((a, b) => a + Number(b.weight || 0), 0);
-  const rupiah = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rupiah = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   const save = async () => {
     setSaving(true);
     try {
@@ -498,7 +501,7 @@ function SplitKarungButton({ stock, onDone }) {
           <div className="text-sm p-3 bg-slate-50 rounded flex flex-wrap gap-x-4 gap-y-1">
             <span>Berat karung: <b>{stock.weight} kg</b></span>
             <span>HPP/kg asal: <b>{rupiah(stock.hppPerKg)}</b></span>
-            <span>Total: <b>{totalW.toFixed(2)} kg</b>{Math.abs(totalW - stock.weight) > 0.01 && <span className="text-amber-600 ml-2">⚠️ delta {(stock.weight - totalW).toFixed(2)} kg</span>}</span>
+            <span>Total: <b>{fmtNum(totalW, 2)} kg</b>{Math.abs(totalW - stock.weight) > 0.01 && <span className="text-amber-600 ml-2">⚠️ delta {fmtNum(stock.weight - totalW, 2)} kg</span>}</span>
           </div>
           {packs.map((p, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-end">
@@ -582,7 +585,7 @@ function EditStockButton({ stock, products, onDone }) {
           </div>
           <div>
             <Label className="text-xs">Tanggal Kadaluarsa</Label>
-            <Input type="date" value={expiredDate} onChange={e => setExpiredDate(e.target.value)} />
+            <DateInput value={expiredDate} onChange={e => setExpiredDate(e.target.value)} />
           </div>
         </div>
         <DialogFooter>

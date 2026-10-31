@@ -17,6 +17,7 @@ import { Plus, Search, Pencil, Trash2, Package, Loader2, Archive, ArchiveRestore
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { exportToExcel } from '@/lib/xlsx-export';
 import { toast } from 'sonner';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -105,7 +106,7 @@ export default function ProductsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Package className="w-8 h-8 text-amber-600" /> Products</h1>
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Package className="w-8 h-8 text-amber-600" /> Produk</h1>
           <p className="text-muted-foreground mt-1">Master produk: Live Bird, Karkas, Boneless, Parting, Retail</p>
         </div>
         <div className="flex items-center gap-2">
@@ -139,12 +140,12 @@ export default function ProductsPage() {
                 </Select>
               </F>
               <F label="Harga Modal / HPP (Rp)"><CurrencyInput value={form.basePrice} onChange={v => setForm({ ...form, basePrice: v })} placeholder="0" /></F>
-              <F label="Min Stock"><Input type="number" value={form.minStock} onChange={e => setForm({ ...form, minStock: Number(e.target.value) })} /></F>
+              <F label="Stok Minimum"><Input type="number" value={form.minStock} onChange={e => setForm({ ...form, minStock: Number(e.target.value) })} /></F>
               <F label="Shelf Life (hari)"><Input type="number" value={form.shelfLifeDays} onChange={e => setForm({ ...form, shelfLifeDays: Number(e.target.value) })} /></F>
               <F label="Status">
                 <Select value={form.status} onValueChange={v => setForm({ ...form, status: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+                  <SelectContent><SelectItem value="active">Aktif</SelectItem><SelectItem value="inactive">Nonaktif</SelectItem></SelectContent>
                 </Select>
               </F>
               <F label="Deskripsi" className="sm:col-span-2"><Textarea rows={2} value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} /></F>
@@ -189,7 +190,7 @@ export default function ProductsPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={10} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">Belum ada produk</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <EmptyRow colSpan={10} icon={Package} title={q ? 'Tidak ada produk yang cocok' : 'Belum ada produk'} hint={q ? 'Coba kata kunci lain.' : 'Daftarkan produk dulu sebelum membuat PO, SO, atau tally.'} action={q ? null : { label: 'Tambah Produk', onClick: openCreate }} />}
               {rows.map(r => (
                 <TableRow key={r.id}>
                   <TableCell className="font-mono text-xs">{r.sku}</TableCell>

@@ -27,7 +27,7 @@ const STAGE_COLOR = {
   'Gagal': 'bg-red-100 text-red-700',
 };
 const SOURCE_LABEL = { referral: 'Referral', cold_call: 'Cold Call', pameran: 'Pameran', website: 'Website', media_sosial: 'Media Sosial', lainnya: 'Lainnya' };
-const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
 
 export default function LeadsPage() {
   const { data: session } = useSession();
@@ -58,7 +58,7 @@ export default function LeadsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Pipeline Prospek (CRM)</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Prospek</h1>
           <p className="text-muted-foreground text-sm mt-1">Lacak calon customer dari kontak awal sampai deal.</p>
         </div>
         <Button onClick={() => setAddOpen(true)}><Plus className="w-4 h-4 mr-1" />Tambah Lead</Button>

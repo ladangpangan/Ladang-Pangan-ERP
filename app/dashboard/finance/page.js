@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Checkbox } from '@/components/ui/checkbox';
 import { GenerateRecapDialog, RecapTemplateDialog } from '@/components/bill-recap-dialogs';
 import { RECAP_STATUS_LABEL } from '@/lib/finance/recap-fields';
+import { DateInput } from '@/components/ui/date-input';
 import {
   Wallet, Loader2, Search, ReceiptText, FileText, HandCoins, Gift,
   ArrowDownCircle, ArrowUpCircle, CalendarRange, X, FileStack, Settings2, FolderOpen,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-react';
 
 const fetcher = (url) => fetch(url, { credentials: 'include' }).then(r => r.json());
-const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
 const tgl = (d) => { if (!d) return '-'; const t = new Date(d); return isNaN(t.getTime()) ? '-' : t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }); };
 
 // Nomor dokumen yang bisa diklik menuju halaman detail (SO/PO).
@@ -163,7 +164,7 @@ function PayCommissionDialog({ rec, accounts, onDone }) {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label>Tanggal</Label>
-            <Input type="date" value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} />
+            <DateInput value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} />
           </div>
           <div className="space-y-1">
             <Label>Metode</Label>
@@ -230,7 +231,7 @@ function RefundCashbackDialog({ row, accounts, onDone }) {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label>Tanggal Pengembalian</Label>
-            <Input type="date" value={refundedAt} onChange={e => setRefundedAt(e.target.value)} />
+            <DateInput value={refundedAt} onChange={e => setRefundedAt(e.target.value)} />
           </div>
           <div className="space-y-1 col-span-2">
             <Label>Dikembalikan dari Rekening</Label>
@@ -319,7 +320,7 @@ export default function FinancePage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <Wallet className="w-8 h-8 text-emerald-600" /> Keuangan — Komisi & Cashback
+          <Wallet className="w-8 h-8 text-emerald-600" /> Tagihan & Komisi
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
           Ringkasan tagihan customer (piutang SO), tagihan supplier (utang PO), komisi dropshipper, dan cashback.
@@ -335,11 +336,11 @@ export default function FinancePage() {
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Dari</Label>
-            <Input type="date" value={from} onChange={e => setFrom(e.target.value)} className="w-40" />
+            <DateInput value={from} onChange={e => setFrom(e.target.value)} className="w-40" />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Sampai</Label>
-            <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="w-40" />
+            <DateInput value={to} onChange={e => setTo(e.target.value)} className="w-40" />
           </div>
           <Button variant="outline" size="sm" onClick={setThisMonth}>Bulan Ini</Button>
           {(from || to) && <Button variant="ghost" size="sm" onClick={clearPeriod}><X className="w-4 h-4 mr-1" />Reset</Button>}

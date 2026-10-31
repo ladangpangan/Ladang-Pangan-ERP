@@ -27,6 +27,8 @@ import { format } from 'date-fns';
 import { pkgLabel, pkgShort } from '@/lib/constants';
 import { generatePOPDF } from '@/lib/pdf/invoice';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
+import { DateInput } from '@/components/ui/date-input';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 
@@ -54,6 +56,7 @@ export const STATUS_COLOR = {
   'Selesai': 'bg-emerald-100 text-emerald-700',
   'Dibatalkan': 'bg-red-100 text-red-700',
 };
+const PAY_LABEL = { unpaid: 'Belum bayar', partial: 'Sebagian', paid: 'Lunas' };
 const PAY_COLOR = {
   unpaid: 'bg-slate-100 text-slate-700',
   partial: 'bg-amber-100 text-amber-700',
@@ -117,14 +120,14 @@ export default function POListPage() {
     { key: 'poNumber', label: 'No PO' }, { key: 'poType', label: 'Tipe' }, { key: 'supplier', label: 'Supplier' },
     { key: 'orderDate', label: 'Tgl Order' }, { key: 'method', label: 'Metode' }, { key: 'totalAmount', label: 'Total' },
     { key: 'paymentStatus', label: 'Bayar' }, { key: 'pipelineStatus', label: 'Status' },
-  ], rows: rows.map((r) => ({ poNumber: r.poNumber, poType: r.poType, supplier: r.supplier?.name || '', orderDate: r.orderDate ? format(new Date(r.orderDate), 'dd/MM/yyyy') : '', method: r.method, totalAmount: r.totalAmount, paymentStatus: r.paymentStatus, pipelineStatus: r.pipelineStatus })) }]);
+  ], rows: rows.map((r) => ({ poNumber: r.poNumber, poType: r.poType, supplier: r.supplier?.name || '', orderDate: r.orderDate ? format(new Date(r.orderDate), 'dd/MM/yyyy') : '', method: r.method, totalAmount: r.totalAmount, paymentStatus: PAY_LABEL[r.paymentStatus] || r.paymentStatus, pipelineStatus: r.pipelineStatus })) }]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <ShoppingCart className="w-8 h-8 text-blue-600" /> Purchase Orders
+            <ShoppingCart className="w-8 h-8 text-blue-600" /> Purchase Order
           </h1>
           <p className="text-muted-foreground mt-1">Pembelian: Live Bird, Packaging, Bahan Baku, Produk Jadi, Operasional</p>
         </div>
@@ -188,7 +191,7 @@ export default function POListPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Tidak ada PO pada periode {mf.label}</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <EmptyRow colSpan={9} icon={ShoppingCart} title={q ? 'Tidak ada PO yang cocok' : `Belum ada PO pada periode ${mf.label}`} hint={q ? 'Coba kata kunci lain atau ganti periode.' : 'Pembelian ke supplier dicatat di sini. Barang masuk lewat Tally App setelah PO dibuat.'} action={q ? null : { label: 'Buat PO Baru', onClick: () => setOpen(true) }} />}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono font-semibold text-xs">{r.poNumber}</TableCell>
@@ -200,7 +203,7 @@ export default function POListPage() {
                   <TableCell className="text-sm">{r.orderDate ? format(new Date(r.orderDate), 'dd MMM yyyy') : '-'}</TableCell>
                   <TableCell className="text-xs">{r.method || '-'}{r.isDropship && <Badge variant="secondary" className="ml-1 text-[10px]">Dropship</Badge>}</TableCell>
                   <TableCell className="text-right font-medium">Rp {Number(r.totalAmount).toLocaleString('id-ID')}</TableCell>
-                  <TableCell><Badge variant="secondary" className={PAY_COLOR[r.paymentStatus]}>{r.paymentStatus}</Badge></TableCell>
+                  <TableCell><Badge variant="secondary" className={PAY_COLOR[r.paymentStatus]}>{PAY_LABEL[r.paymentStatus] || r.paymentStatus}</Badge></TableCell>
                   <TableCell><Badge className={STATUS_COLOR[r.pipelineStatus]}>{r.pipelineStatus}</Badge></TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Link href={`/dashboard/purchase-orders/${r.id}`}><Button size="icon" variant="ghost"><Eye className="w-4 h-4" /></Button></Link>
@@ -313,8 +316,8 @@ function CreatePODialog({ onSaved, pdfShow }) {
             )}
           </>
         )}
-        <F label="Tanggal Order *"><Input type="date" value={form.orderDate} onChange={e => update('orderDate', e.target.value)} /></F>
-        <F label="Perkiraan Datang"><Input type="date" value={form.expectedDate} onChange={e => update('expectedDate', e.target.value)} /></F>
+        <F label="Tanggal Order *"><DateInput value={form.orderDate} onChange={e => update('orderDate', e.target.value)} /></F>
+        <F label="Perkiraan Datang"><DateInput value={form.expectedDate} onChange={e => update('expectedDate', e.target.value)} /></F>
         <F label="Cara Bayar">
           <Select value={form.paymentTerm} onValueChange={v => update('paymentTerm', v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>

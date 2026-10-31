@@ -46,7 +46,7 @@ export default function OpnameListPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-start gap-3 flex-wrap">
-        <Link href="/dashboard/inventory"><Button variant="ghost" size="icon" aria-label="Kembali ke Inventory"><ArrowLeft className="w-5 h-5" /></Button></Link>
+        <Link href="/dashboard/inventory"><Button variant="ghost" size="icon" aria-label="Kembali ke Stok"><ArrowLeft className="w-5 h-5" /></Button></Link>
         <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ClipboardCheck className="w-7 h-7 text-blue-600" />Stock Opname</h1>
           <p className="text-muted-foreground text-sm mt-1">Cocokkan stok sistem dengan fisik. Perubahan berlaku setelah disetujui admin/supervisor.</p>

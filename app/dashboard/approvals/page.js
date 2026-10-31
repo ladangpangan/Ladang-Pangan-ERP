@@ -27,9 +27,10 @@ const CONCERN_META = {
   high_shrinkage: { icon: TrendingDown, label: 'Penyusutan Tinggi', color: 'text-amber-600 bg-amber-50 border-amber-200' },
   so_cancel: { icon: Ban, label: 'Pembatalan SO', color: 'text-slate-700 bg-slate-100 border-slate-200' },
   po_cancel: { icon: Ban, label: 'Pembatalan PO', color: 'text-slate-700 bg-slate-100 border-slate-200' },
-  opname_variance: { icon: Package, label: 'Variance Opname', color: 'text-purple-600 bg-purple-50 border-purple-200' },
+  opname_variance: { icon: Package, label: 'Selisih Opname', color: 'text-purple-600 bg-purple-50 border-purple-200' },
 };
 
+const PRIORITY_LABEL = { low: 'Rendah', normal: 'Normal', high: 'Tinggi', urgent: 'Mendesak' };
 const PRIORITY_STYLE = {
   low: 'bg-slate-100 text-slate-600',
   normal: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -95,7 +96,7 @@ export default function ApprovalsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <ClipboardCheck className="w-6 h-6 text-emerald-600" /> Approval & Concern
+            <ClipboardCheck className="w-6 h-6 text-emerald-600" /> Persetujuan
           </h1>
           <p className="text-sm text-muted-foreground">
             {isApprover && 'Sebagai Supervisor, Anda dapat approve atau reject setiap concern. '}
@@ -107,8 +108,8 @@ export default function ApprovalsPage() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SumCard label="Menunggu" value={summary.pending} icon={Clock} color="amber" />
-        <SumCard label="Approved" value={summary.approved} icon={CheckCircle2} color="emerald" />
-        <SumCard label="Rejected" value={summary.rejected} icon={XCircle} color="red" />
+        <SumCard label="Disetujui" value={summary.approved} icon={CheckCircle2} color="emerald" />
+        <SumCard label="Ditolak" value={summary.rejected} icon={XCircle} color="red" />
         <SumCard label="Total" value={summary.total} icon={Award} color="slate" />
       </div>
 
@@ -118,8 +119,8 @@ export default function ApprovalsPage() {
           <TabsTrigger value="pending">
             Menunggu {summary.pending > 0 && <Badge variant="destructive" className="ml-2 text-[10px]">{summary.pending}</Badge>}
           </TabsTrigger>
-          <TabsTrigger value="approved">Approved</TabsTrigger>
-          <TabsTrigger value="rejected">Rejected</TabsTrigger>
+          <TabsTrigger value="approved">Disetujui</TabsTrigger>
+          <TabsTrigger value="rejected">Ditolak</TabsTrigger>
           <TabsTrigger value="all">Semua</TabsTrigger>
         </TabsList>
 
@@ -147,14 +148,14 @@ export default function ApprovalsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <Badge variant="outline" className={cn('text-[10px]', meta.color)}>{meta.label}</Badge>
-                        <Badge variant="outline" className={cn('text-[10px] uppercase', PRIORITY_STYLE[concern.priority])}>{concern.priority}</Badge>
+                        <Badge variant="outline" className={cn('text-[10px] uppercase', PRIORITY_STYLE[concern.priority])}>{PRIORITY_LABEL[concern.priority] || concern.priority}</Badge>
                         {concern.status !== 'pending' && (
                           <Badge variant="outline" className={cn(
                             'text-[10px]',
                             concern.status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                             'bg-red-50 text-red-700 border-red-200'
                           )}>
-                            {concern.status === 'approved' ? '✓ Approved' : '✗ Rejected'}
+                            {concern.status === 'approved' ? '✓ Disetujui' : '✗ Ditolak'}
                           </Badge>
                         )}
                       </div>
@@ -233,10 +234,10 @@ export default function ApprovalsPage() {
                       {isDirektur && !concern.direkturAction && (
                         <>
                           <Button size="sm" variant="outline" onClick={() => openAction(concern, 'acknowledged')}>
-                            <MessageSquareWarning className="w-3.5 h-3.5 mr-1" /> Acknowledge
+                            <MessageSquareWarning className="w-3.5 h-3.5 mr-1" /> Tandai sudah dilihat
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => openAction(concern, 'flagged')} className="text-red-600 hover:bg-red-50">
-                            <Flag className="w-3.5 h-3.5 mr-1" /> Flag Concern
+                            <Flag className="w-3.5 h-3.5 mr-1" /> Beri catatan
                           </Button>
                         </>
                       )}
@@ -256,8 +257,8 @@ export default function ApprovalsPage() {
             <DialogTitle>
               {action === 'approved' && '✓ Approve Concern'}
               {action === 'rejected' && '✗ Reject Concern'}
-              {action === 'acknowledged' && '📌 Acknowledge sebagai Direktur'}
-              {action === 'flagged' && '🚩 Flag Concern sebagai Direktur'}
+              {action === 'acknowledged' && 'Tandai sudah dilihat (Direktur)'}
+              {action === 'flagged' && 'Beri catatan (Direktur)'}
             </DialogTitle>
             <DialogDescription>
               {selected?.title}
@@ -288,7 +289,7 @@ export default function ApprovalsPage() {
               )}
             >
               {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              Konfirmasi {action === 'approved' ? 'Approve' : action === 'rejected' ? 'Reject' : action === 'acknowledged' ? 'Acknowledge' : 'Flag'}
+              Konfirmasi {action === 'approved' ? 'Setujui' : action === 'rejected' ? 'Tolak' : action === 'acknowledged' ? 'Tandai sudah dilihat' : 'Beri catatan'}
             </Button>
           </DialogFooter>
         </DialogContent>

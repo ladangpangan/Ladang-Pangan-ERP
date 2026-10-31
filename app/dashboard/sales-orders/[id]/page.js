@@ -1,5 +1,6 @@
 'use client';
 
+import { fmtNum } from '@/lib/format';
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { useParams, useRouter } from 'next/navigation';
@@ -27,8 +28,9 @@ import { format } from 'date-fns';
 import { SO_STATUS_COLOR, SO_STATUS_LABEL } from '../page';
 import { generateInvoicePDF, generateSOPDF, generateSuratJalanPDF } from '@/lib/pdf/invoice';
 import { pkgLabel, pkgShort } from '@/lib/constants';
-import DangerZoneRollback from '@/components/danger-zone-rollback';
+import DangerZoneRollback, { RollbackMenuItems } from '@/components/danger-zone-rollback';
 import { usePdfPreview } from '@/components/pdf-preview-dialog';
+import { DateInput } from '@/components/ui/date-input';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const SO_FLOW = {
@@ -57,6 +59,7 @@ export default function SODetailPage() {
   const [invoiceBasis, setInvoiceBasis] = useState('shipped'); // 'ordered' | 'shipped' | 'received'
   const [transitioning, setTransitioning] = useState(false);
   const [pdfBasisOpen, setPdfBasisOpen] = useState(false);
+  const [rollbackMode, setRollbackMode] = useState(null);
   const [pdfBasis, setPdfBasis] = useState('shipped'); // 'allocated' | 'ordered' | 'shipped' | 'received'
   const pdfPreview = usePdfPreview();
 
@@ -135,7 +138,7 @@ export default function SODetailPage() {
           ))}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan)"><MoreHorizontal className="w-4 h-4" /></Button>
+              <Button size="icon" variant="outline" className="h-9 w-9" aria-label="Menu lainnya (PDF, batalkan, tindakan lanjutan)"><MoreHorizontal className="w-4 h-4" /></Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuItem onSelect={() => {
@@ -157,6 +160,7 @@ export default function SODetailPage() {
                   <DropdownMenuItem data-testid="so-status-btn-Cancelled" onSelect={() => openTransition('Cancelled')} className="text-red-600 focus:text-red-700"><XCircle className="w-4 h-4 mr-2" />Batalkan SO…</DropdownMenuItem>
                 </>
               )}
+              <RollbackMenuItems onPick={setRollbackMode} />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -240,7 +244,7 @@ export default function SODetailPage() {
         <TabsContent value="returns"><ReturnsTab so={so} onSaved={mutate} canOperate={canOperate} /></TabsContent>
       </Tabs>
 
-      <DangerZoneRollback kind="so" id={so.id} number={so.soNumber} router={router} listPath="/dashboard/sales-orders" onRolledBack={mutate} />
+      <DangerZoneRollback kind="so" id={so.id} number={so.soNumber} router={router} listPath="/dashboard/sales-orders" onRolledBack={mutate} mode={rollbackMode} onClose={() => setRollbackMode(null)} />
       {pdfPreview.element}
 
       {/* Konfirmasi perubahan status (menggantikan native confirm) */}
@@ -358,7 +362,7 @@ function ExtrasSection({ so, children }) {
   );
 }
 
-const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
 // Berat yang DIBAYAR customer — tidak selalu berat kirim. Basis-nya bisa dipilih (lihat MarkupCard):
 // 'ordered' = Berat Pesan, 'shipped' = Berat Kirim (fallback ke Pesan bila belum dikirim),
 // 'received' = Berat Terima (fallback berjenjang ke Kirim lalu Pesan bila belum ada penerimaan).
@@ -535,7 +539,7 @@ function MarkupCard({ so, canEdit, onSaved }) {
 }
 
 function CashbackRefundCard({ so, canRefund, onSaved }) {
-  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   const [refundedAt, setRefundedAt] = useState(so.cashbackRefundedAt || new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState(so.cashbackRefundNote || '');
   const [file, setFile] = useState(null);
@@ -626,7 +630,7 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">Tanggal Transfer</Label>
-                <Input type="date" value={refundedAt} onChange={e => setRefundedAt(e.target.value)} className="mt-1" />
+                <DateInput value={refundedAt} onChange={e => setRefundedAt(e.target.value)} className="mt-1" />
               </div>
               <div>
                 <Label className="text-xs">Bukti Transfer (PDF/JPG/PNG, maks 10MB)</Label>
@@ -648,8 +652,8 @@ function CashbackRefundCard({ so, canRefund, onSaved }) {
               </div>
               {shortfallInfo && (
                 <div className="text-xs text-muted-foreground">
-                  Dipesan {shortfallInfo.totalOrderedWeight.toFixed(2)} kg, diterima customer {shortfallInfo.totalReceivedWeight.toFixed(2)} kg →
-                  kelebihan <b className="text-amber-700">{shortfallInfo.surplusWeight.toFixed(2)} kg senilai {rp(shortfallInfo.surplusValue)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
+                  Dipesan {fmtNum(shortfallInfo.totalOrderedWeight, 2)} kg, diterima customer {fmtNum(shortfallInfo.totalReceivedWeight, 2)} kg →
+                  kelebihan <b className="text-amber-700">{fmtNum(shortfallInfo.surplusWeight, 2)} kg senilai {rp(shortfallInfo.surplusValue)}</b> (saran potongan: {rp(shortfallInfo.suggestedDeduction)}).
                 </div>
               )}
               <Input
@@ -870,7 +874,7 @@ function InfoTab({ so, canEdit, onSaved }) {
     const pickup = Number(r.weightAtPickup || 0), wh = Number(r.weightAtWarehouse || 0);
     return a + (pickup > 0 && wh > 0 ? Math.max(0, pickup - wh) : 0);
   }, 0);
-  const fmtKg = (v, measured) => measured ? `${v.toFixed(1)} kg` : '- (belum diukur)';
+  const fmtKg = (v, measured) => measured ? `${fmtNum(v, 1)} kg` : '- (belum diukur)';
   const rows = [
     ['Customer', so.customer?.displayName],
     ['Kode Customer', so.customer?.code],
@@ -885,10 +889,10 @@ function InfoTab({ so, canEdit, onSaved }) {
     ['Invoice Number', so.invoiceNumber || '-'],
     ['Invoice Date', so.invoiceDate && format(new Date(so.invoiceDate), 'dd MMM yyyy')],
     ['Due Date', so.dueDate && format(new Date(so.dueDate), 'dd MMM yyyy')],
-    ['Berat Pesan', `${beratPesan.toFixed(1)} kg`],
-    ['Berat Dipilih', beratDipilih > 0 ? `${beratDipilih.toFixed(1)} kg` : '-'],
-    ['Berat Kirim', beratKirim > 0 ? `${beratKirim.toFixed(1)} kg` : '-'],
-    ['Berat Terima', beratTerima > 0 ? `${beratTerima.toFixed(1)} kg` : '-'],
+    ['Berat Pesan', `${fmtNum(beratPesan, 1)} kg`],
+    ['Berat Dipilih', beratDipilih > 0 ? `${fmtNum(beratDipilih, 1)} kg` : '-'],
+    ['Berat Kirim', beratKirim > 0 ? `${fmtNum(beratKirim, 1)} kg` : '-'],
+    ['Berat Terima', beratTerima > 0 ? `${fmtNum(beratTerima, 1)} kg` : '-'],
     ['Susut CS (Dipilih → Kirim)', fmtKg(susutCs, beratDipilih > 0 && beratKirim > 0)],
     ['Susut di Terima (Kirim → Terima)', fmtKg(susutDiTerima, beratKirim > 0 && beratTerima > 0)],
     ['Susut Retur', fmtKg(susutRetur, returns.some(r => Number(r.weightAtPickup || 0) > 0))],
@@ -969,7 +973,7 @@ function KodeSimpanEditBadge({ al, canEdit, onDone }) {
   return (
     <span className="inline-flex items-center gap-0.5">
       <Badge variant="outline" className="font-mono text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700">
-        {al.kodeSimpan} · {Number(al.weight).toFixed(1)}kg
+        {al.kodeSimpan} · {fmtNum(al.weight, 1)}kg
       </Badge>
       {canEdit && al.stockId && (
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setVal(al.kodeSimpan || ''); }}>
@@ -999,7 +1003,7 @@ function ItemsTab({ so, onSaved, canEdit }) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
-          <CardTitle className="text-base">Items SO</CardTitle>
+          <CardTitle className="text-base">Barang</CardTitle>
           {canAllocate && <CardDescription>Pilih kode simpan (bisa banyak) untuk tiap item. Subtotal otomatis mengikuti kode simpan terpilih — Berat Pesan tidak berubah.</CardDescription>}
         </div>
         <div className="flex items-center gap-2">
@@ -1039,11 +1043,11 @@ function ItemsTab({ so, onSaved, canEdit }) {
                 </TableCell>
                 <TableCell className="text-right">{it.quantity} {pkgShort(it.product?.packagingType)}</TableCell>
                 <TableCell className="text-right">
-                  <div>{Number(it.weight).toFixed(1)} kg</div>
+                  <div>{fmtNum(it.weight, 1)} kg</div>
                   <div className="text-[10px] text-muted-foreground space-y-0.5 mt-0.5">
-                    {Number(it.allocatedWeight) > 0 && <div>Dipilih: {Number(it.allocatedWeight).toFixed(1)} kg</div>}
-                    {Number(it.shippedWeight) > 0 && <div className="text-blue-600">Kirim: {Number(it.shippedWeight).toFixed(1)} kg</div>}
-                    {Number(it.receivedWeight) > 0 && <div className="text-emerald-600">Terima: {Number(it.receivedWeight).toFixed(1)} kg</div>}
+                    {Number(it.allocatedWeight) > 0 && <div>Dipilih: {fmtNum(it.allocatedWeight, 1)} kg</div>}
+                    {Number(it.shippedWeight) > 0 && <div className="text-blue-600">Kirim: {fmtNum(it.shippedWeight, 1)} kg</div>}
+                    {Number(it.receivedWeight) > 0 && <div className="text-emerald-600">Terima: {fmtNum(it.receivedWeight, 1)} kg</div>}
                   </div>
                 </TableCell>
                 <TableCell className="text-right">Rp {Number(it.unitPrice).toLocaleString('id-ID')}</TableCell>
@@ -1202,7 +1206,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal');
-      toast.success(`Alokasi tersimpan: ${chosen.length} kode simpan · ${totalW.toFixed(1)} kg`);
+      toast.success(`Alokasi tersimpan: ${chosen.length} kode simpan · ${fmtNum(totalW, 1)} kg`);
       onSaved();
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
@@ -1232,7 +1236,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
                   <div className="flex-1 min-w-0">
                     <div className="font-mono font-semibold text-sm">{st.kodeSimpan}</div>
                     <div className="text-[11px] text-muted-foreground">
-                      {Number(st.weight).toFixed(1)} kg · {pkgLabel(st.packagingType)} × {Number(st.quantity)}
+                      {fmtNum(st.weight, 1)} kg · {pkgLabel(st.packagingType)} × {Number(st.quantity)}
                       {st.csCode && ` · ${st.csCode}`}
                       {st.expiredDate && ` · Exp ${format(new Date(st.expiredDate), 'dd MMM yy')}`}
                     </div>
@@ -1247,7 +1251,7 @@ function AllocateDialog({ so, item, onClose, onSaved }) {
           </div>
         )}
         <div className="border-t pt-2 text-sm flex items-center justify-between">
-          <span className="text-muted-foreground">Terpilih: <b>{chosen.length}</b> · <b>{totalW.toFixed(1)}</b> kg · HPP <b>Rp {Math.round(totalCogs).toLocaleString('id-ID')}</b></span>
+          <span className="text-muted-foreground">Terpilih: <b>{chosen.length}</b> · <b>{fmtNum(totalW, 1)}</b> kg · HPP <b>Rp {Math.round(totalCogs).toLocaleString('id-ID')}</b></span>
           <Button size="sm" onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
             {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Simpan Alokasi
           </Button>
@@ -1341,7 +1345,7 @@ function EditSuratJalanDialog({ so, sj, endCustomers, onSaved }) {
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Edit Surat Jalan {sj.sjNumber}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
-          <F label="Tanggal Kirim"><Input type="date" value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
+          <F label="Tanggal Kirim"><DateInput value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
           <F label="Nama Sopir"><Input value={form.driverName} onChange={e => setForm({ ...form, driverName: e.target.value })} /></F>
           <F label="No Kendaraan" className="col-span-2"><Input value={form.vehicleNumber} onChange={e => setForm({ ...form, vehicleNumber: e.target.value })} placeholder="B 1234 XYZ" /></F>
           <F label="Tujuan Pengiriman" className="col-span-2">
@@ -1429,7 +1433,7 @@ function SjTab({ so, onSaved, canOperate, pdfShow }) {
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Buat Surat Jalan</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
-                <F label="Tanggal Kirim"><Input type="date" value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
+                <F label="Tanggal Kirim"><DateInput value={form.deliveryDate} onChange={e => setForm({ ...form, deliveryDate: e.target.value })} /></F>
                 <F label="Nama Sopir"><Input value={form.driverName} onChange={e => setForm({ ...form, driverName: e.target.value })} /></F>
                 <F label="No Kendaraan" className="col-span-2"><Input value={form.vehicleNumber} onChange={e => setForm({ ...form, vehicleNumber: e.target.value })} placeholder="B 1234 XYZ" /></F>
                 <F label="Tujuan Pengiriman" className="col-span-2">
@@ -1514,7 +1518,7 @@ function ShippingCostCard({ so, onSaved, canEdit }) {
   const [accountCode, setAccountCode] = useState(so.shippingAccountCode || '');
   const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
-  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   useEffect(() => {
     fetch('/api/cash-bank-accounts', { credentials: 'include' })
       .then(r => r.json())
@@ -1618,7 +1622,7 @@ function PaymentsTab({ so, onSaved, canEdit }) {
             <DialogContent>
               <DialogHeader><DialogTitle>Catat Pembayaran</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
-                <F label="Tanggal"><Input type="date" value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} /></F>
+                <F label="Tanggal"><DateInput value={form.paymentDate} onChange={e => setForm({ ...form, paymentDate: e.target.value })} /></F>
                 <F label="Metode">
                   <Select value={form.method} onValueChange={v => setForm({ ...form, method: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1677,7 +1681,7 @@ function PaymentsTab({ so, onSaved, canEdit }) {
 }
 
 function GrossProfitCard({ so }) {
-  const rp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+  const rp = (n) => 'Rp\u00A0' + Number(n || 0).toLocaleString('id-ID');
   const grossRev = Number(so.revenue ?? so.totalAmount ?? 0);
   const buyerShip = Number(so.buyerShipping || 0);
   const revenue = grossRev - buyerShip; // penjualan barang (ongkir pembeli bersifat pass-through/netral)
@@ -1738,7 +1742,7 @@ function ReturnsTab({ so, onSaved, canOperate }) {
             <DialogContent>
               <DialogHeader><DialogTitle>Buat Retur Penjualan</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
-                <F label="Tanggal Retur"><Input type="date" value={form.returnDate} onChange={e => setForm({ ...form, returnDate: e.target.value })} /></F>
+                <F label="Tanggal Retur"><DateInput value={form.returnDate} onChange={e => setForm({ ...form, returnDate: e.target.value })} /></F>
                 <F label="Resolusi">
                   <Select value={form.resolution} onValueChange={v => setForm({ ...form, resolution: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1771,9 +1775,9 @@ function ReturnsTab({ so, onSaved, canOperate }) {
                 <div className="mt-1 text-sm font-semibold">Rp {Number(r.totalAmount).toLocaleString('id-ID')} · {r.totalWeight} kg</div>
                 {(Number(r.weightAtPickup) > 0 || Number(r.weightAtWarehouse) > 0) && (
                   <div className="text-[11px] text-muted-foreground mt-0.5">
-                    {Number(r.weightAtPickup) > 0 && <>Dikirim customer: {Number(r.weightAtPickup).toFixed(1)} kg</>}
+                    {Number(r.weightAtPickup) > 0 && <>Dikirim customer: {fmtNum(r.weightAtPickup, 1)} kg</>}
                     {Number(r.weightAtPickup) > 0 && Number(r.weightAtWarehouse) > 0 && ' · '}
-                    {Number(r.weightAtWarehouse) > 0 && <>Tiba gudang: {Number(r.weightAtWarehouse).toFixed(1)} kg</>}
+                    {Number(r.weightAtWarehouse) > 0 && <>Tiba gudang: {fmtNum(r.weightAtWarehouse, 1)} kg</>}
                   </div>
                 )}
               </div>
@@ -1871,7 +1875,7 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Gagal menyimpan');
       const sw = Number(j.data.totalShrinkageWeight || 0);
-      const lbl = sw < -0.001 ? `kelebihan ${(-sw).toFixed(2)} kg` : `susut ${sw.toFixed(2)} kg`;
+      const lbl = sw < -0.001 ? `kelebihan ${fmtNum(-sw, 2)} kg` : `susut ${fmtNum(sw, 2)} kg`;
       toast.success(`Penerimaan tercatat: ${j.data.receiptNumber} (${lbl})`);
       setOpen(false);
       onSaved?.();
@@ -1922,7 +1926,7 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <F label="Tanggal Penerimaan">
-                  <Input type="date" value={receivedDate} onChange={e => setReceivedDate(e.target.value)} />
+                  <DateInput value={receivedDate} onChange={e => setReceivedDate(e.target.value)} />
                 </F>
                 <F label="Diterima oleh (nama PIC customer)">
                   <Input value={receivedBy} onChange={e => setReceivedBy(e.target.value)} placeholder="Contoh: Pak Budi" />
@@ -1960,7 +1964,7 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                               <div className="text-[10px] text-muted-foreground font-mono">{it.sku}</div>
                               <div className="text-[10px] text-muted-foreground">Avg Rp {Number(it.avgUnitPrice).toLocaleString('id-ID')}/kg</div>
                             </TableCell>
-                            <TableCell className="text-right font-semibold">{it.orderedWeight.toFixed(2)}</TableCell>
+                            <TableCell className="text-right font-semibold">{fmtNum(it.orderedWeight, 2)}</TableCell>
                             <TableCell className="text-right">
                               <Input
                                 type="number"
@@ -1972,12 +1976,12 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                             </TableCell>
                             <TableCell className="text-right">
                               <span className={cn('font-semibold', isSurplus ? 'text-emerald-600' : isBig ? 'text-red-600' : 'text-amber-600')}>
-                                {isSurplus ? `+${(-shrinkageW).toFixed(2)}` : shrinkageW.toFixed(2)}
+                                {isSurplus ? `+${fmtNum(-shrinkageW, 2)}` : fmtNum(shrinkageW, 2)}
                               </span>
                             </TableCell>
                             <TableCell className="text-right">
                               <Badge variant="outline" className={cn(isSurplus ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : shrinkageP > 5 ? 'bg-red-50 text-red-700 border-red-200' : shrinkageP > 2 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200')}>
-                                {shrinkageP >= 0 ? shrinkageP.toFixed(2) : `+${(-shrinkageP).toFixed(2)}`}%
+                                {shrinkageP >= 0 ? fmtNum(shrinkageP, 2) : `+${fmtNum(-shrinkageP, 2)}`}%
                               </Badge>
                             </TableCell>
                             <TableCell className={cn('text-right font-semibold', isSurplus ? 'text-emerald-600' : 'text-red-600')}>
@@ -1988,12 +1992,12 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                       })}
                       <TableRow className="bg-slate-50 font-bold">
                         <TableCell>TOTAL</TableCell>
-                        <TableCell className="text-right">{totals.ordered.toFixed(2)}</TableCell>
-                        <TableCell className="text-right">{totals.received.toFixed(2)}</TableCell>
-                        <TableCell className={cn('text-right', isNetSurplus ? 'text-emerald-600' : 'text-red-600')}>{isNetSurplus ? `+${(-totals.shrinkageW).toFixed(2)}` : totals.shrinkageW.toFixed(2)}</TableCell>
+                        <TableCell className="text-right">{fmtNum(totals.ordered, 2)}</TableCell>
+                        <TableCell className="text-right">{fmtNum(totals.received, 2)}</TableCell>
+                        <TableCell className={cn('text-right', isNetSurplus ? 'text-emerald-600' : 'text-red-600')}>{isNetSurplus ? `+${fmtNum(-totals.shrinkageW, 2)}` : fmtNum(totals.shrinkageW, 2)}</TableCell>
                         <TableCell className="text-right">
                           <Badge variant="outline" className={isNetSurplus ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}>
-                            {totalShrinkagePct >= 0 ? totalShrinkagePct.toFixed(2) : `+${(-totalShrinkagePct).toFixed(2)}`}%
+                            {totalShrinkagePct >= 0 ? fmtNum(totalShrinkagePct, 2) : `+${fmtNum(-totalShrinkagePct, 2)}`}%
                           </Badge>
                         </TableCell>
                         <TableCell className={cn('text-right', isNetSurplus ? 'text-emerald-600' : 'text-red-600')}>{isNetSurplus ? '+' : ''}Rp {Math.round(Math.abs(totals.shrinkageV)).toLocaleString('id-ID')}</TableCell>
@@ -2074,15 +2078,15 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                   <div className="p-2 bg-slate-50 rounded">
                     <div className="text-muted-foreground">Ordered</div>
-                    <div className="font-bold">{Number(r.totalOrderedWeight).toFixed(2)} kg</div>
+                    <div className="font-bold">{fmtNum(r.totalOrderedWeight, 2)} kg</div>
                   </div>
                   <div className="p-2 bg-emerald-50 rounded">
                     <div className="text-muted-foreground">Diterima</div>
-                    <div className="font-bold text-emerald-700">{Number(r.totalReceivedWeight).toFixed(2)} kg</div>
+                    <div className="font-bold text-emerald-700">{fmtNum(r.totalReceivedWeight, 2)} kg</div>
                   </div>
                   <div className="p-2 bg-amber-50 rounded">
                     <div className="text-muted-foreground">Susut</div>
-                    <div className="font-bold text-amber-700">{Number(r.totalShrinkageWeight).toFixed(2)} kg ({Number(r.totalShrinkagePct).toFixed(2)}%)</div>
+                    <div className="font-bold text-amber-700">{fmtNum(r.totalShrinkageWeight, 2)} kg ({fmtNum(r.totalShrinkagePct, 2)}%)</div>
                   </div>
                   <div className="p-2 bg-red-50 rounded">
                     <div className="text-muted-foreground">Nilai Susut</div>
@@ -2109,10 +2113,10 @@ function ReceiptsTab({ so, onSaved, canOperate }) {
                               <div className="font-medium">{li.product?.name}</div>
                               <div className="text-[10px] text-muted-foreground font-mono">{li.product?.sku}</div>
                             </TableCell>
-                            <TableCell className="text-right text-xs">{Number(li.orderedWeight).toFixed(2)} kg</TableCell>
-                            <TableCell className="text-right text-xs text-emerald-700">{Number(li.receivedWeight).toFixed(2)} kg</TableCell>
-                            <TableCell className="text-right text-xs text-amber-700">{Number(li.shrinkageWeight).toFixed(2)}</TableCell>
-                            <TableCell className="text-right text-xs">{Number(li.shrinkagePct).toFixed(2)}%</TableCell>
+                            <TableCell className="text-right text-xs">{fmtNum(li.orderedWeight, 2)} kg</TableCell>
+                            <TableCell className="text-right text-xs text-emerald-700">{fmtNum(li.receivedWeight, 2)} kg</TableCell>
+                            <TableCell className="text-right text-xs text-amber-700">{fmtNum(li.shrinkageWeight, 2)}</TableCell>
+                            <TableCell className="text-right text-xs">{fmtNum(li.shrinkagePct, 2)}%</TableCell>
                             <TableCell className="text-right text-xs text-red-600">Rp {Number(li.shrinkageValue).toLocaleString('id-ID')}</TableCell>
                           </TableRow>
                         ))}

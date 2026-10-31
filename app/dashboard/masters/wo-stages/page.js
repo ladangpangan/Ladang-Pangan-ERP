@@ -127,7 +127,7 @@ export default function WoStagesMasterPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Layers className="w-6 h-6" /> Master Data · WO Stages</h1>
+          <h1 className="text-2xl font-bold flex items-center gap-2"><Layers className="w-6 h-6" /> Tahap Produksi</h1>
           <p className="text-sm text-muted-foreground mt-1">Definisikan tahapan produksi RPA dan field-field custom yang bisa dicatat operator via Tally Produksi.</p>
         </div>
         <Button onClick={openCreate}><Plus className="w-4 h-4 mr-2" /> Tambah Stage</Button>

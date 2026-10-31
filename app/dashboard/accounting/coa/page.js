@@ -17,6 +17,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { toast } from 'sonner';
 import { Plus, Pencil, Archive, ArchiveRestore, Trash2, Save, Loader2, Lock, BookOpen } from 'lucide-react';
 import { fmtRp, acctFetcher, TYPE_LABEL, TYPE_COLOR } from '@/lib/accounting/ui';
+import { DateInput } from '@/components/ui/date-input';
 
 const TYPES = [
   { v: 'asset', l: 'Aset' }, { v: 'liability', l: 'Liabilitas' }, { v: 'equity', l: 'Ekuitas' },
@@ -31,7 +32,7 @@ export default function CoaPage() {
   return (
     <div className="space-y-5 max-w-6xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><BookOpen className="w-6 h-6 text-emerald-600" />Chart of Account</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><BookOpen className="w-6 h-6 text-emerald-600" />Daftar Akun</h1>
         <p className="text-muted-foreground text-sm">Daftar akun (SAK EP), saldo awal, pemetaan akun otomatis, dan pengaturan pajak.</p>
       </div>
       <Tabs defaultValue="accounts">
@@ -354,7 +355,7 @@ function SettingsTab() {
         <Separator />
         <div>
           <Label className="text-xs">Tanggal Pembukaan (Saldo Awal)</Label>
-          <Input type="date" value={f.openingDate || ''} onChange={(e) => setF({ ...f, openingDate: e.target.value })} className="w-52" />
+          <DateInput value={f.openingDate || ''} onChange={(e) => setF({ ...f, openingDate: e.target.value })} className="w-52" />
         </div>
         <div className="flex items-center justify-between rounded-lg border p-3">
           <div><div className="font-medium text-sm">Posting Otomatis</div><div className="text-[11px] text-muted-foreground">Sinkronkan jurnal otomatis setiap membuka laporan.</div></div>

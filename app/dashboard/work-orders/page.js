@@ -16,10 +16,12 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Search, Eye, ClipboardList, Loader2, Smartphone, Archive, ArchiveRestore } from 'lucide-react';
+import { Plus, Search, Eye, ClipboardList, Factory, Loader2, Smartphone, Archive, ArchiveRestore } from 'lucide-react';
 import { useSort, SortHead, ArchiveTabs, toggleArchive } from '@/lib/table-tools';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { DateInput } from '@/components/ui/date-input';
+import { EmptyRow, EmptyState } from '@/components/empty-state';
 
 const fetcher = (url) => fetch(url).then(r => r.json());
 const WO_STATUSES = ['Draft', 'Disetujui', 'Dalam Proses', 'Selesai', 'Dibatalkan'];
@@ -64,7 +66,7 @@ export default function WOListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><ClipboardList className="w-8 h-8 text-purple-600" /> Work Orders</h1>
+          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><ClipboardList className="w-8 h-8 text-purple-600" /> Work Order</h1>
           <p className="text-muted-foreground mt-1">Produksi Internal / Maklon dengan tracking rendemen per stage</p>
         </div>
         <div className="flex gap-2">
@@ -113,7 +115,7 @@ export default function WOListPage() {
             </TableRow></TableHeader>
             <TableBody>
               {isLoading && <TableRow><TableCell colSpan={9} className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin inline" /></TableCell></TableRow>}
-              {!isLoading && rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Belum ada WO</TableCell></TableRow>}
+              {!isLoading && rows.length === 0 && <EmptyRow colSpan={9} icon={Factory} title={q ? 'Tidak ada WO yang cocok' : 'Belum ada Work Order'} hint={q ? 'Coba kata kunci lain.' : 'Work Order mencatat produksi: bahan baku masuk, hasil rendemen keluar ke stok.'} action={q ? null : { label: 'Buat WO Baru', onClick: () => setOpen(true) }} />}
               {rows.map(r => (
                 <TableRow key={r.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono font-semibold text-xs">{r.woNumber}</TableCell>
@@ -179,7 +181,7 @@ function CreateWODialog({ onSaved }) {
             <SelectContent><SelectItem value="Internal">Internal</SelectItem><SelectItem value="Maklon">Maklon (RPH Pihak Ketiga)</SelectItem></SelectContent>
           </Select>
         </F>
-        <F label="Tanggal Mulai *"><Input type="date" value={form.startDate} onChange={e => upd('startDate', e.target.value)} /></F>
+        <F label="Tanggal Mulai *"><DateInput value={form.startDate} onChange={e => upd('startDate', e.target.value)} /></F>
         {form.mode === 'Maklon' && (
           <>
             <F label="RPH Maklon *">
