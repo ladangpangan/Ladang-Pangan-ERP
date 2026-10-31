@@ -45,10 +45,10 @@ function StatusBadge({ status, note }) {
   return (
     <span className="inline-flex flex-col items-center gap-0.5">
       <Badge variant="outline" className={cancelled
-        ? 'bg-red-100 text-red-700 border-red-200'
-        : paid
-          ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-          : 'bg-amber-100 text-amber-700 border-amber-200'}>
+ ? 'bg-red-100 text-red-700 border-red-200'
+ : paid
+ ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+ : 'bg-amber-100 text-amber-700 border-amber-200'}>
         {status}
       </Badge>
       {note && <span className="text-[10px] leading-tight text-red-600 max-w-[140px]">{note}</span>}
@@ -319,7 +319,7 @@ export default function FinancePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <Wallet className="w-8 h-8 text-emerald-600" /> Tagihan & Komisi
         </h1>
         <p className="text-muted-foreground text-sm mt-1">

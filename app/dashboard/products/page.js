@@ -106,7 +106,7 @@ export default function ProductsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Package className="w-8 h-8 text-amber-600" /> Produk</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Package className="w-8 h-8 text-amber-600" /> Produk</h1>
           <p className="text-muted-foreground mt-1">Master produk: Live Bird, Karkas, Boneless, Parting, Retail</p>
         </div>
         <div className="flex items-center gap-2">

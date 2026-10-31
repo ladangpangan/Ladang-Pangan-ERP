@@ -180,7 +180,7 @@ export default function TallyHistoryPage() {
                     <div className="grid grid-cols-[110px_1fr] gap-y-1 text-sm mb-3">
                       {detail.meta.map(([k, v]) => <div key={k} className="contents"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>)}
                     </div>
-                    <div className="text-xs font-bold tracking-wider uppercase text-muted-foreground mb-1">{type === 'wo' ? 'Catatan' : 'Daftar karung'}</div>
+                    <div className="text-xs font-bold text-muted-foreground mb-1">{type === 'wo' ? 'Catatan' : 'Daftar karung'}</div>
                     {detail.rows.map((r, i) => (
                       <div key={i} className="flex gap-3 text-sm py-2 border-b last:border-b-0">
                         <span className="font-mono shrink-0 w-[108px] truncate">{r[0]}</span>
@@ -288,7 +288,7 @@ function InboundPanel({ detail, onChanged }) {
       <div className="text-sm font-bold">Total: {detail.total}</div>
       {detail.revisionLines?.length > 0 && (
         <div className="border-t pt-2">
-          <div className="text-xs font-bold tracking-wider uppercase text-muted-foreground mb-1">Catatan revisi</div>
+          <div className="text-xs font-bold text-muted-foreground mb-1">Catatan revisi</div>
           <ul className="text-[13px] text-slate-700 space-y-1">{detail.revisionLines.map((l, i) => <li key={i}>{l}</li>)}</ul>
         </div>
       )}

@@ -148,13 +148,13 @@ export default function ApprovalsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <Badge variant="outline" className={cn('text-[10px]', meta.color)}>{meta.label}</Badge>
-                        <Badge variant="outline" className={cn('text-[10px] uppercase', PRIORITY_STYLE[concern.priority])}>{PRIORITY_LABEL[concern.priority] || concern.priority}</Badge>
+                        <Badge variant="outline" className={cn('text-[10px] ', PRIORITY_STYLE[concern.priority])}>{PRIORITY_LABEL[concern.priority] || concern.priority}</Badge>
                         {concern.status !== 'pending' && (
                           <Badge variant="outline" className={cn(
-                            'text-[10px]',
-                            concern.status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            'bg-red-50 text-red-700 border-red-200'
-                          )}>
+ 'text-[10px]',
+ concern.status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+ 'bg-red-50 text-red-700 border-red-200'
+ )}>
                             {concern.status === 'approved' ? '✓ Disetujui' : '✗ Ditolak'}
                           </Badge>
                         )}
@@ -173,7 +173,7 @@ export default function ApprovalsPage() {
                         <div className="mt-3 p-2 rounded bg-slate-50 text-xs border">
                           <div className="flex items-center gap-2">
                             {concern.supervisorAction === 'approved' ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <XCircle className="w-3.5 h-3.5 text-red-600" />}
-                            <span className="font-semibold text-[11px] uppercase text-slate-700">
+                            <span className="font-semibold text-[11px] text-slate-700">
                               Supervisor: {concern.supervisorAction}
                             </span>
                             <span className="text-[10px] text-muted-foreground">
@@ -189,7 +189,7 @@ export default function ApprovalsPage() {
                         <div className="mt-2 p-2 rounded bg-purple-50 text-xs border border-purple-100">
                           <div className="flex items-center gap-2">
                             {concern.direkturAction === 'acknowledged' ? <MessageSquareWarning className="w-3.5 h-3.5 text-purple-600" /> : <Flag className="w-3.5 h-3.5 text-purple-600" />}
-                            <span className="font-semibold text-[11px] uppercase text-purple-700">
+                            <span className="font-semibold text-[11px] text-purple-700">
                               Concern Direktur: {concern.direkturAction}
                             </span>
                             <span className="text-[10px] text-muted-foreground">
@@ -283,10 +283,10 @@ export default function ApprovalsPage() {
               onClick={submitAction}
               disabled={saving}
               className={cn(
-                action === 'approved' && 'bg-emerald-600 hover:bg-emerald-700',
-                action === 'rejected' && 'bg-red-600 hover:bg-red-700',
-                (action === 'acknowledged' || action === 'flagged') && 'bg-purple-600 hover:bg-purple-700',
-              )}
+ action === 'approved' && 'bg-emerald-600 hover:bg-emerald-700',
+ action === 'rejected' && 'bg-red-600 hover:bg-red-700',
+ (action === 'acknowledged' || action === 'flagged') && 'bg-purple-600 hover:bg-purple-700',
+ )}
             >
               {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Konfirmasi {action === 'approved' ? 'Setujui' : action === 'rejected' ? 'Tolak' : action === 'acknowledged' ? 'Tandai sudah dilihat' : 'Beri catatan'}
@@ -312,7 +312,7 @@ function SumCard({ label, value, icon: Icon, color = 'slate' }) {
           <Icon className="w-5 h-5" />
         </div>
         <div>
-          <div className="text-xs text-muted-foreground uppercase">{label}</div>
+          <div className="text-xs text-muted-foreground ">{label}</div>
           <div className="text-2xl font-bold">{value}</div>
         </div>
       </CardContent>

@@ -765,7 +765,7 @@ function CommissionCard({ so, canEdit, onSaved }) {
               <div><span className="text-muted-foreground">Komisi: </span><b className="text-pink-700">{rp(cm.commissionAmount)}</b></div>
               <div>
                 <span className={cn('text-[11px] px-2 py-0.5 rounded-full font-medium',
-                  cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+ cm.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
                   {cm.status === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'}
                 </span>
               </div>

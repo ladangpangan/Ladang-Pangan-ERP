@@ -7,7 +7,7 @@ export default async function TallyLayout({ children }) {
   try { session = await getAuth().api.getSession({ headers: await headers() }); } catch (e) { /* ignore */ }
   if (!session?.user) redirect('/login');
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100" style={{ fontFamily: "Roboto, ui-sans-serif, system-ui, sans-serif" }}>
       {children}
     </div>
   );

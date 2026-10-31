@@ -70,7 +70,7 @@ export default function ColdStoragePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Warehouse className="w-8 h-8 text-emerald-600" /> Gudang & Zona</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Warehouse className="w-8 h-8 text-emerald-600" /> Gudang & Zona</h1>
           <p className="text-muted-foreground mt-1">Kelola gudang beku dan zona penyimpanan untuk stok</p>
         </div>
         <Dialog open={csOpen} onOpenChange={setCsOpen}>
@@ -120,7 +120,7 @@ export default function ColdStoragePage() {
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center text-white">
+                  <div className="w-10 h-10 bg-primary/10 text-primary rounded-[10px] flex items-center justify-center">
                     <Snowflake className="w-5 h-5" />
                   </div>
                   <div>

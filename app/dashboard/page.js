@@ -1,235 +1,241 @@
 'use client';
 
-import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { format } from 'date-fns';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { TrendingUp, ShoppingCart, ClipboardList, Boxes, AlertTriangle, DollarSign, Package, Users, Loader2, ArrowRight, Wallet, Activity, Factory, TrendingDown, ChevronRight } from 'lucide-react';
-import { fmtNum } from '@/lib/format';
+import { Card } from '@/components/ui/card';
+import { Loader2, CheckCircle2, ArrowRight } from 'lucide-react';
+import { useSession } from '@/lib/auth/auth-client';
+import { fmtNum, fmtRp } from '@/lib/format';
 
-const fetcher = (url) => fetch(url).then(r => r.json());
+// Beranda per peran (gaya Opsi A): "Perlu tindakan" di atas, lalu angka yang relevan untuk peran itu.
+const fetcher = (url) => fetch(url).then(r => (r.ok ? r.json() : null));
+const SUSUT_LIMIT = 5; // % — susut supplier di atas ini masuk "Perlu tindakan"
 
-const pctColorClass = (pct) => pct === null || pct === undefined ? 'text-muted-foreground' : pct >= 5 ? 'text-red-600' : pct >= 2 ? 'text-amber-600' : 'text-emerald-600';
+const LEVEL = {
+  high: { bg: 'bg-red-50', cta: 'text-red-700' },
+  medium: { bg: 'bg-amber-50', cta: 'text-amber-800' },
+  info: { bg: 'bg-muted/70', cta: 'text-foreground' },
+};
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam';
+}
 
 export default function DashboardHome() {
-  const { data: sum } = useSWR('/api/dashboard/summary', fetcher, { refreshInterval: 30000 });
-  const { data: shr } = useSWR('/api/dashboard/supplier-shrinkage', fetcher, { refreshInterval: 60000 });
-  const s = sum?.data;
-  const shrRows = shr?.data || [];
-  const shrTotals = shr?.totals;
-  const [selectedSupplier, setSelectedSupplier] = useState(null);
-  const { data: shrDetail } = useSWR(selectedSupplier ? `/api/dashboard/supplier-shrinkage/${selectedSupplier.id}` : null, fetcher);
-  const detail = shrDetail?.data;
+  const { data: session } = useSession();
+  const { data: res, isLoading } = useSWR('/api/dashboard/home', fetcher, { refreshInterval: 60000 });
+  const d = res?.data;
+  const role = d?.role || session?.user?.role;
+  const isFin = role === 'direktur' || role === 'akuntan';
+  const { data: ovRes } = useSWR(isFin ? '/api/accounting/overview' : null, fetcher);
+  const { data: shrRes } = useSWR(role === 'direktur' || role === 'supervisor' ? '/api/dashboard/supplier-shrinkage' : null, fetcher);
+  const ov = ovRes?.data;
 
+  const actions = [...(d?.actions || [])];
+  for (const r of (shrRes?.data || []).filter(x => x.susutPct != null && x.susutPct >= SUSUT_LIMIT)) {
+    actions.push({ key: `susut-${r.supplierId}`, level: 'info', title: `Susut supplier ${fmtNum(r.susutPct, 1)}%`,
+      detail: `${r.supplierName} · di atas batas ${SUSUT_LIMIT}%`, href: '/dashboard/purchase-reports', cta: 'Rincian' });
+  }
+
+  const name = (session?.user?.name || '').split(' ')[0];
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Beranda</h1>
-        <p className="text-muted-foreground mt-1">Ringkasan operasional PT Ladang Pangan Indonesia — diperbarui otomatis tiap 30 detik</p>
-      </div>
+    <div className="max-w-6xl space-y-6">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">{greeting()}{name ? `, ${name}` : ''}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{format(new Date(), 'EEEE, d MMMM yyyy')}{role === 'akuntan' ? '' : ' · ringkasan bulan ini'}</p>
+        </div>
+        <span className="text-[13px] font-semibold text-primary bg-primary/10 rounded-[10px] px-3 py-1.5">{format(new Date(), 'MMMM yyyy')}</span>
+      </header>
 
-      {!s ? <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin inline" /></div> : (
+      {isLoading || !d ? <div className="py-16 text-center"><Loader2 className="w-6 h-6 animate-spin inline text-muted-foreground" /></div> : (
         <>
-          {/* Top KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <KPI icon={Factory} color="from-purple-500 to-purple-600" label="Produksi Hari Ini" value={`${s.todayProduction.count} WO`} sub={`${fmtNum(s.todayProduction.rendemenWeight, 1)} kg · Efisiensi ${fmtNum(s.todayProduction.efficiency, 1)}%`} href="/dashboard/work-orders" />
-            <KPI icon={Wallet} color="from-blue-500 to-blue-600" label="Piutang (AR)" value={`Rp ${Number(s.finance.totalAR).toLocaleString('id-ID')}`} sub={`Utang: Rp ${Number(s.finance.totalAP).toLocaleString('id-ID')}`} href="/dashboard/sales-reports" />
-            <KPI icon={Package} color="from-cyan-500 to-cyan-600" label="Nilai Stok" value={`Rp ${Number(s.inventoryValue).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`} sub="Karung tersedia di gudang" href="/dashboard/inventory" />
+          <KpiRow d={d} ov={ov} role={role} />
+          <Actions actions={actions} />
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {isFin && <MoneyCard d={d} ov={ov} />}
+            <StockCard stock={d.stock} />
+            {!isFin && <TodayCard today={d.today} />}
           </div>
 
-          {/* Active WO + Alerts */}
-          <div className="grid lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Activity className="w-4 h-4" />Work Order Aktif</CardTitle><CardDescription>Sedang dalam proses produksi</CardDescription></CardHeader>
-              <CardContent className="space-y-2">
-                {Object.keys(s.activeWo).length === 0 && <div className="text-sm text-muted-foreground text-center py-4">Tidak ada WO aktif</div>}
-                {Object.entries(s.activeWo).map(([status, count]) => (
-                  <div key={status} className="flex items-center justify-between p-3 rounded-lg bg-slate-50">
-                    <Badge className={status === 'Dalam Proses' ? 'bg-amber-100 text-amber-700' : status === 'Disetujui' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100'}>{status}</Badge>
-                    <span className="text-2xl font-bold">{count}</span>
-                  </div>
-                ))}
-                <Link href="/dashboard/work-orders"><Button variant="outline" size="sm" className="w-full mt-2">Lihat semua WO <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>
-              </CardContent>
+          {role === 'akuntan' && d.aging && <AgingCard aging={d.aging} />}
+
+          {d.woMonth > 0 && (
+            <Card className="p-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="font-bold">Produksi bulan ini</div>
+                <div className="text-sm text-muted-foreground mt-0.5">{d.woMonth} Work Order tercatat</div>
+              </div>
+              <Link href="/dashboard/work-orders" className="text-sm font-semibold text-primary">Buka Work Order</Link>
             </Card>
-
-            <Card>
-              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><AlertTriangle className="w-4 h-4 text-amber-600" />Alerts</CardTitle><CardDescription>Perlu perhatian segera</CardDescription></CardHeader>
-              <CardContent className="space-y-2">
-                <AlertRow color="amber" label="Stok mendekati expired (≤7 hari)" value={s.alerts.nearExpired} href="/dashboard/inventory-reports" />
-                <AlertRow color="red" label="Stok sudah expired" value={s.alerts.expired} href="/dashboard/inventory-reports" />
-                <AlertRow color="slate" label="Rusak / Susut" value={`${s.alerts.damaged.count} karung · ${fmtNum(s.alerts.damaged.weight, 2)} kg`} href="/dashboard/inventory-reports" />
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Rekap Susut per Supplier (Surat Jalan vs Tally) */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base"><TrendingDown className="w-4 h-4 text-amber-600" />Rekap Susut per Supplier</CardTitle>
-              <CardDescription>Selisih Berat Dikirim (Surat Jalan) vs Berat Diterima (Tally) — pantau kualitas kiriman supplier</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {shrRows.length === 0 ? (
-                <div className="text-sm text-muted-foreground text-center py-6">Belum ada data penerimaan (Surat Jalan) untuk dihitung.</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-xs text-muted-foreground border-b">
-                        <th className="text-left font-medium py-2">Supplier</th>
-                        <th className="text-right font-medium py-2">PO</th>
-                        <th className="text-right font-medium py-2">Dikirim (ditally)</th>
-                        <th className="text-right font-medium py-2">Diterima (Tally)</th>
-                        <th className="text-right font-medium py-2">Susut</th>
-                        <th className="text-right font-medium py-2">%</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {shrRows.map(r => {
-                        const pct = r.susutPct;
-                        const pctColor = pctColorClass(pct);
-                        return (
-                          <tr key={r.supplierId} onClick={() => setSelectedSupplier({ id: r.supplierId, name: r.supplierName })} className="border-b last:border-0 hover:bg-emerald-50/60 cursor-pointer">
-                            <td className="py-2">
-                              <div className="font-medium flex items-center gap-1 text-emerald-700">{r.supplierName} <ChevronRight className="w-3.5 h-3.5 opacity-60" /></div>
-                              <div className="text-xs text-muted-foreground font-mono">{r.supplierCode}</div>
-                            </td>
-                            <td className="text-right">{r.poCount}</td>
-                            <td className="text-right">{r.tallyDone ? `${r.sjTallied.toLocaleString('id-ID')} kg` : <span className="text-xs text-muted-foreground">belum tally</span>}</td>
-                            <td className="text-right">{r.tallyDone ? `${r.tallyWeight.toLocaleString('id-ID')} kg` : '-'}</td>
-                            <td className="text-right font-semibold">{r.tallyDone ? `${r.susut.toLocaleString('id-ID')} kg` : '-'}</td>
-                            <td className={`text-right font-bold ${pctColor}`}>{pct === null ? '-' : `${pct}%`}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    {shrTotals && (
-                      <tfoot>
-                        <tr className="border-t font-semibold bg-slate-50/60">
-                          <td className="py-2">TOTAL</td>
-                          <td></td>
-                          <td className="text-right">{(shrTotals.sjTallied ?? 0).toLocaleString('id-ID')} kg</td>
-                          <td className="text-right">{shrTotals.tallyWeight.toLocaleString('id-ID')} kg</td>
-                          <td className="text-right">{shrTotals.susut.toLocaleString('id-ID')} kg</td>
-                          <td className={`text-right ${shrTotals.susutPct >= 5 ? 'text-red-600' : shrTotals.susutPct >= 2 ? 'text-amber-600' : 'text-emerald-600'}`}>{shrTotals.susutPct}%</td>
-                        </tr>
-                      </tfoot>
-                    )}
-                  </table>
-                  <div className="text-[11px] text-muted-foreground mt-2">Kolom &quot;Dikirim (ditally)&quot; = berat SJ untuk item yang sudah ditally · Klik baris untuk rincian per PO &amp; produk · Warna %: <span className="text-emerald-600">hijau &lt;2%</span> · <span className="text-amber-600">kuning 2–5%</span> · <span className="text-red-600">merah ≥5%</span></div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Quick nav to reports */}
-          <Card>
-            <CardHeader><CardTitle className="text-base">Laporan per Modul</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <Link href="/dashboard/sales-reports" className="p-4 border rounded-lg hover:bg-slate-50"><TrendingUp className="w-5 h-5 text-emerald-600 mb-2" /><div className="font-semibold">Penjualan</div><div className="text-xs text-muted-foreground">SO, per customer/produk, AR</div></Link>
-              <Link href="/dashboard/purchase-reports" className="p-4 border rounded-lg hover:bg-slate-50"><ShoppingCart className="w-5 h-5 text-blue-600 mb-2" /><div className="font-semibold">Pembelian</div><div className="text-xs text-muted-foreground">PO, per supplier, AP, susut</div></Link>
-              <Link href="/dashboard/production-reports" className="p-4 border rounded-lg hover:bg-slate-50"><ClipboardList className="w-5 h-5 text-purple-600 mb-2" /><div className="font-semibold">Produksi</div><div className="text-xs text-muted-foreground">Batch, rendemen, HPP, efisiensi</div></Link>
-              <Link href="/dashboard/inventory-reports" className="p-4 border rounded-lg hover:bg-slate-50"><Boxes className="w-5 h-5 text-cyan-600 mb-2" /><div className="font-semibold">Stok</div><div className="text-xs text-muted-foreground">Per gudang/produk, kadaluarsa, rusak</div></Link>
-            </CardContent>
-          </Card>
+          )}
         </>
       )}
-
-      {/* Dialog: Rincian Susut Supplier */}
-      <Dialog open={!!selectedSupplier} onOpenChange={(o) => { if (!o) setSelectedSupplier(null); }}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><TrendingDown className="w-5 h-5 text-amber-600" /> Rincian Susut — {selectedSupplier?.name}</DialogTitle>
-            <DialogDescription>Selisih Berat Dikirim (Surat Jalan) vs Diterima (Tally) per PO &amp; produk</DialogDescription>
-          </DialogHeader>
-          {!detail ? (
-            <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Memuat…</div>
-          ) : detail.pos.length === 0 ? (
-            <div className="py-10 text-center text-muted-foreground text-sm">Belum ada data penerimaan.</div>
-          ) : (
-            <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-2 text-center bg-slate-50 rounded-lg p-3 text-sm">
-                <div><div className="text-xs text-muted-foreground">Dikirim (SJ)</div><div className="font-bold">{detail.totals.sjWeight.toLocaleString('id-ID')} kg</div></div>
-                <div><div className="text-xs text-muted-foreground">Diterima (Tally)</div><div className="font-bold">{detail.totals.tallyWeight.toLocaleString('id-ID')} kg</div></div>
-                <div><div className="text-xs text-muted-foreground">Susut</div><div className="font-bold">{detail.totals.susut.toLocaleString('id-ID')} kg</div></div>
-                <div><div className="text-xs text-muted-foreground">%</div><div className={`font-bold ${pctColorClass(detail.totals.susutPct)}`}>{detail.totals.susutPct}%</div></div>
-              </div>
-              {detail.pos.map(po => (
-                <div key={po.poId} className="border rounded-lg overflow-hidden">
-                  <div className="flex items-center justify-between px-3 py-2 bg-muted/40 text-sm">
-                    <div>
-                      <span className="font-semibold">{po.poNumber}</span>
-                      {po.orderDate && <span className="text-xs text-muted-foreground ml-2">{format(new Date(po.orderDate), 'dd MMM yyyy')}</span>}
-                      <Badge variant="secondary" className="ml-2 text-[10px]">{po.status}</Badge>
-                    </div>
-                    <div className="text-xs">
-                      Susut: <b className={pctColorClass(po.susutPct)}>{po.tallyDone ? `${po.susut.toLocaleString('id-ID')} kg (${po.susutPct}%)` : 'belum tally'}</b>
-                    </div>
-                  </div>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-muted-foreground border-b">
-                        <th className="text-left font-medium px-3 py-1.5">Produk</th>
-                        <th className="text-right font-medium px-2">Dikirim</th>
-                        <th className="text-right font-medium px-2">Diterima</th>
-                        <th className="text-right font-medium px-2">Susut</th>
-                        <th className="text-right font-medium px-3">%</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {po.items.map(it => (
-                        <tr key={it.productId} className="border-b last:border-0">
-                          <td className="px-3 py-1.5">
-                            <div className="font-medium">{it.productName}</div>
-                            <div className="text-[10px] text-muted-foreground font-mono">{it.sku}</div>
-                          </td>
-                          <td className="text-right px-2">{it.sjWeight.toLocaleString('id-ID')} kg</td>
-                          <td className="text-right px-2">{it.tallyDone ? `${it.tallyWeight.toLocaleString('id-ID')} kg` : '—'}</td>
-                          <td className="text-right px-2 font-semibold">{it.tallyDone ? `${it.susut.toLocaleString('id-ID')} kg` : '-'}</td>
-                          <td className={`text-right px-3 font-bold ${pctColorClass(it.susutPct)}`}>{it.susutPct === null ? '-' : `${it.susutPct}%`}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
     </div>
   );
 }
 
-function KPI({ icon: Icon, color, label, value, sub, href }) {
+function Kpi({ label, value, sub, tone, chip }) {
   return (
-    <Link href={href || '#'}>
-      <Card className="hover:shadow-md transition-shadow cursor-pointer overflow-hidden">
-        <CardContent className="p-5">
-          <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${color} flex items-center justify-center text-white mb-3`}><Icon className="w-5 h-5" /></div>
-          <div className="text-xl font-bold">{value}</div>
-          <div className="text-sm text-muted-foreground">{label}</div>
-          {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
-        </CardContent>
-      </Card>
-    </Link>
+    <Card className="p-4 sm:p-[18px] min-w-0">
+      <div className="text-xs sm:text-[13px] text-muted-foreground">{label}</div>
+      <div className={`text-base sm:text-[22px] font-bold mt-1 sm:mt-1.5 truncate ${tone || ''}`}>{value}</div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 sm:mt-2 min-h-[20px]">
+        {chip}
+        {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
+      </div>
+    </Card>
   );
 }
 
-function AlertRow({ color, label, value, href }) {
-  const cls = { amber: 'bg-amber-50 text-amber-700 border-amber-200', red: 'bg-red-50 text-red-700 border-red-200', slate: 'bg-slate-50 text-slate-700 border-slate-200' }[color];
+function KpiRow({ d, ov, role }) {
+  const m = d.month;
+  const change = m.revenuePrev > 0 ? Math.round((m.revenue - m.revenuePrev) / m.revenuePrev * 100) : null;
+  const chip = change == null ? null : (
+    <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${change >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{change >= 0 ? '+' : '−'}{Math.abs(change)}%</span>
+  );
+  const cash = ov ? Number(ov.cash || 0) : null;
+  let cards;
+  if (role === 'akuntan') {
+    cards = [
+      <Kpi key="c" label="Kas & bank" value={cash == null ? '–' : fmtRp(cash)} tone={cash < 0 ? 'text-red-600' : ''} sub={cash < 0 ? 'saldo awal belum diisi?' : ov ? `Kas ${fmtRp(ov.kas)} · Bank ${fmtRp(ov.bank)}` : ''} />,
+      <Kpi key="ar" label="Piutang sudah ditagih" value={fmtRp(d.money.arTotal)} sub={d.money.arOverdue > 0 ? `${fmtRp(d.money.arOverdue)} lewat jatuh tempo` : 'tidak ada yang lewat'} />,
+      <Kpi key="ap" label="Utang sudah ditagih" value={fmtRp(d.money.apBilled)} sub={d.money.apPending > 0 ? `+ akan ditagih ${fmtRp(d.money.apPending)}` : ''} />,
+      <Kpi key="gp" label="Laba kotor bulan ini" value={fmtRp(m.grossProfit)} tone="text-primary" sub={`Margin ${fmtNum(m.margin, 1)}%`} />,
+    ];
+  } else if (role === 'direktur') {
+    cards = [
+      <Kpi key="s" label="Penjualan" value={fmtRp(m.revenue)} chip={chip} sub={change == null ? `${m.orders} SO` : 'dari bulan lalu'} />,
+      <Kpi key="w" label="Terjual" value={`${fmtNum(m.weight, 1)} kg`} sub={`${m.orders} SO${m.weight > 0 ? ` · rata-rata ${fmtRp(m.revenue / m.weight)}/kg` : ''}`} />,
+      <Kpi key="g" label="Laba kotor" value={fmtRp(m.grossProfit)} tone="text-primary" sub={`Margin ${fmtNum(m.margin, 1)}%`} />,
+      <Kpi key="p" label="Pembelian" value={fmtRp(m.purchase)} sub={`${m.purchaseCount} PO${m.susutPct != null ? ` · susut ${fmtNum(m.susutPct, 1)}%` : ''}`} />,
+    ];
+  } else {
+    cards = [
+      <Kpi key="in" label="Masuk hari ini" value={`${fmtNum(d.today.inKg, 1)} kg`} sub={`${fmtNum(d.today.inBags, 0)} karung`} />,
+      <Kpi key="out" label="Keluar hari ini" value={`${fmtNum(d.today.outKg, 1)} kg`} sub={`${fmtNum(d.today.outBags, 0)} karung`} />,
+      <Kpi key="st" label="Stok tersedia" value={`${fmtNum(d.stock.weight, 1)} kg`} sub={`${d.stock.bags} karung`} />,
+      <Kpi key="s" label="Penjualan bulan ini" value={fmtRp(m.revenue)} chip={chip} sub={`${m.orders} SO · ${fmtNum(m.weight, 1)} kg`} />,
+    ];
+  }
+  return <div className="grid gap-3 sm:gap-4 grid-cols-2 xl:grid-cols-4">{cards}</div>;
+}
+
+function Actions({ actions }) {
   return (
-    <Link href={href || '#'}>
-      <div className={`p-3 rounded-lg border flex items-center justify-between ${cls} hover:brightness-95 cursor-pointer`}>
-        <span className="text-sm">{label}</span>
-        <span className="font-bold">{value}</span>
+    <Card className="p-5 space-y-3.5">
+      <h2 className="font-bold flex items-center gap-2">
+        Perlu tindakan
+        {actions.length > 0 && <span className="text-xs font-semibold bg-red-50 text-red-700 rounded-full px-2 py-0.5">{actions.length}</span>}
+      </h2>
+      {actions.length === 0 ? (
+        <div className="flex items-center gap-2.5 text-sm text-muted-foreground rounded-xl bg-emerald-50/70 px-4 py-3.5">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600" />Tidak ada yang perlu ditindaklanjuti. Semua beres.
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {actions.map(a => {
+            const L = LEVEL[a.level] || LEVEL.info;
+            return (
+              <div key={a.key} className={`${L.bg} rounded-xl px-4 py-3.5 flex flex-col gap-2`}>
+                <div className="text-sm font-semibold">{a.title}{a.amount ? ` · ${fmtRp(a.amount)}` : ''}</div>
+                {a.detail && <div className="text-[13px] text-muted-foreground">{a.detail}</div>}
+                <Link href={a.href} className={`self-start text-[13px] font-semibold bg-card rounded-[9px] px-3 py-1.5 ${L.cta} hover:shadow-sm`}>{a.cta}</Link>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Row({ label, value, tone }) {
+  return <div className="flex justify-between gap-3 text-sm py-2"><span className="text-foreground/75">{label}</span><span className={`font-semibold ${tone || ''}`}>{value}</span></div>;
+}
+
+function MoneyCard({ d, ov }) {
+  const cash = ov ? Number(ov.cash || 0) : null;
+  return (
+    <Card className="p-5">
+      <div className="flex justify-between items-baseline mb-1.5">
+        <h2 className="font-bold">Uang</h2>
+        <Link href="/dashboard/finance" className="text-[13px] font-semibold text-primary">Penagihan</Link>
       </div>
-    </Link>
+      <Row label="Piutang sudah ditagih" value={fmtRp(d.money.arTotal)} />
+      {d.money.arOverdue > 0 && <Row label="— lewat jatuh tempo" value={fmtRp(d.money.arOverdue)} tone="text-red-600" />}
+      <Row label="Utang sudah ditagih" value={fmtRp(d.money.apBilled)} />
+      <Row label="Utang akan ditagih (barang sudah diterima)" value={fmtRp(d.money.apPending)} />
+      {cash != null && <Row label="Kas & bank" value={fmtRp(cash)} tone={cash < 0 ? 'text-red-600' : ''} />}
+      {cash != null && cash < 0 && (
+        <div className="text-xs text-muted-foreground mt-1">Kas minus karena saldo awal belum diisi. <Link href="/dashboard/accounting/coa" className="text-primary font-semibold">Isi saldo awal</Link></div>
+      )}
+    </Card>
+  );
+}
+
+function StockCard({ stock }) {
+  const top = stock.byProduct.slice(0, 5);
+  const max = Math.max(1, ...top.map(p => p.weight));
+  return (
+    <Card className="p-5 space-y-3">
+      <div className="flex justify-between items-baseline">
+        <h2 className="font-bold">Stok di gudang</h2>
+        <Link href="/dashboard/inventory" className="text-[13px] font-semibold text-primary">Buka stok</Link>
+      </div>
+      {top.length === 0 ? <div className="text-sm text-muted-foreground py-2">Belum ada stok tersedia.</div> : top.map((p, i) => (
+        <div key={p.name}>
+          <div className="flex justify-between gap-3 text-sm"><span className="truncate">{p.name}</span><span className="font-semibold shrink-0">{fmtNum(p.weight, 1)} kg <span className="text-muted-foreground font-normal">· {p.bags} karung</span></span></div>
+          <div className="h-2 bg-muted rounded-full mt-1.5 overflow-hidden"><div className={`h-full rounded-full ${i === 0 ? 'bg-emerald-500' : 'bg-emerald-400/80'}`} style={{ width: `${Math.max(3, p.weight / max * 100)}%` }} /></div>
+        </div>
+      ))}
+      <div className="text-[13px] text-muted-foreground">
+        Total {fmtNum(stock.weight, 1)} kg · {stock.bags} karung · nilai {fmtRp(stock.value)}
+        {stock.nearExpiryBags > 0 && <span className="text-amber-700"> · {fmtNum(stock.nearExpiryKg, 1)} kg hampir kadaluarsa</span>}
+      </div>
+    </Card>
+  );
+}
+
+function TodayCard({ today }) {
+  return (
+    <Card className="p-5">
+      <div className="flex justify-between items-baseline mb-1.5">
+        <h2 className="font-bold">Gudang hari ini</h2>
+        <Link href="/dashboard/tally-history" className="text-[13px] font-semibold text-primary">Riwayat Tally</Link>
+      </div>
+      <Row label="Barang masuk" value={`${fmtNum(today.inKg, 1)} kg · ${fmtNum(today.inBags, 0)} karung`} />
+      <Row label="Barang keluar" value={`${fmtNum(today.outKg, 1)} kg · ${fmtNum(today.outBags, 0)} karung`} />
+      <div className="flex flex-wrap gap-2 pt-3">
+        <Link href="/dashboard/sales-orders" className="text-[13px] font-semibold text-primary bg-primary/10 rounded-[9px] px-3 py-1.5 inline-flex items-center gap-1">Sales Order <ArrowRight className="w-3.5 h-3.5" /></Link>
+        <Link href="/dashboard/purchase-orders" className="text-[13px] font-semibold text-primary bg-primary/10 rounded-[9px] px-3 py-1.5 inline-flex items-center gap-1">Purchase Order <ArrowRight className="w-3.5 h-3.5" /></Link>
+      </div>
+    </Card>
+  );
+}
+
+function AgingCard({ aging }) {
+  const cols = [['notDue', 'Belum jatuh tempo'], ['d1_7', 'Lewat 1–7 hari'], ['d8_30', 'Lewat 8–30 hari'], ['d30p', 'Lewat >30 hari']];
+  const cell = (v, k) => <td key={k} className={`py-2.5 text-right ${v > 0 && k !== 'notDue' ? (k === 'd1_7' ? 'text-amber-700' : 'text-red-600') : v > 0 ? '' : 'text-muted-foreground'}`}>{v > 0 ? fmtRp(v) : '–'}</td>;
+  return (
+    <Card className="p-5 space-y-3">
+      <div className="flex justify-between items-baseline">
+        <h2 className="font-bold">Umur piutang & utang</h2>
+        <Link href="/dashboard/finance" className="text-[13px] font-semibold text-primary">Penagihan</Link>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[560px]">
+          <thead><tr className="text-xs text-muted-foreground"><th className="text-left font-medium pb-2"></th>{cols.map(([k, l]) => <th key={k} className="text-right font-medium pb-2">{l}</th>)}</tr></thead>
+          <tbody>
+            <tr className="border-t"><td className="py-2.5 font-semibold">Piutang</td>{cols.map(([k]) => cell(aging.ar[k], k))}</tr>
+            <tr className="border-t"><td className="py-2.5 font-semibold">Utang</td>{cols.map(([k]) => cell(aging.ap[k], k))}</tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="text-xs text-muted-foreground">Jatuh tempo = tanggal faktur + termin (CBD/COD dihitung hari itu juga).</div>
+    </Card>
   );
 }

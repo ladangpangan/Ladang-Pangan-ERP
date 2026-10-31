@@ -207,7 +207,7 @@ function SummaryCard({ label, value, sub, color = 'slate' }) {
   const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-slate-900' }[color] || '';
   return (
     <Card><CardContent className="pt-6">
-      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-muted-foreground ">{label}</div>
       <div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">{sub}</div>
     </CardContent></Card>
@@ -953,7 +953,7 @@ function HppTab({ po }) {
 
 function Stat({ label, value, highlight }) {
   return (
-    <div className={`p-3 rounded-lg border ${highlight ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50'}`}>
+    <div className={`p-3 rounded-xl ${highlight ? 'bg-emerald-50' : 'bg-muted/60'}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`font-bold ${highlight ? 'text-emerald-700 text-lg' : 'text-slate-900'}`}>{value}</div>
     </div>

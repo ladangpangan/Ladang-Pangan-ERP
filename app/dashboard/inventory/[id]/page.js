@@ -59,8 +59,8 @@ export default function InventoryDetailPage() {
         <CardHeader><CardTitle className="text-base flex items-center gap-2"><GitBranch className="w-4 h-4" />Traceability</CardTitle><CardDescription>Sumber dan riwayat perpindahan</CardDescription></CardHeader>
         <CardContent className="space-y-3">
           {stk.source && (
-            <div className="p-3 rounded-lg border bg-slate-50">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Sumber Batch ({stk.sourceType})</div>
+            <div className="p-3 rounded-xl bg-slate-50">
+              <div className="text-xs text-muted-foreground mb-1">Sumber Batch ({stk.sourceType})</div>
               <div className="font-mono font-bold">{stk.source.number}</div>
               <div className="text-xs text-muted-foreground">{stk.sourceType === 'WO' ? `Mode: ${stk.source.mode}` : `Type: ${stk.source.poType}`} · {format(new Date(stk.source.startDate || stk.source.orderDate), 'dd MMM yyyy')}</div>
               <Link href={stk.sourceType === 'WO' ? `/dashboard/work-orders/${stk.source.id}` : `/dashboard/purchase-orders/${stk.source.id}`}><Button size="sm" variant="outline" className="mt-2"><LinkIcon className="w-3 h-3 mr-1" />Buka Detail</Button></Link>
@@ -68,7 +68,7 @@ export default function InventoryDetailPage() {
           )}
           {stk.inboundTransaction && (
             <div className="p-3 rounded-lg border">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Inbound Transaction</div>
+              <div className="text-xs text-muted-foreground mb-1">Inbound Transaction</div>
               <div className="flex items-center gap-2 flex-wrap text-sm">
                 <Badge>{stk.inboundTransaction.transactionType}</Badge>
                 <span>{format(new Date(stk.inboundTransaction.transactionDate), 'dd MMM yyyy HH:mm')}</span>
@@ -77,14 +77,14 @@ export default function InventoryDetailPage() {
             </div>
           )}
           {stk.parent && (
-            <div className="p-3 rounded-lg border bg-amber-50">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Karung Induk (parent)</div>
+            <div className="p-3 rounded-xl bg-amber-50">
+              <div className="text-xs text-muted-foreground mb-1">Karung Induk (parent)</div>
               <Link href={`/dashboard/inventory/${stk.parent.id}`} className="font-mono font-bold text-emerald-700 hover:underline">{stk.parent.kodeSimpan}</Link>
             </div>
           )}
           {stk.children?.length > 0 && (
             <div className="p-3 rounded-lg border">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Child Packs ({stk.children.length})</div>
+              <div className="text-xs text-muted-foreground mb-2">Child Packs ({stk.children.length})</div>
               <div className="grid grid-cols-2 gap-2">
                 {stk.children.map(c => (
                   <Link key={c.id} href={`/dashboard/inventory/${c.id}`} className="p-2 border rounded hover:bg-slate-50 text-sm">
@@ -102,5 +102,5 @@ export default function InventoryDetailPage() {
 }
 
 function Row({ label, value }) {
-  return <div className="flex justify-between items-start gap-3"><span className="text-muted-foreground text-xs uppercase">{label}</span><span className="text-right">{value || <span className="text-muted-foreground">-</span>}</span></div>;
+  return <div className="flex justify-between items-start gap-3"><span className="text-muted-foreground text-xs ">{label}</span><span className="text-right">{value || <span className="text-muted-foreground">-</span>}</span></div>;
 }

@@ -115,8 +115,8 @@ export default function WODetailPage() {
 }
 
 function Stat({ label, value, sub, color = 'slate' }) {
-  const c = { emerald: 'text-emerald-600', red: 'text-red-600', amber: 'text-amber-600', slate: 'text-slate-900' }[color] || '';
-  return <Card><CardContent className="pt-6"><div className="text-xs text-muted-foreground uppercase">{label}</div><div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div><div className="text-xs text-muted-foreground mt-1">{sub}</div></CardContent></Card>;
+  const c = { emerald: 'text-emerald-600', red: 'text-red-600', amber: 'text-amber-600', slate: 'text-foreground' }[color] || '';
+  return <Card><CardContent className="pt-6"><div className="text-[13px] text-muted-foreground">{label}</div><div className={`text-xl font-bold mt-1.5 ${c}`}>{value}</div><div className="text-xs text-muted-foreground mt-1">{sub}</div></CardContent></Card>;
 }
 function F({ label, children, className = '' }) { return <div className={`space-y-1.5 ${className}`}><Label className="text-xs">{label}</Label>{children}</div>; }
 

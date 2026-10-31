@@ -80,7 +80,7 @@ export default function InventoryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2"><Boxes className="w-8 h-8 text-cyan-600" /> Stok</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Boxes className="w-8 h-8 text-cyan-600" /> Stok</h1>
           <p className="text-muted-foreground mt-1">Stok cold storage dengan FIFO/FEFO, kode simpan tracking, traceability ke PO/WO</p>
         </div>
         <div className="flex gap-2">
@@ -203,8 +203,8 @@ export default function InventoryPage() {
 }
 
 function Stat({ label, value, color = 'slate' }) {
-  const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-slate-900' }[color];
-  return <Card><CardContent className="pt-6"><div className="text-xs text-muted-foreground uppercase">{label}</div><div className={`text-2xl font-bold mt-1 ${c}`}>{value}</div></CardContent></Card>;
+  const c = { emerald: 'text-emerald-600', amber: 'text-amber-600', red: 'text-red-600', slate: 'text-foreground' }[color];
+  return <Card><CardContent className="pt-6"><div className="text-[13px] text-muted-foreground">{label}</div><div className={`text-xl font-bold mt-1.5 ${c}`}>{value}</div></CardContent></Card>;
 }
 
 function GroupedView({ rows, selected, toggle, canOperate, canManage, products, mutate, expandedGroups, setExpandedGroups }) {
@@ -307,7 +307,7 @@ function GroupedView({ rows, selected, toggle, canOperate, canManage, products, 
               </div>
               <div className="text-right">
                 <div className="text-lg font-bold text-emerald-700">{fmtNum(g.totalWeight, 1)} kg</div>
-                <div className="text-[10px] text-muted-foreground uppercase">total</div>
+                <div className="text-[10px] text-muted-foreground ">total</div>
               </div>
             </button>
             {isExpanded && (

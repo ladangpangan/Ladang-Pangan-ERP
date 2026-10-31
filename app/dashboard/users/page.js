@@ -90,7 +90,7 @@ export default function UsersPage() {
           return (
             <Card key={r}>
               <CardContent className="p-4">
-                <div className="text-xs uppercase text-muted-foreground">{ROLE_LABELS[r]}</div>
+                <div className="text-xs text-muted-foreground">{ROLE_LABELS[r]}</div>
                 <div className="text-2xl font-bold mt-1">{count}</div>
               </CardContent>
             </Card>
@@ -142,7 +142,7 @@ export default function UsersPage() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{u.email}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={cn('uppercase text-[10px]', ROLE_STYLES[u.role])}>{ROLE_LABELS[u.role] || u.role}</Badge>
+                        <Badge variant="outline" className={cn(' text-[10px]', ROLE_STYLES[u.role])}>{ROLE_LABELS[u.role] || u.role}</Badge>
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className={u.status === 'active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500'}>

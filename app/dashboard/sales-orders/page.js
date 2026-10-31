@@ -101,7 +101,7 @@ export default function SOListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <TrendingUp className="w-8 h-8 text-emerald-600" /> Sales Order
           </h1>
           <p className="text-muted-foreground mt-1">Penjualan B2B: pelanggan reguler &amp; subscriber (prepaid)</p>
@@ -604,9 +604,9 @@ function StockPicker({ stocks, products, onPick }) {
                 onClick={() => !fullyReserved && onPick(st)}
                 disabled={fullyReserved}
                 className={cn(
-                  "w-full text-left p-3 border-b last:border-0 transition-colors",
-                  fullyReserved ? 'opacity-50 cursor-not-allowed bg-slate-50' : 'hover:bg-slate-50'
-                )}
+ "w-full text-left p-3 border-b last:border-0 transition-colors",
+ fullyReserved ? 'opacity-50 cursor-not-allowed bg-slate-50' : 'hover:bg-slate-50'
+ )}
               >
                 <div className="flex items-start gap-3">
                   <Package className={cn("w-5 h-5 mt-0.5 flex-shrink-0", fullyReserved ? 'text-slate-400' : 'text-emerald-600')} />

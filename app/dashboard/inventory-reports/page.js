@@ -113,10 +113,10 @@ function StockCardTab() {
         {!isCard && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="p-3 rounded-lg border bg-emerald-50"><div className="text-xs uppercase text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(ld?.summary?.totalInWeight)} kg</div></div>
-              <div className="p-3 rounded-lg border bg-red-50"><div className="text-xs uppercase text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(ld?.summary?.totalOutWeight)} kg</div></div>
-              <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs uppercase text-muted-foreground">Selisih (Net)</div><div className="text-xl font-bold">{kg((ld?.summary?.totalInWeight || 0) - (ld?.summary?.totalOutWeight || 0))} kg</div></div>
-              <div className="p-3 rounded-lg border bg-indigo-50"><div className="text-xs uppercase text-indigo-700">Jumlah Pergerakan</div><div className="text-xl font-bold text-indigo-700">{ld?.total || 0}</div></div>
+              <div className="p-3 rounded-xl bg-emerald-50"><div className="text-xs text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(ld?.summary?.totalInWeight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-red-50"><div className="text-xs text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(ld?.summary?.totalOutWeight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground">Selisih (Net)</div><div className="text-xl font-bold">{kg((ld?.summary?.totalInWeight || 0) - (ld?.summary?.totalOutWeight || 0))} kg</div></div>
+              <div className="p-3 rounded-xl bg-indigo-50"><div className="text-xs text-indigo-700">Jumlah Pergerakan</div><div className="text-xl font-bold text-indigo-700">{ld?.total || 0}</div></div>
             </div>
             {log.isLoading ? (
               <div className="py-10 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div>
@@ -168,10 +168,10 @@ function StockCardTab() {
           <>
             {/* Summary cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs uppercase text-muted-foreground">Saldo Awal</div><div className="text-xl font-bold">{kg(d.opening?.weight)} kg</div></div>
-              <div className="p-3 rounded-lg border bg-emerald-50"><div className="text-xs uppercase text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(d.summary?.totalInWeight)} kg</div></div>
-              <div className="p-3 rounded-lg border bg-red-50"><div className="text-xs uppercase text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(d.summary?.totalOutWeight)} kg</div></div>
-              <div className="p-3 rounded-lg border bg-indigo-50"><div className="text-xs uppercase text-indigo-700">Saldo Akhir</div><div className="text-xl font-bold text-indigo-700">{kg(d.summary?.closingWeight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground">Saldo Awal</div><div className="text-xl font-bold">{kg(d.opening?.weight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-emerald-50"><div className="text-xs text-emerald-700">Total Masuk</div><div className="text-xl font-bold text-emerald-700">{kg(d.summary?.totalInWeight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-red-50"><div className="text-xs text-red-700">Total Keluar</div><div className="text-xl font-bold text-red-700">{kg(d.summary?.totalOutWeight)} kg</div></div>
+              <div className="p-3 rounded-xl bg-indigo-50"><div className="text-xs text-indigo-700">Saldo Akhir</div><div className="text-xl font-bold text-indigo-700">{kg(d.summary?.closingWeight)} kg</div></div>
             </div>
 
             {/* Ledger table */}
@@ -326,8 +326,8 @@ export default function InventoryReports() {
               {dmg.isLoading ? <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin inline" /></div> : dmg.data?.data && (
                 <>
                   <div className="grid grid-cols-2 gap-3 mb-4">
-                    <div className="p-3 rounded-lg border bg-red-50"><div className="text-xs uppercase text-red-700">Total Kehilangan</div><div className="text-2xl font-bold text-red-700">{fmtNum(dmg.data.data.summary.totalWeight, 2)} kg</div></div>
-                    <div className="p-3 rounded-lg border bg-slate-50"><div className="text-xs uppercase text-muted-foreground">Kejadian</div><div className="text-2xl font-bold">{dmg.data.data.summary.totalRows}</div></div>
+                    <div className="p-3 rounded-xl bg-red-50"><div className="text-xs text-red-700">Total Kehilangan</div><div className="text-2xl font-bold text-red-700">{fmtNum(dmg.data.data.summary.totalWeight, 2)} kg</div></div>
+                    <div className="p-3 rounded-xl bg-slate-50"><div className="text-xs text-muted-foreground">Kejadian</div><div className="text-2xl font-bold">{dmg.data.data.summary.totalRows}</div></div>
                   </div>
                   <Table><TableHeader><TableRow><TableHead>BA Number</TableHead><TableHead>Tanggal</TableHead><TableHead>CS</TableHead><TableHead>Alasan</TableHead><TableHead className="text-right">Berat</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
                     <TableBody>
