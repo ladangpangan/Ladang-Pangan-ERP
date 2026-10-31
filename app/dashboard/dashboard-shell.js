@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Package, Warehouse, ShoppingCart, ClipboardList,
   Boxes, TrendingUp, LogOut, Menu, X, Wheat, ChevronRight, Settings,
   FileBarChart, Smartphone, UserCog, ClipboardCheck, Bell, AlertTriangle, Info, CheckCheck, Layers,
-  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, Target, History
+  Landmark, BookOpen, Calculator, Wallet, Scale, Building, Lock, TrendingDown, Receipt, ScrollText, Database, HandCoins, History
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -35,7 +35,6 @@ const NAV = [
     items: [
       { href: '/dashboard/sales-orders', label: 'Sales Order', icon: TrendingUp, roles: ['admin', 'supervisor', 'direktur', 'operator'] },
       { href: '/dashboard/contacts?type=Customer', label: 'Pelanggan', icon: Users, roles: MGMT },
-      { href: '/dashboard/leads', label: 'Prospek', icon: Target, roles: ALL, hideFor: ['akuntan'] },
     ],
   },
   {
